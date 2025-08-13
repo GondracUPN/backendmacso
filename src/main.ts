@@ -3,9 +3,17 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Ajusta los origins al dominio real de tu frontend
   app.enableCors({
-  origin: ['http://localhost:3001', 'https://tu-dominio.com'],
-}); // habilitar CORS si usarás React
-  await app.listen(3000);
+    origin: [
+      'https://frontend-tailwind-alpha.vercel.app/',
+      'https://tu-frontend.pages.dev',
+      // agrega otros dominios si aplica
+    ],
+    credentials: true,
+  });
+
+  await app.listen(process.env.PORT || 3000);
 }
 bootstrap();
