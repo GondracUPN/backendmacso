@@ -1,27 +1,28 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ProductoModule } from './producto/producto.module';
 import { TrackingModule } from './tracking/tracking.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: 'localhost',
-      port: 5432,
-      username: 'postgres',
-      password: 'abc1234',
-      database: 'macsomenos',
-      synchronize: true,
-      autoLoadEntities: true,
+    ConfigModule.forRoot({ isGlobal: true }),
 
-      // ----> Activas el logging de SQL
-      logging: true,
-      logger: 'advanced-console',
-    })
-    ,
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (cfg: ConfigService) => ({
+        type: 'postgres',
+        url: cfg.get<string>('DATABASE_URL'), // tu URL de Neon
+        ssl: { rejectUnauthorized: false },   // Neon requiere TLS
+        autoLoadEntities: true,
+        synchronize: process.env.NODE_ENV !== 'production',
+        logging: process.env.NODE_ENV !== 'production',
+        logger: 'advanced-console',
+      }),
+    }),
+
     ProductoModule,
     TrackingModule,
   ],
 })
-export class AppModule { }
+export class AppModule {}
