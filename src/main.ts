@@ -4,14 +4,16 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Ajusta los origins al dominio real de tu frontend
   app.enableCors({
     origin: [
-      'https://frontend-tailwind-alpha.vercel.app/',
-      'https://tu-frontend.pages.dev',
-      // agrega otros dominios si aplica
+      'https://frontend-tailwind-unye.vercel.app', // tu front en Vercel
+      'http://localhost:3000', // útil en dev si usas CRA en 3000
+      'http://localhost:5173', // útil si usas Vite en dev
     ],
-    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: false, // pon true solo si usas cookies/sesión
+    optionsSuccessStatus: 204, // respuesta al preflight
   });
 
   await app.listen(process.env.PORT || 3000);
