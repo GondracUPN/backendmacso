@@ -12,17 +12,18 @@ import { TrackingModule } from './tracking/tracking.module';
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
         type: 'postgres',
-        url: cfg.get<string>('DATABASE_URL'), // tu URL de Neon
-        ssl: { rejectUnauthorized: false },   // Neon requiere TLS
+        url: cfg.get<string>('DATABASE_URL'),
+        ssl: { rejectUnauthorized: false },
         autoLoadEntities: true,
-        synchronize: process.env.NODE_ENV !== 'production',
+        synchronize: cfg.get<string>('DB_SYNC') === 'true', // ← crear tablas solo si lo pides
         logging: process.env.NODE_ENV !== 'production',
         logger: 'advanced-console',
       }),
     }),
 
+
     ProductoModule,
     TrackingModule,
   ],
 })
-export class AppModule {}
+export class AppModule { }
