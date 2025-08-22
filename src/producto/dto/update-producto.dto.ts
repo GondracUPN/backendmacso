@@ -9,7 +9,7 @@ export class UpdateProductoDto {
     procesador: string;
     generacion: string;
     modelo: string;
-    tamanio: string;
+    tamaño: string;
     almacenamiento: string;
     ram: string;
     conexion: string;

@@ -19,7 +19,7 @@ export class ProductoDetalle {
   modelo: string;
 
   @Column({ nullable: true })
-  tamanio: string;
+  tamaño: string;
 
   @Column({ nullable: true })
   almacenamiento: string;

@@ -16,6 +16,6 @@ async function bootstrap() {
     optionsSuccessStatus: 204, // respuesta al preflight
   });
 
-  await app.listen(process.env.PORT || 3000);
+  await app.listen(process.env.PORT || 3001);
 }
 bootstrap();

@@ -8,7 +8,7 @@ export class CreateProductoDto {
     procesador?: string;
     generacion?: string;
     modelo?: string;
-    tamanio?: string;
+    tamaño?: string;
     almacenamiento?: string;
     ram?: string;
     conexion?: string;
