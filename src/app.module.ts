@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ProductoModule } from './producto/producto.module';
 import { TrackingModule } from './tracking/tracking.module';
+import { VentaModule } from './venta/venta.module';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { TrackingModule } from './tracking/tracking.module';
       }),
     }),
 
-
+    VentaModule,
     ProductoModule,
     TrackingModule,
   ],

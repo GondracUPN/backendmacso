@@ -3,6 +3,7 @@ import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn,OneToMany
 import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { Tracking } from '../tracking/tracking.entity';
+import { Venta } from '../venta/venta.entity';
 
 @Entity()
 export class Producto {
@@ -33,4 +34,6 @@ valor: ProductoValor;
   })
   tracking: Tracking[];
 
+@OneToMany(() => Venta, v => v.producto)
+ventas: Venta[];
 }
