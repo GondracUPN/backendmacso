@@ -78,8 +78,7 @@ export class TrackingService {
   }): EstadoTracking {
     const hasUsa =
       !!this.clean(input.trackingUsa) ||
-      !!this.clean(input.transportista) ||
-      !!this.clean(input.casillero);
+      !!this.clean(input.transportista);
 
     const hasEshop =
       !!this.clean(input.trackingEshop) ||
