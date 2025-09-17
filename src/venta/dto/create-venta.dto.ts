@@ -12,4 +12,8 @@ export class CreateVentaDto {
 
   @IsNumber()
   precioVenta: number; // S/
+
+  
+  vendedor?: string;
+
 }

@@ -7,6 +7,14 @@ import { UpdateVentaDto } from './dto/update-venta.dto';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 
+// 👇 filtros para listar ventas (export opcional)
+export type ListVentasParams = {
+  from?: string;        // 'YYYY-MM-DD'
+  to?: string;          // 'YYYY-MM-DD'
+  unassigned?: boolean; // ventas sin vendedor
+  productoId?: number;  // opcional
+};
+
 @Injectable()
 export class VentaService {
   constructor(
@@ -14,6 +22,33 @@ export class VentaService {
     @InjectRepository(Producto) private readonly productoRepo: Repository<Producto>,
     @InjectRepository(ProductoValor) private readonly valorRepo: Repository<ProductoValor>,
   ) {}
+
+  // Lista con filtros + joins para devolver producto, valor y detalle
+  async findAll(params: ListVentasParams) {
+    const qb = this.ventaRepo.createQueryBuilder('v')
+      .leftJoinAndSelect('v.producto', 'p')
+      .leftJoinAndSelect('p.valor', 'val')
+      .leftJoinAndSelect('p.detalle', 'det');
+
+    if (params.productoId != null) {
+      qb.andWhere('v.productoId = :pid', { pid: params.productoId });
+    }
+    if (params.from) {
+      qb.andWhere('v.fechaVenta >= :from', { from: params.from });
+    }
+    if (params.to) {
+      qb.andWhere('v.fechaVenta <= :to', { to: params.to });
+    }
+    if (params.unassigned) {
+      // requiere columna 'vendedor' en la entidad Venta
+      qb.andWhere('(v.vendedor IS NULL OR v.vendedor = \'\')');
+    }
+
+    return qb
+      .orderBy('v.fechaVenta', 'DESC')
+      .addOrderBy('v.id', 'DESC')
+      .getMany();
+  }
 
   async findByProducto(productoId: number): Promise<Venta[]> {
     return this.ventaRepo.find({ where: { productoId }, order: { id: 'DESC' } });
@@ -54,7 +89,7 @@ export class VentaService {
     const ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
     const porcentajeGanancia = +((ganancia / (costoTotalRecalc || 1)) * 100).toFixed(3);
 
-    // 4) Crear venta
+    // 4) Crear venta (acepta vendedor opcional)
     const venta = this.ventaRepo.create({
       productoId: producto.id,
       tipoCambio,
@@ -62,6 +97,7 @@ export class VentaService {
       precioVenta,
       ganancia,
       porcentajeGanancia,
+      vendedor: (dto as any).vendedor ?? null, // opcional
     });
     return this.ventaRepo.save(venta);
   }
@@ -92,6 +128,12 @@ export class VentaService {
       venta.precioVenta = precioVenta;
       venta.ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
       venta.porcentajeGanancia = +((venta.ganancia / (costoTotalRecalc || 1)) * 100).toFixed(3);
+    }
+
+    // permitir asignar vendedor
+    if ((dto as any).vendedor !== undefined) {
+      // guardar string o null si viene vacío
+      venta.vendedor = (dto as any).vendedor || null;
     }
 
     if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;

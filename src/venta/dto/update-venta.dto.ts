@@ -5,4 +5,6 @@ import { CreateVentaDto } from './create-venta.dto';
 // No permitimos cambiar productoId en el update.
 export class UpdateVentaDto extends PartialType(
   OmitType(CreateVentaDto, ['productoId'] as const),
-) {}
+  
+) {  vendedor?: string;
+}

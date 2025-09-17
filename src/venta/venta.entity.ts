@@ -9,7 +9,7 @@ export class Venta {
   @Column()
   productoId: number;
 
-  @ManyToOne(() => Producto, p => p /* opcional agregar ventas en Producto */ , { onDelete: 'CASCADE' })
+  @ManyToOne(() => Producto, p => p /* opcional agregar ventas en Producto */, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'productoId' })
   producto: Producto;
 
@@ -29,6 +29,11 @@ export class Venta {
 
   @Column('decimal', { precision: 7, scale: 3 })
   porcentajeGanancia: number; // %
+
+  // — Opcional: vendedor asignado a la venta —
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  vendedor?: 'Gonzalo' | 'Renato' | null;
+
 
   @CreateDateColumn()
   createdAt: Date;
