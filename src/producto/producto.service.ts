@@ -8,6 +8,14 @@ import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { Tracking } from '../tracking/tracking.entity';
 
+function normalizeEstado(str?: string | null): string {
+  if (!str) return '';
+  const s = String(str).trim().toLowerCase();
+  if (s.includes('camino')) return 'comprado_en_camino';        // ← clave base
+  if (s === 'comprado_en_camino') return s;                     // ya normalizado
+  return s;
+}
+
 @Injectable()
 export class ProductoService {
   constructor(
@@ -22,7 +30,7 @@ export class ProductoService {
 
     @InjectRepository(Tracking)
     private readonly trackingRepo: Repository<Tracking>,
-  ) { }
+  ) {}
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
   async create(data: CreateProductoDto): Promise<Producto> {
@@ -74,8 +82,8 @@ export class ProductoService {
     await this.trackingRepo.save(
       this.trackingRepo.create({
         productoId: savedProducto.id,
-        estado: 'comprado_sin_tracking', // 👈 default inicial
-      })
+        estado: 'comprado_sin_tracking',
+      }),
     );
 
     // 5) Retornar producto con todas las relaciones (incluye tracking)
@@ -85,14 +93,38 @@ export class ProductoService {
     });
   }
 
-  /** Devuelve todos los productos con sus relaciones */
-  async findAll(): Promise<Producto[]> {
-    return this.productoRepo.find({
+  /** Devuelve todos los productos (opcionalmente filtrados por estatus) con sus relaciones */
+  async findAll(estatus?: string): Promise<Producto[]> {
+    const items = await this.productoRepo.find({
       relations: ['detalle', 'valor', 'tracking'],
-      order: { id: 'DESC' }, // último ingresado primero
+      order: { id: 'DESC' },
     });
-  }
 
+    if (!estatus) return items;
+
+    const target = normalizeEstado(estatus);
+
+    // Filtro en memoria por producto.estado o ÚLTIMO tracking.estado
+    const result = items.filter((p) => {
+      const eProd = normalizeEstado((p as any).estado || (p as any).status);
+      if (eProd === target) return true;
+
+      const trk = Array.isArray((p as any).tracking) ? [...(p as any).tracking] : [];
+      if (!trk.length) return false;
+
+      trk.sort((a, b) => {
+        if (a.createdAt && b.createdAt) {
+          return new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime();
+        }
+        return (b.id || 0) - (a.id || 0);
+      });
+
+      const last = trk[0];
+      return normalizeEstado(last?.estado) === target;
+    });
+
+    return result;
+  }
 
   /** Actualiza tipo, estado, conCaja, detalle y/o valor */
   async update(id: number, dto: UpdateProductoDto): Promise<Producto> {
@@ -139,7 +171,7 @@ export class ProductoService {
     // 5) Retornar entidad completa actualizada (incluye tracking)
     return this.productoRepo.findOneOrFail({
       where: { id },
-      relations: ['detalle', 'valor', 'tracking'], // 👈 incluye tracking
+      relations: ['detalle', 'valor', 'tracking'],
     });
   }
 
