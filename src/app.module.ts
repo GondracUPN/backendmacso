@@ -6,6 +6,11 @@ import { join } from 'path';
 import { ProductoModule } from './producto/producto.module';
 import { TrackingModule } from './tracking/tracking.module';
 import { VentaModule } from './venta/venta.module';
+import { AuthModule } from './auth/auth.module';
+import { GastosModule } from './gastos/gastos.module';
+import { WalletModule } from './wallet/wallet.module';
+import { CardsModule } from './cards/cards.module';
+
 
 @Module({
   imports: [
@@ -34,10 +39,13 @@ import { VentaModule } from './venta/venta.module';
         };
       },
     }),
-
+    AuthModule,
+    GastosModule,
+    WalletModule,
+    CardsModule,
     VentaModule,
     ProductoModule,
     TrackingModule,
   ],
 })
-export class AppModule {}
+export class AppModule { }
