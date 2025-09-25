@@ -1,4 +1,4 @@
-import { IsNumber, IsDateString, IsInt } from 'class-validator';
+import { IsNumber, IsDateString, IsInt, IsOptional, IsString } from 'class-validator';
 
 export class CreateVentaDto {
   @IsInt()
@@ -8,12 +8,12 @@ export class CreateVentaDto {
   tipoCambio: number;
 
   @IsDateString()
-  fechaVenta: string; // ISO date (YYYY-MM-DD)
+  fechaVenta: string; // YYYY-MM-DD
 
   @IsNumber()
   precioVenta: number; // S/
 
-  
-  vendedor?: string;
-
+  @IsOptional()
+  @IsString()
+  vendedor?: string;   // ✅ ahora permitido por el validador
 }
