@@ -18,8 +18,8 @@ export class ProductoDetalle {
   @Column({ nullable: true })
   modelo: string;
 
-  @Column({ name: 'tamanio', type: 'varchar', length: 50, nullable: true })
-  tamaño?: string;
+  @Column({ name: 'tamaño', type: 'varchar', nullable: true })
+  ['tamaño']?: string;
 
 
   @Column({ nullable: true })
