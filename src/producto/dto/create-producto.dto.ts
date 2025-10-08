@@ -1,4 +1,11 @@
-import { IsString, IsOptional, IsBoolean, IsNumber, IsDateString, ValidateNested } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsBoolean,
+  IsNumber,
+  IsDateString,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateProductoDetalleDto {
@@ -21,8 +28,8 @@ export class CreateProductoValorDto {
 }
 
 export class CreateProductoDto {
-  @IsString() tipo: string;           // macbook, ipad, iphone, watch, otro
-  @IsString() estado: string;         // nuevo, usado, roto
+  @IsString() tipo: string; // macbook, ipad, iphone, watch, otro
+  @IsString() estado: string; // nuevo, usado, roto
   @IsOptional() @IsBoolean() conCaja?: boolean;
 
   @IsOptional()

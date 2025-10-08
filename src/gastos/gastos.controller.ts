@@ -1,12 +1,26 @@
 // src/gastos/gastos.controller.ts
-import { Controller, Get, Post, Patch, Delete, Body, Param, ParseIntPipe, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  ParseIntPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { GastosService } from './gastos.service';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CurrentUser, JwtUserPayload } from '../auth/decorators/current-user.decorator';
+import {
+  CurrentUser,
+  JwtUserPayload,
+} from '../auth/decorators/current-user.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('gastos')
@@ -27,6 +41,15 @@ export class GastosController {
     return this.svc.findAll();
   }
 
+  // Obtener un gasto por id (propio o admin)
+  @Get(':id')
+  getOne(
+    @CurrentUser() user: JwtUserPayload,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.svc.findOneAuth(user.userId, user.role, id);
+  }
+
   @Post()
   create(@CurrentUser() user: JwtUserPayload, @Body() dto: CreateGastoDto) {
     return this.svc.create(user.userId, dto); // <-- usar user.userId
@@ -42,7 +65,10 @@ export class GastosController {
   }
 
   @Delete(':id')
-  remove(@CurrentUser() user: JwtUserPayload, @Param('id', ParseIntPipe) id: number) {
+  remove(
+    @CurrentUser() user: JwtUserPayload,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
     return this.svc.remove(user.userId, user.role, id); // <-- usar user.userId
   }
 }

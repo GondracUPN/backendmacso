@@ -11,8 +11,8 @@ import { Tracking } from '../tracking/tracking.entity';
 function normalizeEstado(str?: string | null): string {
   if (!str) return '';
   const s = String(str).trim().toLowerCase();
-  if (s.includes('camino')) return 'comprado_en_camino';        // ← clave base
-  if (s === 'comprado_en_camino') return s;                     // ya normalizado
+  if (s.includes('camino')) return 'comprado_en_camino'; // ← clave base
+  if (s === 'comprado_en_camino') return s; // ya normalizado
   return s;
 }
 
@@ -109,12 +109,16 @@ export class ProductoService {
       const eProd = normalizeEstado((p as any).estado || (p as any).status);
       if (eProd === target) return true;
 
-      const trk = Array.isArray((p as any).tracking) ? [...(p as any).tracking] : [];
+      const trk = Array.isArray((p as any).tracking)
+        ? [...(p as any).tracking]
+        : [];
       if (!trk.length) return false;
 
       trk.sort((a, b) => {
         if (a.createdAt && b.createdAt) {
-          return new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime();
+          return (
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
         }
         return (b.id || 0) - (a.id || 0);
       });
@@ -192,11 +196,26 @@ export class ProductoService {
   // — Helpers para cálculos —
   private getTarifa(peso: number): number {
     const tabla: [number, number][] = [
-      [0.5, 30.6], [1.0, 55], [1.5, 74], [2.0, 90],
-      [2.5, 110], [3.0, 120], [3.5, 130], [4.0, 140],
-      [4.5, 150], [5.0, 160], [5.5, 170], [6.0, 180],
-      [6.5, 190], [7.0, 200], [7.5, 210], [8.0, 220],
-      [8.5, 230], [9.0, 240], [9.5, 250], [10.0, 260],
+      [0.5, 30.6],
+      [1.0, 55],
+      [1.5, 74],
+      [2.0, 90],
+      [2.5, 110],
+      [3.0, 120],
+      [3.5, 130],
+      [4.0, 140],
+      [4.5, 150],
+      [5.0, 160],
+      [5.5, 170],
+      [6.0, 180],
+      [6.5, 190],
+      [7.0, 200],
+      [7.5, 210],
+      [8.0, 220],
+      [8.5, 230],
+      [9.0, 240],
+      [9.5, 250],
+      [10.0, 260],
     ];
     for (const [max, tarifa] of tabla) {
       if (peso <= max) return tarifa;

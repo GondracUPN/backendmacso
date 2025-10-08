@@ -5,7 +5,9 @@ import { Repository } from 'typeorm';
 
 @Injectable()
 export class WalletService {
-  constructor(@InjectRepository(Wallet) private readonly repo: Repository<Wallet>) {}
+  constructor(
+    @InjectRepository(Wallet) private readonly repo: Repository<Wallet>,
+  ) {}
 
   async getOrCreate(userId: number) {
     let w = await this.repo.findOne({ where: { userId } });

@@ -1,12 +1,12 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Card } from './card.entity';
 import { Repository } from 'typeorm';
-import { Role } from '../auth/entities/user.entity';
+import { Card } from './card.entity';
 import { Gasto } from '../gastos/entities/gasto.entity';
+import { Role } from '../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 
-const CREDIT_CONCEPTS = ['comida','gusto','inversion','pago_envios'];
+const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios'];
 
 @Injectable()
 export class CardsService {
@@ -24,119 +24,155 @@ export class CardsService {
     return this.findMine(userId);
   }
 
-  async create(userId: number, tipo: string, creditLine: number) {
+  getCardTypes() {
+    return [
+      { tipo: 'interbank', label: 'Interbank' },
+      { tipo: 'bcp_amex', label: 'BCP Amex' },
+      { tipo: 'bcp_visa', label: 'BCP Visa' },
+      { tipo: 'bbva', label: 'BBVA' },
+      { tipo: 'io', label: 'IO' },
+      { tipo: 'saga', label: 'Saga' },
+    ];
+  }
+
+  async create(
+    userId: number,
+    tipo: string,
+    creditLine: number,
+    opts?: { creditLinePen?: number; creditLineUsd?: number },
+  ) {
     const c = this.repo.create({
       userId,
       tipo,
       creditLine: (Number(creditLine) || 0).toFixed(2),
+      creditLinePen:
+        opts?.creditLinePen != null ? (Number(opts.creditLinePen) || 0).toFixed(2) : null,
+      creditLineUsd:
+        opts?.creditLineUsd != null ? (Number(opts.creditLineUsd) || 0).toFixed(2) : null,
     });
     return this.repo.save(c);
   }
 
-  async update(userId: number, role: Role, id: number, creditLine: number) {
+  async update(
+    userId: number,
+    role: Role,
+    id: number,
+    creditLine: number,
+    opts?: { creditLinePen?: number; creditLineUsd?: number },
+  ) {
     const c = await this.repo.findOne({ where: { id } });
     if (!c) return null;
     if (role !== 'admin' && c.userId !== userId) {
       throw new ForbiddenException('No autorizado');
     }
     c.creditLine = (Number(creditLine) || 0).toFixed(2);
+    if (opts?.creditLinePen !== undefined)
+      c.creditLinePen = (Number(opts.creditLinePen) || 0).toFixed(2);
+    if (opts?.creditLineUsd !== undefined)
+      c.creditLineUsd = (Number(opts.creditLineUsd) || 0).toFixed(2);
     return this.repo.save(c);
   }
 
-  /**
-   * Resumen por tarjeta (S/):
-   * used = (consumos en crédito: comida|gusto|inversion|pago_envios, PEN+USD→PEN)
-   *      - (pagos desde débito concepto pago_tarjeta → tarjetaPago)
-   *      - (ingresos hechos en crédito)
-   * available = creditLine - used
-   * Tasa USD→PEN = env GASTOS_USD_RATE (default 3.8)
-   */
+  async remove(userId: number, role: Role, id: number) {
+    const c = await this.repo.findOne({ where: { id } });
+    if (!c) return null;
+    if (role !== 'admin' && c.userId !== userId) {
+      throw new ForbiddenException('No autorizado');
+    }
+    await this.repo.remove(c);
+    return { ok: true };
+  }
+
+  // Resumen por tarjeta en S/
   async getSummary(userId: number) {
     const cards = await this.findAllByUser(userId);
     if (!cards.length) return [];
 
-    const usd = Number(this.cfg.get('GASTOS_USD_RATE') ?? 3.8);
-
-    // Consumos en crédito (solo conceptos específicos)
-    const consumoCred = await this.gastosRepo
+    const gastos = await this.gastosRepo
       .createQueryBuilder('g')
-      .select('g.tarjeta', 'tarjeta')
-      .addSelect(
-        `COALESCE(SUM(
-          CASE WHEN g.moneda = 'USD' THEN CAST(g.monto AS numeric) * :usd ELSE CAST(g.monto AS numeric) END
-        ), 0)`,
-        'sum',
-      )
+      .select([
+        'g.id',
+        'g.concepto',
+        'g.metodoPago',
+        'g.moneda',
+        'g.monto',
+        'g.fecha',
+        'g.tarjeta',
+        'g.tarjetaPago',
+        'g.pagoObjetivo',
+        'g.montoUsdAplicado',
+        'g.tasaUsdPen',
+      ])
       .where('g.userId = :uid', { uid: userId })
-      .andWhere('g.metodoPago = :mp', { mp: 'credito' })
-      .andWhere('g.tarjeta IS NOT NULL')
-      .andWhere('LOWER(g.concepto) IN (:...cons)', { cons: CREDIT_CONCEPTS })
-      .groupBy('g.tarjeta')
-      .setParameters({ usd })
-      .getRawMany<{ tarjeta: string; sum: string }>();
-
-    // Pagos de tarjeta hechos desde DÉBITO (concepto = pago_tarjeta) → restan
-    const pagosDebito = await this.gastosRepo
-      .createQueryBuilder('g')
-      .select('g.tarjetaPago', 'tarjeta')
-      .addSelect(
-        `COALESCE(SUM(
-          CASE WHEN g.moneda = 'USD' THEN CAST(g.monto AS numeric) * :usd ELSE CAST(g.monto AS numeric) END
-        ), 0)`,
-        'sum',
+      .andWhere(
+        `(
+          (g.metodoPago = 'credito' AND g.tarjeta IS NOT NULL AND (LOWER(g.concepto) IN (:...cons) OR LOWER(g.concepto) = 'ingreso'))
+          OR
+          (g.metodoPago = 'debito' AND LOWER(g.concepto) = 'pago_tarjeta' AND g.tarjetaPago IS NOT NULL)
+        )`,
+        { cons: CREDIT_CONCEPTS },
       )
-      .where('g.userId = :uid', { uid: userId })
-      .andWhere('g.metodoPago = :mp', { mp: 'debito' })
-      .andWhere('LOWER(g.concepto) = :pt', { pt: 'pago_tarjeta' })
-      .andWhere('g.tarjetaPago IS NOT NULL')
-      .groupBy('g.tarjetaPago')
-      .setParameters({ usd })
-      .getRawMany<{ tarjeta: string; sum: string }>();
+      .orderBy('g.fecha', 'ASC')
+      .getMany();
 
-    // Ingresos en crédito → restan
-    const ingresosCred = await this.gastosRepo
-      .createQueryBuilder('g')
-      .select('g.tarjeta', 'tarjeta')
-      .addSelect(
-        `COALESCE(SUM(
-          CASE WHEN g.moneda = 'USD' THEN CAST(g.monto AS numeric) * :usd ELSE CAST(g.monto AS numeric) END
-        ), 0)`,
-        'sum',
-      )
-      .where('g.userId = :uid', { uid: userId })
-      .andWhere('g.metodoPago = :mp', { mp: 'credito' })
-      .andWhere('g.tarjeta IS NOT NULL')
-      .andWhere('LOWER(g.concepto) = :ing', { ing: 'ingreso' })
-      .groupBy('g.tarjeta')
-      .setParameters({ usd })
-      .getRawMany<{ tarjeta: string; sum: string }>();
+    const USD_PEN_RATE = 3.7;
 
-    const usedMap = new Map<string, number>();
+    const usedPen = new Map<string, number>();
+    const usedUsd = new Map<string, number>();
+    const addPen = (k: string, v: number) => usedPen.set(k, (usedPen.get(k) || 0) + v);
+    const addUsd = (k: string, v: number) => usedUsd.set(k, (usedUsd.get(k) || 0) + v);
 
-    for (const r of consumoCred) {
-      if (!r.tarjeta) continue;
-      usedMap.set(r.tarjeta, (usedMap.get(r.tarjeta) || 0) + Number(r.sum || 0));
+    for (const g of gastos) {
+      const c = String(g.concepto || '').toLowerCase();
+      if (g.metodoPago === 'credito') {
+        if (CREDIT_CONCEPTS.includes(c)) addUsd(g.tarjeta!, Number(g.monto || 0));
+        else if (c === 'ingreso') addUsd(g.tarjeta!, -Number(g.monto || 0));
+        continue;
+      }
+      if (g.metodoPago === 'debito' && c === 'pago_tarjeta') {
+        const key = g.tarjetaPago!;
+        const go: any = g as any;
+        const tc = (() => {
+          const t = Number(go.tasaUsdPen);
+          if (isFinite(t) && t > 0) return t;
+          const musd = Number(go.montoUsdAplicado);
+          const m = Number(g.monto);
+          if (isFinite(musd) && musd > 0) {
+            const t2 = m / musd;
+            if (isFinite(t2) && t2 > 0) return t2;
+          }
+          return USD_PEN_RATE;
+        })();
+        const curUsd = Number(usedUsd.get(key) || 0);
+        const explicitUSD = go.pagoObjetivo === 'USD';
+        const explicitPEN = go.pagoObjetivo === 'PEN';
+        const targetUsd = explicitUSD || go.montoUsdAplicado != null || g.moneda === 'USD' || (!explicitPEN && curUsd > 0);
+
+        if (targetUsd) {
+          const usdPay = g.moneda === 'USD' ? Number(g.monto) : Number(g.monto) / tc;
+          const usdApplied = Math.min(curUsd, usdPay);
+          addUsd(key, -usdApplied);
+          if (g.moneda === 'PEN') {
+            const penUsedForUsd = usdApplied * tc;
+            const penLeft = Number(g.monto) - penUsedForUsd;
+            if (penLeft > 0.0001) addPen(key, -penLeft);
+          }
+        } else {
+          const penPay = g.moneda === 'PEN' ? Number(g.monto) : Number(g.monto) * tc;
+          addPen(key, -penPay);
+        }
+      }
     }
-    for (const r of pagosDebito) {
-      if (!r.tarjeta) continue;
-      usedMap.set(r.tarjeta, (usedMap.get(r.tarjeta) || 0) - Number(r.sum || 0));
-    }
-    for (const r of ingresosCred) {
-      if (!r.tarjeta) continue;
-      usedMap.set(r.tarjeta, (usedMap.get(r.tarjeta) || 0) - Number(r.sum || 0));
-    }
 
-    return cards.map(c => {
-      const line = Number(c.creditLine || 0);
-      const used = Math.max(0, Number(usedMap.get(c.tipo) || 0));
+    return cards.map((c) => {
+      const lineLegacy = Number(c.creditLine || 0);
+      const linePen = Number(c.creditLinePen || 0);
+      const lineUsd = Number(c.creditLineUsd || 0);
+      const line = lineLegacy > 0 ? lineLegacy : linePen + lineUsd * USD_PEN_RATE;
+      const used = Math.max(0, Number(usedPen.get(c.tipo) || 0) + Number(usedUsd.get(c.tipo) || 0) * USD_PEN_RATE);
       const available = Math.max(0, line - used);
-      return {
-        id: c.id,
-        tipo: c.tipo,
-        creditLine: +line.toFixed(2),
-        used: +used.toFixed(2),
-        available: +available.toFixed(2),
-      };
+      return { id: c.id, tipo: c.tipo, creditLine: +line.toFixed(2), used: +used.toFixed(2), available: +available.toFixed(2) };
     });
   }
 }
+

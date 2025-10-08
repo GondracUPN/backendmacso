@@ -6,7 +6,10 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { Roles } from './decorators/roles.decorator';
 import { RolesGuard } from './guards/roles.guard';
-import { CurrentUser, JwtUserPayload } from './decorators/current-user.decorator';
+import {
+  CurrentUser,
+  JwtUserPayload,
+} from './decorators/current-user.decorator';
 
 @Controller('auth')
 export class AuthController {

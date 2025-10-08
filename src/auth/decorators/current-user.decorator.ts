@@ -2,8 +2,8 @@ import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 
 /** Payload que exponemos en req.user (normalizado) */
 export type JwtUserPayload = {
-  userId: number;                 // 👈 SIEMPRE presente
-  sub?: number;                   // compatibilidad (opcional)
+  userId: number; // 👈 SIEMPRE presente
+  sub?: number; // compatibilidad (opcional)
   username: string;
   role: 'admin' | 'user';
   iat?: number;

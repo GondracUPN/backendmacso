@@ -1,5 +1,11 @@
 import {
-  Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn, Index,
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  ManyToOne,
+  JoinColumn,
+  Index,
 } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
 
@@ -47,6 +53,22 @@ export class Gasto {
 
   @Column({ type: 'text', nullable: true })
   notas?: string | null;
+
+  // Opcionales para auditoría de moneda / pagos de tarjeta
+  @Column({ name: 'tasa_usd_pen', type: 'numeric', precision: 8, scale: 4, nullable: true })
+  tasaUsdPen?: string | null;
+
+  // Equivalente en PEN del movimiento (si moneda='USD' => monto * tasaUsdPen)
+  @Column({ name: 'monto_pen', type: 'numeric', precision: 12, scale: 2, nullable: true })
+  montoPen?: string | null;
+
+  // Para pagos de tarjeta desde débito: a qué moneda aplica el pago (PEN | USD)
+  @Column({ name: 'pago_objetivo', type: 'varchar', length: 3, nullable: true })
+  pagoObjetivo?: 'PEN' | 'USD' | null;
+
+  // Para pagos a USD hechos en PEN, el monto en USD aplicado (con la tasa del día)
+  @Column({ name: 'monto_usd_aplicado', type: 'numeric', precision: 12, scale: 2, nullable: true })
+  montoUsdAplicado?: string | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

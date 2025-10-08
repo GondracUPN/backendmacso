@@ -38,7 +38,8 @@ export class TrackingService {
     if (!t) throw new NotFoundException(`Tracking ${id} no encontrado`);
 
     const merged = { ...t, ...dto };
-    const estado: EstadoTracking = this.calcularEstado(merged) ?? 'comprado_sin_tracking';
+    const estado: EstadoTracking =
+      this.calcularEstado(merged) ?? 'comprado_sin_tracking';
 
     Object.assign(t, dto, { estado });
     await this.repo.save(t);
@@ -59,7 +60,10 @@ export class TrackingService {
   }
 
   /** Upsert por producto (útil para el controller: PUT /tracking/producto/:pid) */
-  async upsertByProducto(productoId: number, dto: Omit<CreateTrackingDto, 'productoId'>): Promise<Tracking> {
+  async upsertByProducto(
+    productoId: number,
+    dto: Omit<CreateTrackingDto, 'productoId'>,
+  ): Promise<Tracking> {
     const existing = await this.findByProducto(productoId);
     if (existing) {
       return this.update(existing.id, dto as UpdateTrackingDto);
@@ -77,16 +81,14 @@ export class TrackingService {
     fechaRecogido?: string | null;
   }): EstadoTracking {
     const hasUsa =
-      !!this.clean(input.trackingUsa) ||
-      !!this.clean(input.transportista);
+      !!this.clean(input.trackingUsa) || !!this.clean(input.transportista);
 
     const hasEshop =
-      !!this.clean(input.trackingEshop) ||
-      !!this.clean(input.fechaRecepcion);
+      !!this.clean(input.trackingEshop) || !!this.clean(input.fechaRecepcion);
 
     if (this.clean(input.fechaRecogido)) return 'recogido';
     if (hasEshop) return 'en_eshopex';
-    if (hasUsa)   return 'comprado_en_camino';
+    if (hasUsa) return 'comprado_en_camino';
     return 'comprado_sin_tracking';
   }
 

@@ -18,7 +18,6 @@ export class ProductoValor {
   @Column()
   fechaCompra: Date;
 
-
   // —————————————————————————————————————————————————
   // Los siguientes tres campos se calcularán en el servicio:
   @Column('decimal', { precision: 10, scale: 2, nullable: true })

@@ -5,8 +5,8 @@ import { ConfigService } from '@nestjs/config';
 import { JwtUserPayload } from '../decorators/current-user.decorator';
 
 type RawJwt = {
-  sub?: number;               // normalmente viene sub
-  userId?: number;            // por si en algún entorno lo firmaron así
+  sub?: number; // normalmente viene sub
+  userId?: number; // por si en algún entorno lo firmaron así
   username: string;
   role: 'admin' | 'user';
   iat?: number;

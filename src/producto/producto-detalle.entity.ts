@@ -21,7 +21,6 @@ export class ProductoDetalle {
   @Column({ name: 'tamaño', type: 'varchar', nullable: true })
   ['tamaño']?: string;
 
-
   @Column({ nullable: true })
   almacenamiento: string;
 

@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-  import { Repository, ILike } from 'typeorm';
+import { Repository, ILike } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { User, Role } from './entities/user.entity';
@@ -68,7 +68,11 @@ export class AuthService {
   }
 
   private async signToken(user: User): Promise<string> {
-    const payload = { sub: user.id, username: user.username, role: user.role as Role };
+    const payload = {
+      sub: user.id,
+      username: user.username,
+      role: user.role,
+    };
     return this.jwt.signAsync(payload);
   }
 }

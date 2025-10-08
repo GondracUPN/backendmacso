@@ -11,7 +11,6 @@ import { GastosModule } from './gastos/gastos.module';
 import { WalletModule } from './wallet/wallet.module';
 import { CardsModule } from './cards/cards.module';
 
-
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -48,4 +47,4 @@ import { CardsModule } from './cards/cards.module';
     TrackingModule,
   ],
 })
-export class AppModule { }
+export class AppModule {}

@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Venta } from './venta.entity';
@@ -9,23 +13,26 @@ import { ProductoValor } from '../producto/producto-valor.entity';
 
 // 👇 filtros para listar ventas (export opcional)
 export type ListVentasParams = {
-  from?: string;        // 'YYYY-MM-DD'
-  to?: string;          // 'YYYY-MM-DD'
+  from?: string; // 'YYYY-MM-DD'
+  to?: string; // 'YYYY-MM-DD'
   unassigned?: boolean; // ventas sin vendedor
-  productoId?: number;  // opcional
+  productoId?: number; // opcional
 };
 
 @Injectable()
 export class VentaService {
   constructor(
     @InjectRepository(Venta) private readonly ventaRepo: Repository<Venta>,
-    @InjectRepository(Producto) private readonly productoRepo: Repository<Producto>,
-    @InjectRepository(ProductoValor) private readonly valorRepo: Repository<ProductoValor>,
+    @InjectRepository(Producto)
+    private readonly productoRepo: Repository<Producto>,
+    @InjectRepository(ProductoValor)
+    private readonly valorRepo: Repository<ProductoValor>,
   ) {}
 
   // Lista con filtros + joins para devolver producto, valor y detalle
   async findAll(params: ListVentasParams) {
-    const qb = this.ventaRepo.createQueryBuilder('v')
+    const qb = this.ventaRepo
+      .createQueryBuilder('v')
       .leftJoinAndSelect('v.producto', 'p')
       .leftJoinAndSelect('p.valor', 'val')
       .leftJoinAndSelect('p.detalle', 'det');
@@ -41,7 +48,7 @@ export class VentaService {
     }
     if (params.unassigned) {
       // requiere columna 'vendedor' en la entidad Venta
-      qb.andWhere('(v.vendedor IS NULL OR v.vendedor = \'\')');
+      qb.andWhere("(v.vendedor IS NULL OR v.vendedor = '')");
     }
 
     return qb
@@ -51,7 +58,10 @@ export class VentaService {
   }
 
   async findByProducto(productoId: number): Promise<Venta[]> {
-    return this.ventaRepo.find({ where: { productoId }, order: { id: 'DESC' } });
+    return this.ventaRepo.find({
+      where: { productoId },
+      order: { id: 'DESC' },
+    });
   }
 
   async findOne(id: number): Promise<Venta> {
@@ -66,15 +76,19 @@ export class VentaService {
       where: { id: dto.productoId },
       relations: ['valor'],
     });
-    if (!producto) throw new NotFoundException(`Producto ${dto.productoId} no encontrado`);
-    if (!producto.valor) throw new BadRequestException('El producto no tiene sección de valor asociada');
+    if (!producto)
+      throw new NotFoundException(`Producto ${dto.productoId} no encontrado`);
+    if (!producto.valor)
+      throw new BadRequestException(
+        'El producto no tiene sección de valor asociada',
+      );
 
     const v = producto.valor;
 
     // 2) Recalcular costos con el tipo de cambio ingresado
-    const valorProductoUSD = Number(v.valorProducto);    // USD
-    const costoEnvioSoles  = Number(v.costoEnvio ?? 0);  // S/
-    const tipoCambio       = Number(dto.tipoCambio);
+    const valorProductoUSD = Number(v.valorProducto); // USD
+    const costoEnvioSoles = Number(v.costoEnvio ?? 0); // S/
+    const tipoCambio = Number(dto.tipoCambio);
 
     const valorSolesRecalc = +(valorProductoUSD * tipoCambio).toFixed(2);
     const costoTotalRecalc = +(valorSolesRecalc + costoEnvioSoles).toFixed(2);
@@ -87,7 +101,10 @@ export class VentaService {
     // 3) Calcular ganancia y porcentaje
     const precioVenta = Number(dto.precioVenta);
     const ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
-    const porcentajeGanancia = +((ganancia / (costoTotalRecalc || 1)) * 100).toFixed(3);
+    const porcentajeGanancia = +(
+      (ganancia / (costoTotalRecalc || 1)) *
+      100
+    ).toFixed(3);
 
     // 4) Crear venta (acepta vendedor opcional)
     const venta = this.ventaRepo.create({
@@ -111,14 +128,27 @@ export class VentaService {
         where: { id: venta.productoId },
         relations: ['valor'],
       });
-      if (!producto?.valor) throw new BadRequestException('El producto no tiene sección de valor asociada');
+      if (!producto?.valor)
+        throw new BadRequestException(
+          'El producto no tiene sección de valor asociada',
+        );
 
-      const tipoCambio = dto.tipoCambio !== undefined ? Number(dto.tipoCambio) : Number(venta.tipoCambio);
-      const precioVenta = dto.precioVenta !== undefined ? Number(dto.precioVenta) : Number(venta.precioVenta);
+      const tipoCambio =
+        dto.tipoCambio !== undefined
+          ? Number(dto.tipoCambio)
+          : Number(venta.tipoCambio);
+      const precioVenta =
+        dto.precioVenta !== undefined
+          ? Number(dto.precioVenta)
+          : Number(venta.precioVenta);
 
       const v = producto.valor;
-      const valorSolesRecalc = +(Number(v.valorProducto) * tipoCambio).toFixed(2);
-      const costoTotalRecalc = +(valorSolesRecalc + Number(v.costoEnvio ?? 0)).toFixed(2);
+      const valorSolesRecalc = +(Number(v.valorProducto) * tipoCambio).toFixed(
+        2,
+      );
+      const costoTotalRecalc = +(
+        valorSolesRecalc + Number(v.costoEnvio ?? 0)
+      ).toFixed(2);
 
       v.valorSoles = valorSolesRecalc;
       v.costoTotal = costoTotalRecalc;
@@ -127,7 +157,10 @@ export class VentaService {
       venta.tipoCambio = tipoCambio;
       venta.precioVenta = precioVenta;
       venta.ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
-      venta.porcentajeGanancia = +((venta.ganancia / (costoTotalRecalc || 1)) * 100).toFixed(3);
+      venta.porcentajeGanancia = +(
+        (venta.ganancia / (costoTotalRecalc || 1)) *
+        100
+      ).toFixed(3);
     }
 
     // permitir asignar vendedor

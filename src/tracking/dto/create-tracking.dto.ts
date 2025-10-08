@@ -1,5 +1,11 @@
 // src/tracking/dto/create-tracking.dto.ts
-import { IsOptional, IsEnum, IsString, IsDateString, IsInt } from 'class-validator';
+import {
+  IsOptional,
+  IsEnum,
+  IsString,
+  IsDateString,
+  IsInt,
+} from 'class-validator';
 
 export class CreateTrackingDto {
   @IsInt()
@@ -34,7 +40,11 @@ export class CreateTrackingDto {
     'comprado_sin_tracking',
     'comprado_en_camino',
     'en_eshopex',
-    'recogido'
+    'recogido',
   ])
-  estado?: 'comprado_sin_tracking' | 'comprado_en_camino' | 'en_eshopex' | 'recogido';
+  estado?:
+    | 'comprado_sin_tracking'
+    | 'comprado_en_camino'
+    | 'en_eshopex'
+    | 'recogido';
 }

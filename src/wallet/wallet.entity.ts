@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column, Index, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  Index,
+  UpdateDateColumn,
+} from 'typeorm';
 
 @Entity('wallets')
 export class Wallet {

@@ -18,7 +18,8 @@ async function bootstrap() {
   // CORS (tus orígenes + los de dev)
   app.enableCors({
     origin: [
-      cfg.get<string>('FRONTEND_URL') ?? 'https://frontend-tailwind-unye.vercel.app',
+      cfg.get<string>('FRONTEND_URL') ??
+        'https://frontend-tailwind-unye.vercel.app',
       'http://localhost:3000',
       'http://localhost:5173',
     ],
@@ -29,19 +30,21 @@ async function bootstrap() {
   });
 
   // Validación global de DTOs
-  app.useGlobalPipes(new ValidationPipe({
-    whitelist: true,                 // elimina propiedades desconocidas
-    forbidNonWhitelisted: true,      // lanza error si llegan props extras
-    transform: true,                 // transforma tipos (ej. ParseIntPipe implícito)
-    transformOptions: { enableImplicitConversion: true },
-  }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true, // elimina propiedades desconocidas
+      forbidNonWhitelisted: true, // lanza error si llegan props extras
+      transform: true, // transforma tipos (ej. ParseIntPipe implícito)
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
 
   // (Opcional) Prefijo global para todas las rutas:
   // app.setGlobalPrefix('api');
 
   const port = Number(process.env.PORT || cfg.get<string>('PORT') || 3001);
   await app.listen(port, '0.0.0.0');
-  // eslint-disable-next-line no-console
+
   console.log(`API escuchando en puerto ${port}`);
 }
 bootstrap();

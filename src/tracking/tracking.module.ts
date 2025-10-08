@@ -6,9 +6,7 @@ import { TrackingService } from './tracking.service';
 import { TrackingController } from './tracking.controller';
 
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([Tracking, Producto]),
-  ],
+  imports: [TypeOrmModule.forFeature([Tracking, Producto])],
   providers: [TrackingService],
   controllers: [TrackingController],
 })
