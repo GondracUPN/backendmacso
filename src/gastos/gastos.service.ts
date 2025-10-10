@@ -41,10 +41,10 @@ export class GastosService {
     const concepto = normConcept(dto.concepto);
     const metodoPago: 'debito' | 'credito' = dto.metodoPago === 'credito' ? 'credito' : 'debito';
     // Si es crédito, forzamos USD (los consumos de tarjeta se guardan en USD)
-    const moneda: 'PEN' | 'USD' = metodoPago === 'credito' ? 'USD' : dto.moneda === 'USD' ? 'USD' : 'PEN';
+    const moneda: 'PEN' | 'USD' = dto.moneda === 'USD' ? 'USD' : 'PEN';
 
     // Validación de conceptos permitidos por método
-    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta']);
+    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes']);
     const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes']);
     if ((metodoPago === 'debito' && !allowedDeb.has(concepto)) || (metodoPago === 'credito' && !allowedCred.has(concepto))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
@@ -132,11 +132,7 @@ export class GastosService {
     if (dto.metodoPago !== undefined) g.metodoPago = dto.metodoPago === 'credito' ? ('credito' as any) : ('debito' as any);
 
     if (dto.moneda !== undefined) {
-      if (g.metodoPago === 'credito' || dto.metodoPago === 'credito') {
-        g.moneda = 'USD' as any;
-      } else {
-        g.moneda = dto.moneda === 'USD' ? 'USD' : 'PEN';
-      }
+      g.moneda = dto.moneda === 'USD' ? ('USD' as any) : ('PEN' as any);
     }
 
     if (dto.tarjeta !== undefined) g.tarjeta = dto.tarjeta ?? null;

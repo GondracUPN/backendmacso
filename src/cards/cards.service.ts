@@ -6,7 +6,7 @@ import { Gasto } from '../gastos/entities/gasto.entity';
 import { Role } from '../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 
-const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios'];
+const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes'];
 
 @Injectable()
 export class CardsService {
@@ -125,8 +125,13 @@ export class CardsService {
     for (const g of gastos) {
       const c = String(g.concepto || '').toLowerCase();
       if (g.metodoPago === 'credito') {
-        if (CREDIT_CONCEPTS.includes(c)) addUsd(g.tarjeta!, Number(g.monto || 0));
-        else if (c === 'ingreso') addUsd(g.tarjeta!, -Number(g.monto || 0));
+        if (CREDIT_CONCEPTS.includes(c)) {
+          if (g.moneda === 'USD') addUsd(g.tarjeta!, Number(g.monto || 0));
+          else addPen(g.tarjeta!, Number(g.monto || 0));
+        } else if (c === 'ingreso') {
+          if (g.moneda === 'USD') addUsd(g.tarjeta!, -Number(g.monto || 0));
+          else addPen(g.tarjeta!, -Number(g.monto || 0));
+        }
         continue;
       }
       if (g.metodoPago === 'debito' && c === 'pago_tarjeta') {
@@ -169,10 +174,19 @@ export class CardsService {
       const linePen = Number(c.creditLinePen || 0);
       const lineUsd = Number(c.creditLineUsd || 0);
       const line = lineLegacy > 0 ? lineLegacy : linePen + lineUsd * USD_PEN_RATE;
-      const used = Math.max(0, Number(usedPen.get(c.tipo) || 0) + Number(usedUsd.get(c.tipo) || 0) * USD_PEN_RATE);
-      const available = Math.max(0, line - used);
-      return { id: c.id, tipo: c.tipo, creditLine: +line.toFixed(2), used: +used.toFixed(2), available: +available.toFixed(2) };
+      const uPen = Number(usedPen.get(c.tipo) || 0);
+      const uUsd = Number(usedUsd.get(c.tipo) || 0);
+      const used = uPen + uUsd * USD_PEN_RATE;
+      const available = line - used;
+      return {
+        id: c.id,
+        tipo: c.tipo,
+        creditLine: +line.toFixed(2),
+        used: +used.toFixed(2),
+        available: +available.toFixed(2),
+        usedPen: +uPen.toFixed(2),
+        usedUsd: +uUsd.toFixed(2),
+      };
     });
   }
 }
-
