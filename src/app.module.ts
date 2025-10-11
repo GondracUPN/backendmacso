@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module';
 import { GastosModule } from './gastos/gastos.module';
 import { WalletModule } from './wallet/wallet.module';
 import { CardsModule } from './cards/cards.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { CardsModule } from './cards/cards.module';
     VentaModule,
     ProductoModule,
     TrackingModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}
