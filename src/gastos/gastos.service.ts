@@ -66,16 +66,21 @@ export class GastosService {
       notas: dto.notas ?? null,
       // Nuevos campos opcionales para conversión / objetivo de pago
       tasaUsdPen:
-        dto.tipoCambioDia != null && isFinite(Number(dto.tipoCambioDia))
-          ? (Number(dto.tipoCambioDia).toFixed(4) as any)
-          : null,
+        ((): any => {
+          const DEFAULT_USD_RATE = 3.7;
+          const tc = dto.tipoCambioDia != null && isFinite(Number(dto.tipoCambioDia)) ? Number(dto.tipoCambioDia) : null;
+          if (moneda === 'USD') return ((tc ?? DEFAULT_USD_RATE).toFixed(4) as any);
+          return (tc != null ? (tc.toFixed(4) as any) : null);
+        })(),
       montoPen:
-        moneda === 'PEN'
-          ? (Number(dto.monto).toFixed(2) as any)
-          : (dto.tipoCambioDia != null && isFinite(Number(dto.tipoCambioDia))
-              ? (Number(dto.monto) * Number(dto.tipoCambioDia)).toFixed(2)
-              : null),
+        ((): any => {
+          const DEFAULT_USD_RATE = 3.7;
+          if (moneda === 'PEN') return (Number(dto.monto).toFixed(2) as any);
+          const tc = dto.tipoCambioDia != null && isFinite(Number(dto.tipoCambioDia)) ? Number(dto.tipoCambioDia) : DEFAULT_USD_RATE;
+          return ((Number(dto.monto) * tc).toFixed(2) as any);
+        })(),
       pagoObjetivo:
+
         metodoPago === 'debito' && concepto === 'pago_tarjeta' && (dto.pagoObjetivo === 'USD' || dto.pagoObjetivo === 'PEN')
           ? (dto.pagoObjetivo as any)
           : null,
@@ -155,3 +160,5 @@ export class GastosService {
     return { ok: true };
   }
 }
+
+

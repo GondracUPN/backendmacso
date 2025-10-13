@@ -121,8 +121,15 @@ export class AnalyticsService {
     if (vendedor) ventaQB.andWhere('v.vendedor = :vendedor', { vendedor });
     const ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
 
+    // Map rápido para acceder al producto completo (incluye tracking)
+    const productoById = new Map<number, Producto>();
+    for (const p of productos) productoById.set(p.id, p);
+
     // Build helper maps
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
+    // Para stock activo, necesitamos saber todos los productos vendidos históricamente
+    const ventasAllMin = await this.ventaRepo.find({ select: { productoId: true } as any });
+    const vendidosHistoricos = new Set<number>(ventasAllMin.map((x: any) => x.productoId));
 
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
@@ -241,12 +248,48 @@ export class AnalyticsService {
       return parts.join(' • ');
     };
 
-    // Active inventory = products without sales record (in filtered set)
-    const active = productosFiltered.filter((p) => !(ventasByProducto.get(p.id)?.length));
+    // Active inventory = productos sin venta histórica, pero dentro del filtro de compra (si aplica)
+    const active = productosFiltered.filter((p) => !vendidosHistoricos.has(p.id));
     const inventoryActiveUnits = active.length;
     const capitalInmovilizado = +(
       active.reduce((s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0), 0)
     ).toFixed(2);
+
+    // Compras del período (filtradas por fecha de compra)
+    const comprasPeriodoUnidades = productosFiltered.length;
+    const comprasPeriodoCapital = +(
+      productosFiltered.reduce((s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0), 0)
+    ).toFixed(2);
+    // Capital total = suma de todo lo comprado en el universo filtrado (por fecha/tipo que aplique)
+    const capitalTotal = comprasPeriodoCapital;
+    const comprasPeriodo = productosFiltered.map((p) => ({
+      productoId: p.id,
+      tipo: p.tipo,
+      display: productDisplay(p),
+      fechaCompra: p.valor?.fechaCompra,
+      costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
+    }));
+
+    // No vendidos del período (comprados en el período y aún sin vender)
+    const nowForNoVendidos = new Date();
+    const noVendidosDelPeriodo = productosFiltered
+      .filter((p) => !vendidosHistoricos.has(p.id))
+      .map((p) => {
+        const recogidos = (p.tracking || [])
+          .map((t) => t.fechaRecogido)
+          .filter((x): x is string => !!x)
+          .sort();
+        const frg = recogidos.length ? recogidos[recogidos.length - 1] : undefined;
+        const dias = daysBetween(frg || null, nowForNoVendidos);
+        return {
+          productoId: p.id,
+          tipo: p.tipo,
+          display: productDisplay(p),
+          costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
+          fechaRecogido: frg || null,
+          diasDesdeRecogido: dias,
+        };
+      });
 
     // Inventory by type for current active
     const byTypeMap = new Map<string, { unidades: number; capital: number }>();
@@ -281,7 +324,14 @@ export class AnalyticsService {
       else if (dias >= aging15) aging.bucket15_29.push(item);
     }
     for (const p of active) {
-      const d = daysBetween(p.valor?.fechaCompra || null, today);
+      // Antigüedad debe calcularse desde fecha de recogido (cuando el producto ya está en stock).
+      // Usamos la última fechaRecogido disponible en tracking; si no existe, no se considera para antigüedad.
+      const recogidos = (p.tracking || [])
+        .map((t) => t.fechaRecogido)
+        .filter((x): x is string => !!x)
+        .sort();
+      const fr = recogidos.length ? recogidos[recogidos.length - 1] : undefined;
+      const d = daysBetween(fr || null, today);
       if (d != null) pushAging(p, d);
     }
 
@@ -305,9 +355,20 @@ export class AnalyticsService {
         return { month, ingresos, ganancia, margenPromedio: +(margenPromedio?.toFixed(3) || 0) };
       });
 
-    // Logistics: compra -> recepción (per product), recepción -> venta (per sale)
+    // Logistics: compra -> recepción (per product), recepción -> recogido (per product), recogido -> venta (per sale)
     const compraToRecepDays: number[] = [];
+    const compraToRecogDays: number[] = [];
+    const recepToRecogDays: number[] = [];
+    const recogToVentaDays: number[] = [];
+    const compraToVentaDays: number[] = [];
     const recepToVentaDays: number[] = [];
+
+    // Acumuladores por tipo
+    const byType_compraToRecep = new Map<string, number[]>();
+    const byType_compraToRecog = new Map<string, number[]>();
+    const byType_recepToRecog = new Map<string, number[]>();
+    const byType_recogToVenta = new Map<string, number[]>();
+    const byType_compraToVenta = new Map<string, number[]>();
     const transportistasAgg = new Map<string, { total: number; tardias: number; dias: number[] }>();
     const casillerosAgg = new Map<string, { dias: number[]; total: number; tardias: number }>();
 
@@ -323,6 +384,10 @@ export class AnalyticsService {
       const dcr = daysBetween(fp || null, fr || null);
       if (dcr != null) {
         compraToRecepDays.push(dcr);
+        const tipoP = p.tipo || 'otro';
+        const arr = byType_compraToRecep.get(tipoP) || [];
+        arr.push(dcr);
+        byType_compraToRecep.set(tipoP, arr);
       }
 
       // by transportista and casillero using the latest record that has values
@@ -346,19 +411,87 @@ export class AnalyticsService {
         curr.dias.push(dcr);
         casillerosAgg.set(k, curr);
       }
+      // recepcion -> recogido por producto (usar últimas fechas disponibles)
+      const recogidos = (p.tracking || [])
+        .map((t) => t.fechaRecogido)
+        .filter((x): x is string => !!x)
+        .sort();
+      const frg = recogidos.length ? recogidos[recogidos.length - 1] : undefined;
+      // compra -> recogido por producto
+      const dcrg = daysBetween(fp || null, frg || null);
+      if (dcrg != null) {
+        compraToRecogDays.push(dcrg);
+        const tipoP = p.tipo || 'otro';
+        const arr = byType_compraToRecog.get(tipoP) || [];
+        arr.push(dcrg);
+        byType_compraToRecog.set(tipoP, arr);
+      }
+      const drr = daysBetween(fr || null, frg || null);
+      if (drr != null) {
+        recepToRecogDays.push(drr);
+        const tipoP = p.tipo || 'otro';
+        const arr = byType_recepToRecog.get(tipoP) || [];
+        arr.push(drr);
+        byType_recepToRecog.set(tipoP, arr);
+      }
     }
     for (const v of ventas) {
-      const fp = v.producto?.valor?.fechaCompra;
-      // use latest reception date for that product
-      const recepDates = (v.producto?.tracking as any[] | undefined)?.map((t) => t.fechaRecepcion).filter(Boolean) || [];
-      const fr = recepDates.length ? recepDates.sort()[recepDates.length - 1] : undefined;
-      const drv = daysBetween(fr || null, v.fechaVenta);
-      if (drv != null) recepToVentaDays.push(drv);
+      // recogido -> venta por venta (usar última fechaRecogido del producto completo con tracking)
+      const pFull = productoById.get(v.productoId);
+      const recogidos = (pFull?.tracking as any[] | undefined)?.map((t) => t.fechaRecogido).filter(Boolean) || [];
+      const frg = recogidos.length ? [...recogidos].sort()[recogidos.length - 1] : undefined;
+      const drv = daysBetween(frg || null, v.fechaVenta);
+      if (drv != null) {
+        recogToVentaDays.push(drv);
+        const tipoV = v.producto?.tipo || 'otro';
+        const arr = byType_recogToVenta.get(tipoV) || [];
+        arr.push(drv);
+        byType_recogToVenta.set(tipoV, arr);
+      }
+
+      // compra -> venta por venta (si no viene en la venta, cae al producto completo)
+      const fpv = v.producto?.valor?.fechaCompra || pFull?.valor?.fechaCompra;
+      const dcv = daysBetween(fpv || null, v.fechaVenta);
+      if (dcv != null) {
+        compraToVentaDays.push(dcv);
+        const tipoV = v.producto?.tipo || 'otro';
+        const arr2 = byType_compraToVenta.get(tipoV) || [];
+        arr2.push(dcv);
+        byType_compraToVenta.set(tipoV, arr2);
+      }
+
+      // recepción -> venta por venta (compatibilidad con frontend actual) usando producto completo
+      const recepDates = (pFull?.tracking as any[] | undefined)?.map((t) => t.fechaRecepcion).filter(Boolean) || [];
+      const fr = recepDates.length ? [...recepDates].sort()[recepDates.length - 1] : undefined;
+      const drv2 = daysBetween(fr || null, v.fechaVenta);
+      if (drv2 != null) recepToVentaDays.push(drv2);
     }
+
+    // Construcción de métricas por tipo
+    const tiposSet = new Set<string>([
+      ...Array.from(byType_compraToRecep.keys()),
+      ...Array.from(byType_compraToRecog.keys()),
+      ...Array.from(byType_recepToRecog.keys()),
+      ...Array.from(byType_recogToVenta.keys()),
+      ...Array.from(byType_compraToVenta.keys()),
+    ]);
+    const porTipo = Array.from(tiposSet.values()).map((tipo) => ({
+      tipo,
+      compraARecepcion: { mean: mean(byType_compraToRecep.get(tipo) || []), median: median(byType_compraToRecep.get(tipo) || []) },
+      compraARecogido: { mean: mean(byType_compraToRecog.get(tipo) || []), median: median(byType_compraToRecog.get(tipo) || []) },
+      recepcionARecogido: { mean: mean(byType_recepToRecog.get(tipo) || []), median: median(byType_recepToRecog.get(tipo) || []) },
+      recogidoAVenta: { mean: mean(byType_recogToVenta.get(tipo) || []), median: median(byType_recogToVenta.get(tipo) || []) },
+      compraAVenta: { mean: mean(byType_compraToVenta.get(tipo) || []), median: median(byType_compraToVenta.get(tipo) || []) },
+    }));
 
     const logistica = {
       compraARecepcion: { mean: mean(compraToRecepDays), median: median(compraToRecepDays) },
+      compraARecogido: { mean: mean(compraToRecogDays), median: median(compraToRecogDays) },
+      recepcionARecogido: { mean: mean(recepToRecogDays), median: median(recepToRecogDays) },
+      recogidoAVenta: { mean: mean(recogToVentaDays), median: median(recogToVentaDays) },
+      compraAVenta: { mean: mean(compraToVentaDays), median: median(compraToVentaDays) },
       recepcionAVenta: { mean: mean(recepToVentaDays), median: median(recepToVentaDays) },
+      porTipo,
       tardiasPorTransportista: Array.from(transportistasAgg.entries()).map(([k, v]) => ({
         transportista: k,
         total: v.total,
@@ -383,11 +516,44 @@ export class AnalyticsService {
       tipo,
       margenPromedio: mean(arr.map((x) => Number(x.porcentajeGanancia))) ?? 0,
     }));
-    const ventasByModelo = groupBy(ventas, (v) => v.producto?.detalle?.modelo || 'N/A');
-    const marginByModelo = Array.from(ventasByModelo.entries()).map(([modelo, arr]) => ({
-      modelo,
-      margenPromedio: mean(arr.map((x) => Number(x.porcentajeGanancia))) ?? 0,
-    }));
+    // Detalle por tipo: vendidos (en el período filtrado) y stock actual (sin ventas históricas)
+    // Ventas en período (ya filtradas por from/to venta)
+    const vendidosPeriodoByTipo = new Map<string, { productoId: number; display: string }[]>();
+    for (const v of ventas) {
+      const t = v.producto?.tipo || 'otro';
+      const arr = vendidosPeriodoByTipo.get(t) || [];
+      if (v.producto) {
+        arr.push({ productoId: v.productoId, display: productDisplay(v.producto as any) });
+      }
+      vendidosPeriodoByTipo.set(t, arr);
+    }
+    // Stock actual independiente del filtro de ventas (productos sin ninguna venta histórica)
+    const ventasAll = await this.ventaRepo.find();
+    const ventasAllByProducto = new Map<number, boolean>();
+    for (const vv of ventasAll) ventasAllByProducto.set(vv.productoId, true);
+    const stockActual = productos.filter((p) => !ventasAllByProducto.get(p.id));
+    const stockByTipo = new Map<string, { productoId: number; display: string }[]>();
+    for (const p of stockActual) {
+      if (tipo && p.tipo !== tipo) continue;
+      const t = p.tipo || 'otro';
+      const arr = stockByTipo.get(t) || [];
+      arr.push({ productoId: p.id, display: productDisplay(p) });
+      stockByTipo.set(t, arr);
+    }
+    const tiposUnion = new Set<string>([
+      ...Array.from(ventasByTipo.keys()),
+      ...Array.from(stockByTipo.keys()),
+    ]);
+    const porTipoDetalle = Array.from(tiposUnion.values()).map((t) => {
+      const ven = vendidosPeriodoByTipo.get(t) || [];
+      const stk = stockByTipo.get(t) || [];
+      return {
+        tipo: t,
+        vendidos: { total: ven.length, items: ven },
+        stock: { total: stk.length, items: stk },
+      };
+    });
+    // Eliminado: margen % por modelo (solicitado)
 
     // Top/bottom ventas by ganancia
     const sortedByGan = [...ventas].sort((a, b) => Number(b.ganancia) - Number(a.ganancia));
@@ -496,16 +662,21 @@ export class AnalyticsService {
       summary: {
         inventoryActiveUnits,
         capitalInmovilizado,
+        capitalTotal,
+        comprasPeriodoUnidades,
+        comprasPeriodoCapital,
         rotationMedianDaysOverall,
         monthlies,
       },
+      comprasPeriodo,
       inventoryByType,
       aging,
       logistica,
+      noVendidosDelPeriodo,
       sales: {
         perMonth: monthlies,
         marginByType,
-        marginByModelo,
+        porTipoDetalle,
         topVentas,
         bottomVentas,
         diasHastaVentaPorTipo,
