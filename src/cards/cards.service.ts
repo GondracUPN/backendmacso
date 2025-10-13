@@ -6,7 +6,7 @@ import { Gasto } from '../gastos/entities/gasto.entity';
 import { Role } from '../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 
-const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes'];
+const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen'];
 
 @Injectable()
 export class CardsService {
@@ -148,20 +148,15 @@ export class CardsService {
           }
           return USD_PEN_RATE;
         })();
-        const curUsd = Number(usedUsd.get(key) || 0);
         const explicitUSD = go.pagoObjetivo === 'USD';
         const explicitPEN = go.pagoObjetivo === 'PEN';
-        const targetUsd = explicitUSD || go.montoUsdAplicado != null || g.moneda === 'USD' || (!explicitPEN && curUsd > 0);
+        const targetUsd = explicitUSD || go.montoUsdAplicado != null || g.moneda === 'USD' || !explicitPEN;
 
+        // Allow negative usage when paying more than current debt.
         if (targetUsd) {
           const usdPay = g.moneda === 'USD' ? Number(g.monto) : Number(g.monto) / tc;
-          const usdApplied = Math.min(curUsd, usdPay);
-          addUsd(key, -usdApplied);
-          if (g.moneda === 'PEN') {
-            const penUsedForUsd = usdApplied * tc;
-            const penLeft = Number(g.monto) - penUsedForUsd;
-            if (penLeft > 0.0001) addPen(key, -penLeft);
-          }
+          addUsd(key, -usdPay);
+          // If payment was in PEN pero dirigido a USD, no movemos PEN: todo va a bucket USD.
         } else {
           const penPay = g.moneda === 'PEN' ? Number(g.monto) : Number(g.monto) * tc;
           addPen(key, -penPay);

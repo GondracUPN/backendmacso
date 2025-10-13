@@ -44,8 +44,8 @@ export class GastosService {
     const moneda: 'PEN' | 'USD' = dto.moneda === 'USD' ? 'USD' : 'PEN';
 
     // Validación de conceptos permitidos por método
-    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes']);
-    const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes']);
+    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios']);
+    const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen']);
     if ((metodoPago === 'debito' && !allowedDeb.has(concepto)) || (metodoPago === 'credito' && !allowedCred.has(concepto))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
     }
