@@ -41,4 +41,3 @@ export class SchedulesController {
     return this.svc.processDue(user.userId);
   }
 }
-

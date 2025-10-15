@@ -11,6 +11,7 @@ import { GastosModule } from './gastos/gastos.module';
 import { WalletModule } from './wallet/wallet.module';
 import { CardsModule } from './cards/cards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { SchedulesModule } from './schedules/schedules.module';
 
 @Module({
   imports: [
@@ -25,7 +26,10 @@ import { AnalyticsModule } from './analytics/analytics.module';
           url: cfg.get<string>('DATABASE_URL'),
           ssl: isProd ? { rejectUnauthorized: false } : false,
           autoLoadEntities: true,
-          synchronize: cfg.get<string>('DB_SYNC') === 'true', // en prod: false
+          // Ensure all entities are picked up in dev/prod
+          entities: [join(__dirname, '/**/*.entity{.ts,.js}')],
+          // En desarrollo, si DB_SYNC no está definido, se habilita por defecto
+          synchronize: (cfg.get<string>('DB_SYNC') ?? (isProd ? 'false' : 'true')) === 'true',
           // 👇 fuerza a usar el schema donde ya están tus tablas
           schema: cfg.get<string>('DB_SCHEMA') || 'public',
 
@@ -47,6 +51,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     ProductoModule,
     TrackingModule,
     AnalyticsModule,
+    SchedulesModule,
   ],
 })
 export class AppModule {}

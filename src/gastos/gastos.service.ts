@@ -5,6 +5,7 @@ import { Gasto } from './entities/gasto.entity';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
 import { Role } from '../auth/entities/user.entity';
+import { ScheduledCharge } from '../schedules/scheduled-charge.entity';
 
 function normConcept(con?: string) {
   const raw = String(con || '').trim().toLowerCase();
@@ -28,6 +29,8 @@ function normConcept(con?: string) {
     compras_cuotas: 'deuda_cuotas',
     'gastos recurrentes': 'gastos_recurrentes',
     'gasto recurrente': 'gastos_recurrentes',
+    'gastos mensuales': 'gastos_recurrentes',
+    'gasto mensual': 'gastos_recurrentes',
   };
   const m = map[s] || s.replace(/\s+/g, '_');
   return m;
@@ -35,9 +38,21 @@ function normConcept(con?: string) {
 
 @Injectable()
 export class GastosService {
-  constructor(@InjectRepository(Gasto) private readonly repo: Repository<Gasto>) {}
+  constructor(
+    @InjectRepository(Gasto) private readonly repo: Repository<Gasto>,
+    @InjectRepository(ScheduledCharge) private readonly schedulesRepo: Repository<ScheduledCharge>,
+  ) {}
 
-  create(userId: number, dto: CreateGastoDto) {
+  private addMonth(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00');
+    d.setMonth(d.getMonth() + 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  async create(userId: number, dto: CreateGastoDto) {
     const concepto = normConcept(dto.concepto);
     const metodoPago: 'debito' | 'credito' = dto.metodoPago === 'credito' ? 'credito' : 'debito';
     // Si es crédito, forzamos USD (los consumos de tarjeta se guardan en USD)
@@ -96,7 +111,65 @@ export class GastosService {
           : null,
     });
 
-    return this.repo.save(gasto);
+    const saved = await this.repo.save(gasto);
+
+    // Auto-upsert de programación para gastos mensuales/recurrentes
+    if (gasto.concepto === 'gastos_recurrentes') {
+      try {
+        const key = {
+          userId,
+          tipo: 'recurrente' as const,
+          concepto: 'gastos_recurrentes',
+          metodoPago,
+          moneda,
+          monto: Number(dto.monto).toFixed(2),
+          tarjeta: metodoPago === 'credito' ? (dto.tarjeta ?? null) : null,
+          tarjetaPago: metodoPago === 'debito' ? (dto.tarjetaPago ?? null) : null,
+        };
+
+        const existing = await this.schedulesRepo.findOne({
+          where: {
+            userId: key.userId,
+            tipo: key.tipo,
+            concepto: key.concepto,
+            metodoPago: key.metodoPago as any,
+            moneda: key.moneda as any,
+            monto: key.monto as any,
+            tarjeta: key.tarjeta as any,
+            tarjetaPago: key.tarjetaPago as any,
+          },
+        });
+
+        if (!existing) {
+          const sc = this.schedulesRepo.create({
+            userId: key.userId,
+            tipo: 'recurrente',
+            concepto: key.concepto,
+            metodoPago: key.metodoPago as any,
+            moneda: key.moneda as any,
+            monto: key.monto as any,
+            nextDate: this.addMonth(dto.fecha),
+            lastDate: dto.fecha,
+            remaining: null,
+            tarjeta: key.tarjeta as any,
+            tarjetaPago: key.tarjetaPago as any,
+            active: true,
+          });
+          await this.schedulesRepo.save(sc);
+        } else {
+          existing.lastDate = dto.fecha;
+          if (!existing.nextDate || existing.nextDate <= dto.fecha) {
+            existing.nextDate = this.addMonth(dto.fecha);
+          }
+          existing.active = true;
+          await this.schedulesRepo.save(existing);
+        }
+      } catch {
+        // No bloquear la creación del gasto si falla schedules
+      }
+    }
+
+    return saved;
   }
 
   findAllByUser(userId: number) {
