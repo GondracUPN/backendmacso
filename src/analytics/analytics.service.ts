@@ -69,6 +69,93 @@ function ym(d: string | Date): string {
   return `${y}-${m}`;
 }
 
+// Versión limpia para armar un display legible del producto sin caracteres extraños
+function productDisplayClean(p: Producto): string {
+  const tipo = (p.tipo || '').toLowerCase();
+  const d: any = p.detalle || {};
+
+  const sanitize = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // quita acentos
+      .replace(/[^a-z0-9_]/g, ''); // quita rarezas/espacios
+
+  // Tamaño de pantalla por claves probables
+  let tam: any = null;
+  if (d && typeof d === 'object') {
+    for (const key of Object.keys(d)) {
+      const k = sanitize(key);
+      if (
+        k.includes('tamano') ||
+        k.includes('tamanio') ||
+        k.includes('tamanopantalla') ||
+        k.includes('pantalla') ||
+        k.includes('screen') ||
+        k.includes('size') ||
+        k === 'tam'
+      ) {
+        tam = d[key];
+        break;
+      }
+    }
+  }
+  if (!tam) {
+    const candidates = Object.values(d || {}).filter((v) => typeof v === 'string') as string[];
+    const known = ['10.2', '10.9', '11', '12.9', '13', '14', '15', '16'];
+    for (const val of candidates) {
+      const vs = String(val);
+      const hit = known.find((x) => vs.includes(x));
+      if (hit) { tam = hit; break; }
+    }
+  }
+
+  // Procesador por alias
+  let proc: any = null;
+  if (d && typeof d === 'object') {
+    for (const key of Object.keys(d)) {
+      const k = sanitize(key);
+      if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) {
+        proc = d[key];
+        break;
+      }
+    }
+  }
+
+  const ram = (d as any)?.ram || null;
+  const alm = (d as any)?.almacenamiento || (d as any)?.ssd || null;
+  const con = (d as any)?.conexion || (d as any)?.conectividad || null;
+  const modelo = (d as any)?.modelo || null;
+  const gama = (d as any)?.gama || null;          // Air/Pro/Normal/etc
+  const generacion = (d as any)?.generacion || null; // para Watch u otros
+
+  if (tipo === 'otro') {
+    return (d as any).descripcionOtro || 'Otro';
+  }
+
+  const fmtTam = (x: any) => {
+    if (!x) return null;
+    const s = String(x).trim();
+    // agrega ": pulgadas" si parece número/decimal
+    return /^\d+(?:\.\d+)?$/.test(s) ? `${s}"` : s;
+  };
+
+  const parts: string[] = [];
+  if (p.tipo) parts.push(String(p.tipo).charAt(0).toUpperCase() + String(p.tipo).slice(1));
+  // Gama junto al tipo para MacBook/iPad
+  if ((tipo === 'macbook' || tipo === 'ipad') && gama) parts.push(String(gama));
+  // Generación junto al tipo para Apple Watch
+  if (tipo === 'watch' && generacion) parts.push(String(generacion));
+
+  if (fmtTam(tam)) parts.push(fmtTam(tam)!);
+  if (proc) parts.push(String(proc));
+  if (ram) parts.push(String(ram));
+  if (alm) parts.push(String(alm));
+  if (con) parts.push(String(con));
+  if (modelo) parts.push(String(modelo));
+  return parts.join(' - ');
+}
+
 @Injectable()
 export class AnalyticsService {
   constructor(
@@ -265,7 +352,7 @@ export class AnalyticsService {
     const comprasPeriodo = productosFiltered.map((p) => ({
       productoId: p.id,
       tipo: p.tipo,
-      display: productDisplay(p),
+      display: productDisplayClean(p),
       fechaCompra: p.valor?.fechaCompra,
       costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
     }));
@@ -284,7 +371,7 @@ export class AnalyticsService {
         return {
           productoId: p.id,
           tipo: p.tipo,
-          display: productDisplay(p),
+          display: productDisplayClean(p),
           costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
           fechaRecogido: frg || null,
           diasDesdeRecogido: dias,
@@ -313,7 +400,7 @@ export class AnalyticsService {
       const item = {
         productoId: p.id,
         tipo: p.tipo,
-        display: productDisplay(p),
+        display: productDisplayClean(p),
         estado: p.estado,
         fechaCompra: p.valor?.fechaCompra,
         costoTotal: p.valor?.costoTotal ?? null,
@@ -523,7 +610,7 @@ export class AnalyticsService {
       const t = v.producto?.tipo || 'otro';
       const arr = vendidosPeriodoByTipo.get(t) || [];
       if (v.producto) {
-        arr.push({ productoId: v.productoId, display: productDisplay(v.producto as any) });
+        arr.push({ productoId: v.productoId, display: productDisplayClean(v.producto as any) });
       }
       vendidosPeriodoByTipo.set(t, arr);
     }
@@ -537,7 +624,7 @@ export class AnalyticsService {
       if (tipo && p.tipo !== tipo) continue;
       const t = p.tipo || 'otro';
       const arr = stockByTipo.get(t) || [];
-      arr.push({ productoId: p.id, display: productDisplay(p) });
+      arr.push({ productoId: p.id, display: productDisplayClean(p) });
       stockByTipo.set(t, arr);
     }
     const tiposUnion = new Set<string>([
@@ -562,7 +649,7 @@ export class AnalyticsService {
       productoId: v.productoId,
       tipo: v.producto?.tipo,
       modelo: v.producto?.detalle?.modelo,
-      display: v.producto ? productDisplay(v.producto as any) : undefined,
+      display: v.producto ? productDisplayClean(v.producto as any) : undefined,
       fechaVenta: v.fechaVenta,
       precioVenta: Number(v.precioVenta),
       ganancia: Number(v.ganancia),
@@ -573,7 +660,7 @@ export class AnalyticsService {
       productoId: v.productoId,
       tipo: v.producto?.tipo,
       modelo: v.producto?.detalle?.modelo,
-      display: v.producto ? productDisplay(v.producto as any) : undefined,
+      display: v.producto ? productDisplayClean(v.producto as any) : undefined,
       fechaVenta: v.fechaVenta,
       precioVenta: Number(v.precioVenta),
       ganancia: Number(v.ganancia),
@@ -614,7 +701,7 @@ export class AnalyticsService {
         productoId: v.productoId,
         tipo: v.producto?.tipo,
         modelo: v.producto?.detalle?.modelo,
-        display: v.producto ? productDisplay(v.producto as any) : undefined,
+        display: v.producto ? productDisplayClean(v.producto as any) : undefined,
         fechaVenta: v.fechaVenta,
         ganancia: Number(v.ganancia),
         margen: Number(v.porcentajeGanancia),
@@ -631,13 +718,13 @@ export class AnalyticsService {
       if (estado === 'comprado_en_camino') {
         const d = daysBetween(p.valor?.fechaCompra || null, new Date());
         if (d != null && d > lateDays) {
-          transitLongItems.push({ productoId: p.id, tipo: p.tipo, display: productDisplay(p), estado, dias: d, transportista: latest?.transportista, casillero: latest?.casillero });
+          transitLongItems.push({ productoId: p.id, tipo: p.tipo, display: productDisplayClean(p), estado, dias: d, transportista: latest?.transportista, casillero: latest?.casillero });
         }
       }
       if (estado === 'en_eshopex') {
         const d = daysBetween(latest?.fechaRecepcion || null, new Date());
         if (d != null && d > lateDays) {
-          transitLongItems.push({ productoId: p.id, tipo: p.tipo, display: productDisplay(p), estado, dias: d, transportista: latest?.transportista, casillero: latest?.casillero });
+          transitLongItems.push({ productoId: p.id, tipo: p.tipo, display: productDisplayClean(p), estado, dias: d, transportista: latest?.transportista, casillero: latest?.casillero });
         }
       }
     }

@@ -1,5 +1,5 @@
 // src/auth/auth.controller.ts
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards, Patch, Param, Delete } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -10,6 +10,7 @@ import {
   CurrentUser,
   JwtUserPayload,
 } from './decorators/current-user.decorator';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -41,5 +42,21 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: JwtUserPayload) {
     return user;
+  }
+
+  // ADMIN: actualizar rol o password
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Patch('users/:id')
+  updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    return this.svc.updateUser(+id, dto);
+  }
+
+  // ADMIN: eliminar usuario
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Delete('users/:id')
+  deleteUser(@Param('id') id: string) {
+    return this.svc.deleteUser(+id);
   }
 }

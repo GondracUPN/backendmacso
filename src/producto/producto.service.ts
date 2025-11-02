@@ -7,6 +7,8 @@ import { ProductoValor } from './producto-valor.entity';
 import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { Tracking } from '../tracking/tracking.entity';
+import { Venta } from '../venta/venta.entity';
+import * as crypto from 'node:crypto';
 
 function normalizeEstado(str?: string | null): string {
   if (!str) return '';
@@ -30,6 +32,8 @@ export class ProductoService {
 
     @InjectRepository(Tracking)
     private readonly trackingRepo: Repository<Tracking>,
+    @InjectRepository(Venta)
+    private readonly ventaRepo: Repository<Venta>,
   ) {}
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
@@ -234,5 +238,148 @@ export class ProductoService {
     if (fobUsd <= 100) return 8.86;
     if (fobUsd <= 200) return 15.98;
     return 21.1;
+  }
+
+  // Nuevas utilidades para sincronizar con Catálogo
+// Sincronización con Catálogo (métodos agregados al mismo servicio)
+  // Determina si un producto está disponible: último tracking 'recogido' y sin ventas
+  private async isDisponible(prod: any): Promise<boolean> {
+    const ventas = await this.ventaRepo.count({ where: { productoId: prod.id } });
+    if (ventas > 0) return false;
+    const trk = Array.isArray(prod.tracking) ? [...prod.tracking] : [];
+    if (!trk.length) return false;
+    trk.sort((a, b) => {
+      if (a.createdAt && b.createdAt) {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      }
+      return (b.id || 0) - (a.id || 0);
+    });
+    return (trk[0]?.estado || '').toLowerCase() === 'recogido';
+  }
+
+  private buildTitle(p: any): string {
+    const tipo = (p.tipo || '').toString();
+    const d = p.detalle || {};
+    const modelo = (d.modelo || '').toString();
+    const proc = (d.procesador || '').toString();
+    const tam = (d.tamaño || d.tamanio || d.tamano || '').toString();
+    return [tipo, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
+  }
+
+  private buildPayload(p: any) {
+    const price = p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
+    // último tracking (si existe)
+    const trk = Array.isArray(p.tracking) ? [...p.tracking] : [];
+    trk.sort((a, b) => {
+      if (a.createdAt && b.createdAt) {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      }
+      return (b.id || 0) - (a.id || 0);
+    });
+    const last = trk[0] || null;
+
+    return {
+      id: p.id,
+      sku: `svc-${p.id}`,
+      title: this.buildTitle(p),
+      price: String(price ?? '0'),
+      status: 'listed',
+      stock: 1,
+      // Enviamos especificaciones completas para que el catálogo pueda mostrarlas
+      specs: {
+        tipo: p.tipo ?? null,
+        estado: p.estado ?? null,
+        conCaja: p.conCaja ?? null,
+        detalle: p.detalle ?? null,
+        valor: p.valor ?? null,
+        tracking_last: last,
+      },
+    };
+  }
+
+  private hmac(body: string, secret: string) {
+    return crypto.createHmac('sha256', secret || '').update(body).digest('hex');
+  }
+
+  async syncDisponiblesConCatalogo() {
+    const url = process.env.CATALOG_SYNC_URL;
+    const secret = process.env.SYNC_SECRET || '';
+    if (!url) {
+      return { ok: false, message: 'CATALOG_SYNC_URL no configurado' };
+    }
+    const apiBase = (() => { try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; } })();
+
+    const prods = await this.productoRepo.find({
+      relations: ['detalle', 'valor', 'tracking'],
+      order: { id: 'DESC' },
+    });
+
+    let enviados = 0;
+    const candidatos: number[] = [];
+    const errores: Array<{ id: number; error: string }> = [];
+
+    for (const p of prods) {
+      try {
+        if (!(await this.isDisponible(p))) continue;
+        // Evitar duplicados consultando el catálogo por SKU
+        const sku = `svc-${p.id}`;
+        if (apiBase) {
+          try {
+            const r = await fetch(`${apiBase}/api/sync/exists?sku=${encodeURIComponent(sku)}`);
+            const j = await r.json().catch(() => ({} as any));
+            if (j && j.exists) continue;
+          } catch {}
+        }
+        const payload = ((): any => {
+          const price = p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
+          const d: any = (p as any).detalle || {};
+          return {
+            id: p.id,
+            sku: `svc-${p.id}`,
+            title: this.buildTitle(p),
+            price: String(price ?? '0'),
+            status: 'listed',
+            stock: 1,
+            specs: {
+              tipo: p.tipo ?? null,
+              estado: p.estado ?? null,
+              conCaja: p.conCaja ?? null,
+              detalle: {
+                id: d?.id ?? null,
+                gama: d?.gama ?? null,
+                procesador: d?.procesador ?? null,
+                generacion: d?.generacion ?? null,
+                modelo: d?.modelo ?? null,
+                ['tama��o']: d?.['tama��o'] ?? d?.tamanio ?? d?.tamano ?? null,
+                almacenamiento: d?.almacenamiento ?? null,
+                ram: d?.ram ?? null,
+                conexion: d?.conexion ?? null,
+                descripcionOtro: d?.descripcionOtro ?? null,
+              },
+              valor: { costoTotal: p?.valor?.costoTotal ?? null },
+            },
+          };
+        })();
+        candidatos.push(p.id);
+        const body = JSON.stringify({ event: 'product.listed', product: payload });
+        const signature = this.hmac(body, secret);
+        const idem = crypto.randomUUID();
+
+        await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-signature': signature,
+            'x-idempotency-key': idem,
+          },
+          body,
+        });
+        enviados++;
+      } catch (e: any) {
+        errores.push({ id: (p as any).id, error: String(e?.message || e) });
+      }
+    }
+
+    return { ok: true, total: candidatos.length, enviados, candidatos, errores };
   }
 }

@@ -5,7 +5,8 @@ import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { ProductoService } from './producto.service';
 import { ProductoController } from './producto.controller';
-import { Tracking } from '../tracking/tracking.entity'; // ✅ importar tracking
+import { Tracking } from '../tracking/tracking.entity';
+import { Venta } from '../venta/venta.entity';
 
 @Module({
   imports: [
@@ -13,10 +14,12 @@ import { Tracking } from '../tracking/tracking.entity'; // ✅ importar tracking
       Producto,
       ProductoDetalle,
       ProductoValor,
-      Tracking, // ✅ agregar aquí
+      Tracking,
+      Venta,
     ]),
   ],
   controllers: [ProductoController],
   providers: [ProductoService],
 })
 export class ProductoModule {}
+
