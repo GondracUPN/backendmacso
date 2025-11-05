@@ -6,7 +6,7 @@ export class AnalyticsController {
   constructor(private readonly svc: AnalyticsService) {}
 
   @Get('summary')
-    async summary(
+  async summary(
     @Query('fromCompra') fromCompra?: string,
     @Query('toCompra') toCompra?: string,
     @Query('fromVenta') fromVenta?: string,
@@ -21,8 +21,30 @@ export class AnalyticsController {
     @Query('aging30') aging30?: string,
     @Query('aging60') aging60?: string,
     @Query('marginThreshold') marginThreshold?: string,
+    @Query('refresh') refresh?: string,
   ) {
-    return this.svc.summary({
+    // If refresh=true, bypass cache and recompute now
+    if (refresh === 'true') {
+      return this.svc.summary({
+        fromCompra,
+        toCompra,
+        fromVenta,
+        toVenta,
+        tipo,
+        estadoTracking,
+        vendedor,
+        transportista,
+        casillero,
+        lateDays: lateDays ? Number(lateDays) : undefined,
+        aging15: aging15 ? Number(aging15) : undefined,
+        aging30: aging30 ? Number(aging30) : undefined,
+        aging60: aging60 ? Number(aging60) : undefined,
+        marginThreshold: marginThreshold ? Number(marginThreshold) : undefined,
+      });
+    }
+
+    // Serve fast using SWR cache; background revalidate updates stats
+    return this.svc.summaryCached({
       fromCompra,
       toCompra,
       fromVenta,

@@ -1,6 +1,8 @@
-﻿import { Injectable, NotFoundException } from '@nestjs/common';
+﻿import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import type { Cache } from 'cache-manager';
 import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
@@ -34,6 +36,7 @@ export class ProductoService {
     private readonly trackingRepo: Repository<Tracking>,
     @InjectRepository(Venta)
     private readonly ventaRepo: Repository<Venta>,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
@@ -78,10 +81,18 @@ export class ProductoService {
     }
 
     // 3) Crear y guardar producto
+    // Normalizar accesorios según reglas de negocio
+    let accesorios: string[] = Array.isArray((data as any).accesorios)
+      ? ((data as any).accesorios as string[])
+      : [];
+    const accNorm = (s: string) => s?.toString().trim().toLowerCase();
+    if (accesorios.map(accNorm).includes('todos')) accesorios = ['Caja', 'Cubo', 'Cable'];
+    if ((data.estado || '').toLowerCase() === 'nuevo') { accesorios = ['Caja','Cubo','Cable']; }
+
     const producto = this.productoRepo.create({
       tipo: data.tipo,
       estado: data.estado,
-      conCaja: data.conCaja ?? false,
+      accesorios,
       detalle: detalle || undefined,
       valor: valor || undefined,
     });
@@ -107,15 +118,9 @@ export class ProductoService {
     // Usar QueryBuilder con columnas explícitas para evitar problemas con nombres acentuados
     const qb = this.productoRepo
       .createQueryBuilder('p')
-      .leftJoin('p.detalle', 'd')
-      .leftJoin('p.valor', 'v')
-      .leftJoin('p.tracking', 't')
-      .addSelect([
-        'p.id', 'p.tipo', 'p.estado', 'p.conCaja',
-        'd.id', 'd.gama', 'd.procesador', 'd.generacion', 'd.numero', 'd.modelo', 'd.tamaño', 'd.almacenamiento', 'd.ram', 'd.conexion', 'd.descripcionOtro',
-        'v.id', 'v.valorProducto', 'v.valorDec', 'v.peso', 'v.fechaCompra', 'v.valorSoles', 'v.costoEnvio', 'v.costoTotal',
-        't.id', 't.productoId', 't.trackingUsa', 't.transportista', 't.casillero', 't.trackingEshop', 't.fechaRecepcion', 't.fechaRecogido', 't.estado'
-      ])
+      .leftJoinAndSelect('p.detalle', 'd')
+      .leftJoinAndSelect('p.valor', 'v')
+      .leftJoinAndSelect('p.tracking', 't')
       .orderBy('p.id', 'DESC');
 
     let items: Producto[] = [];
@@ -156,7 +161,7 @@ export class ProductoService {
     return result;
   }
 
-  /** Actualiza tipo, estado, conCaja, detalle y/o valor */
+  /** Actualiza tipo, estado, accesorios, detalle y/o valor */
   async update(id: number, dto: UpdateProductoDto): Promise<Producto> {
     // 1) Cargar producto con relaciones
     const producto = await this.productoRepo.findOne({
@@ -170,17 +175,39 @@ export class ProductoService {
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
     if (dto.estado !== undefined) producto.estado = dto.estado;
-    if (dto.conCaja !== undefined) producto.conCaja = dto.conCaja;
+    
     await this.productoRepo.save(producto);
+
+    // Accesorios: si vienen en el DTO, normalizarlos y actualizar
+    if ((dto as any).accesorios !== undefined) {
+      let acc: string[] = Array.isArray((dto as any).accesorios) ? ((dto as any).accesorios as string[]) : [];
+      const accNorm = (s: string) => s?.toString().trim().toLowerCase();
+      if (acc.map(accNorm).includes('todos')) acc = ['Caja', 'Cubo', 'Cable'];
+      if ((producto.estado || '').toLowerCase() === 'nuevo' && !acc.includes('Caja')) acc.push('Caja');
+      producto.accesorios = acc;
+      await this.productoRepo.save(producto);
+      // accesorios ya normalizados arriba
+    } else if (dto.estado !== undefined && (dto.estado || '').toLowerCase() === 'nuevo') {
+      const set = new Set<string>(producto.accesorios || []);
+      set.add('Caja');
+      producto.accesorios = Array.from(set);
+      // estado nuevo: accesorios ya forzados con Caja; agrega si faltaba
+      await this.productoRepo.save(producto)
+    }
+    // Enforce 'Todos' cuando el estado es 'nuevo'
+    if ((producto.estado || '').toLowerCase() === 'nuevo') {
+      producto.accesorios = ['Caja','Cubo','Cable'];
+      await this.productoRepo.save(producto);
+    }
 
     // 3) Actualizar detalle
     if (dto.detalle && producto.detalle) {
       const d: any = { ...dto.detalle };
       // Normalizar variantes de tamaño
-      const nuevoTam = d['tama\u00f1o'] ?? d.tamanio ?? d.tamano;
+      const nuevoTam = d['tama\\u00f1o'] ?? d['tamaño'] ?? d.tamano;
       if (nuevoTam !== undefined) {
         d['tama\u00f1o'] = nuevoTam;
-        delete d.tamanio;
+        delete d['tamaño'];
         delete d.tamano;
       }
       Object.assign(producto.detalle, d);
@@ -287,7 +314,58 @@ export class ProductoService {
     return (trk[0]?.estado || '').toLowerCase() === 'recogido';
   }
 
-  private buildTitle(p: any): string {
+  
+  // SWR cache para KPIs de gestión de productos
+  private readonly inflight = new Set<string>();
+
+  async statsCached() {
+    const key = 'productos:stats';
+    const cached: any = await this.cache.get(key);
+    const now = Date.now();
+    const revalidateMs = 60_000; // refresco en background cada 1 min
+    const ttlSeconds = 300; // mantener 5 min en cache
+    if (cached?.data) {
+      const age = now - (cached.cachedAt || 0);
+      if (age > revalidateMs && !this.inflight.has(key)) {
+        this.inflight.add(key);
+        this.stats()
+          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
+          .finally(() => this.inflight.delete(key));
+      }
+      return cached.data;
+    }
+    const data = await this.stats();
+    await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
+    return data;
+  }
+
+  /** KPIs: disponibles, vendidos, totalVentas, gananciaTotal */
+  async stats() {
+    // vendidos y sumas de venta/ganancia
+    const [vendidos, sumVentaRaw, sumGanRaw] = await Promise.all([
+      this.ventaRepo.count(),
+      this.ventaRepo
+        .createQueryBuilder('v')
+        .select('COALESCE(SUM(v.precioVenta),0)', 's')
+        .getRawOne(),
+      this.ventaRepo
+        .createQueryBuilder('v')
+        .select('COALESCE(SUM(v.ganancia),0)', 's')
+        .getRawOne(),
+    ]);
+
+    // disponibles: tracking recogido o fechaRecogido y sin ventas
+    const disponibles = await this.productoRepo
+      .createQueryBuilder('p')
+      .where('EXISTS (SELECT 1 FROM tracking t WHERE t.productoId = p.id AND (t.estado = :rec OR t.fechaRecogido IS NOT NULL))', { rec: 'recogido' })
+      .andWhere('NOT EXISTS (SELECT 1 FROM venta v WHERE v.productoId = p.id)')
+      .getCount();
+
+    const totalVentas = Number((sumVentaRaw as any)?.s ?? 0);
+    const gananciaTotal = Number((sumGanRaw as any)?.s ?? 0);
+
+    return { disponibles, vendidos, totalVentas, gananciaTotal };
+  }private buildTitle(p: any): string {
     const tipo = (p.tipo || '').toString();
     const d: any = p.detalle || {};
     const numero = d?.numero ? String(d.numero) : '';
@@ -324,7 +402,7 @@ export class ProductoService {
       specs: {
         tipo: p.tipo ?? null,
         estado: p.estado ?? null,
-        conCaja: p.conCaja ?? null,
+        accesorios: p.accesorios ?? null,
         detalle: p.detalle ?? null,
         valor: p.valor ?? null,
         tracking_last: last,
@@ -378,7 +456,7 @@ export class ProductoService {
             specs: {
               tipo: p.tipo ?? null,
               estado: p.estado ?? null,
-              conCaja: p.conCaja ?? null,
+              accesorios: p.accesorios ?? null,
               detalle: {
                 id: d?.id ?? null,
                 gama: d?.gama ?? null,
@@ -418,6 +496,22 @@ export class ProductoService {
     return { ok: true, total: candidatos.length, enviados, candidatos, errores };
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

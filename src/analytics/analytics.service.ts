@@ -1,6 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import type { Cache } from 'cache-manager';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 import { ProductoDetalle } from '../producto/producto-detalle.entity';
@@ -164,7 +166,41 @@ export class AnalyticsService {
     @InjectRepository(ProductoDetalle) private readonly detRepo: Repository<ProductoDetalle>,
     @InjectRepository(Tracking) private readonly trackRepo: Repository<Tracking>,
     @InjectRepository(Venta) private readonly ventaRepo: Repository<Venta>,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
+
+  private readonly inflight = new Set<string>();
+
+  private buildKey(prefix: string, params: Params): string {
+    const entries = Object.entries(params || {})
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `${prefix}:${entries.map(([k, v]) => `${k}=${v}`).join('&')}`;
+  }
+
+  // Stale‑while‑revalidate wrapper for the heavy summary aggregation
+  async summaryCached(params: Params) {
+    const key = this.buildKey('analytics:summary', params);
+    const cached: any = await this.cache.get(key);
+    const now = Date.now();
+    const revalidateMs = 120_000; // recompute in background every 2 min if accessed
+    const ttlSeconds = 600; // keep in cache 10 min (served as stale if needed)
+
+    if (cached?.data) {
+      const age = now - (cached.cachedAt || 0);
+      if (age > revalidateMs && !this.inflight.has(key)) {
+        this.inflight.add(key);
+        this.summary(params)
+          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
+          .finally(() => this.inflight.delete(key));
+      }
+      return cached.data;
+    }
+
+    const data = await this.summary(params);
+    await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
+    return data;
+  }
 
   async summary(params: Params) {
     const {

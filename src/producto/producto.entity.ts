@@ -23,8 +23,9 @@ export class Producto {
   @Column()
   estado: string; // nuevo, usado, roto
 
-  @Column({ type: 'boolean', default: false })
-  conCaja: boolean;
+  // Accesorios marcados (Caja, Cubo, Cable)
+  @Column({ type: 'text', array: true, default: '{}' })
+  accesorios: string[];
 
   // producto.entity.ts
 

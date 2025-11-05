@@ -2,7 +2,10 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Inject,
 } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Venta } from './venta.entity';
@@ -27,6 +30,7 @@ export class VentaService {
     private readonly productoRepo: Repository<Producto>,
     @InjectRepository(ProductoValor)
     private readonly valorRepo: Repository<ProductoValor>,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   // Lista con filtros + joins para devolver producto, valor y detalle
@@ -116,7 +120,10 @@ export class VentaService {
       porcentajeGanancia,
       vendedor: (dto as any).vendedor ?? null, // opcional
     });
-    return this.ventaRepo.save(venta);
+    const saved = await this.ventaRepo.save(venta);
+    // invalidar KPIs de productos
+    await this.cache.del?.('productos:stats').catch?.(() => {});
+    return saved;
   }
 
   async update(id: number, dto: UpdateVentaDto): Promise<Venta> {
@@ -171,12 +178,15 @@ export class VentaService {
 
     if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;
 
-    return this.ventaRepo.save(venta);
+    const saved = await this.ventaRepo.save(venta);
+    await this.cache.del?.('productos:stats').catch?.(() => {});
+    return saved;
   }
 
   async remove(id: number): Promise<void> {
     const venta = await this.ventaRepo.findOne({ where: { id } });
     if (!venta) throw new NotFoundException(`Venta ${id} no encontrada`);
     await this.ventaRepo.remove(venta);
+    await this.cache.del?.('productos:stats').catch?.(() => {});
   }
 }

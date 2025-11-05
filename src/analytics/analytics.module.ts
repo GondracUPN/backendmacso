@@ -1,4 +1,5 @@
-﻿import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
+import { CacheModule } from '@nestjs/cache-manager';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsController } from './analytics.controller';
@@ -9,7 +10,9 @@ import { Venta } from '../venta/venta.entity';
 import { Producto } from '../producto/producto.entity';
 
 @Module({
-  imports: [ TypeOrmModule.forFeature([Producto, ProductoValor, ProductoDetalle, Tracking, Venta]),
+  imports: [
+    CacheModule.register(),
+    TypeOrmModule.forFeature([Producto, ProductoValor, ProductoDetalle, Tracking, Venta]),
   ],
   controllers: [AnalyticsController],
   providers: [AnalyticsService],
