@@ -1,0 +1,18 @@
+.git
+.gitignore
+**/.DS_Store
+
+# Node artifacts
+node_modules
+npm-debug.log*
+yarn-error.log*
+coverage
+
+# Local env files (use Koyeb env vars/secrets)
+.env
+.env.*
+
+# CI/editor junk
+.vscode
+.idea
+
