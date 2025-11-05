@@ -1,12 +1,12 @@
+﻿import { AnalyticsService } from './analytics.service';
 import { Controller, Get, Query } from '@nestjs/common';
-import { AnalyticsService } from './analytics.service';
 
 @Controller('analytics')
 export class AnalyticsController {
   constructor(private readonly svc: AnalyticsService) {}
 
   @Get('summary')
-  async summary(
+    async summary(
     @Query('fromCompra') fromCompra?: string,
     @Query('toCompra') toCompra?: string,
     @Query('fromVenta') fromVenta?: string,
@@ -40,4 +40,5 @@ export class AnalyticsController {
     });
   }
 }
+
 

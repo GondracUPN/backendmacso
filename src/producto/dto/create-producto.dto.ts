@@ -12,7 +12,9 @@ export class CreateProductoDetalleDto {
   @IsOptional() @IsString() gama?: string;
   @IsOptional() @IsString() procesador?: string;
   @IsOptional() @IsString() generacion?: string;
+  @IsOptional() @IsString() numero?: string;
   @IsOptional() @IsString() modelo?: string;
+  // Usar exactamente 'tamaño'
   @IsOptional() @IsString() tamaño?: string;
   @IsOptional() @IsString() almacenamiento?: string;
   @IsOptional() @IsString() ram?: string;
@@ -42,3 +44,4 @@ export class CreateProductoDto {
   @Type(() => CreateProductoValorDto)
   valor?: CreateProductoValorDto;
 }
+

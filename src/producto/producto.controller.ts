@@ -1,14 +1,6 @@
-// src/producto/producto.controller.ts
-import {
-  Controller,
-  Post,
-  Get,
-  Patch,
-  Param,
-  Body,
-  Delete,
-  UseGuards,
-} from '@nestjs/common';
+﻿// src/producto/producto.controller.ts
+import { Controller, Post, Get, Patch, Param, Body, Delete, UseGuards, UseInterceptors, HttpException, HttpStatus } from '@nestjs/common';
+import { CacheTTL } from '@nestjs/cache-manager';
 import { ProductoService } from './producto.service';
 import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
@@ -20,28 +12,38 @@ import { Roles } from '../auth/decorators/roles.decorator';
 export class ProductoController {
   constructor(private readonly productoService: ProductoService) {}
 
-  // Crear producto sin autenticación (solicitado para "Servicios" público)
+  // Crear producto sin autenticaciÃ³n (solicitado para "Servicios" pÃºblico)
   @Post()
   create(@Body() dto: CreateProductoDto) {
     return this.productoService.create(dto);
   }
 
-  // Listado público para catálogo/front
+  // Listado pÃºblico para catÃ¡logo/front
   @Get()
-  findAll() {
-    return this.productoService.findAll();
+  @CacheTTL(120)
+  async findAll() {
+    try {
+      const res = await this.productoService.findAll();
+      return res;
+    } catch (e: any) {
+      // Exponer detalle en logs y retornar mensaje útil al cliente
+      // Posible causa: columnas con acentos en DB (e.g., "tamaño")
+      console.error('[GET /productos] error:', e);
+      throw new HttpException(
+        { message: 'Error al listar productos', error: String(e?.message || e) },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
-  // Sincroniza al Catálogo todos los productos disponibles (recogidos y sin venta)
+  // Sincroniza al CatÃ¡logo todos los productos disponibles (recogidos y sin venta)
   @Post('catalog-sync')
   async catalogSync() {
     return this.productoService.syncDisponiblesConCatalogo();
   }
 
-  // Solo admin edita
+  // Editar producto (sin auth para flujo Servicios)
   @Patch(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
   update(@Param('id') id: string, @Body() dto: UpdateProductoDto) {
     return this.productoService.update(+id, dto);
   }
@@ -54,3 +56,8 @@ export class ProductoController {
     return this.productoService.remove(+id);
   }
 }
+
+
+
+
+

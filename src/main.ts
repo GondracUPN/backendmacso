@@ -15,14 +15,13 @@ async function bootstrap() {
   // Seguridad básica (opcional)
   // app.use(helmet());
 
-  // CORS (tus orígenes + los de dev)
+  // CORS (en dev permitimos cualquier origen; en prod, el configurado)
+  const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
+  const frontendUrl = cfg.get<string>('FRONTEND_URL') ?? 'https://frontend-tailwind-unye.vercel.app';
   app.enableCors({
-    origin: [
-      cfg.get<string>('FRONTEND_URL') ??
-        'https://frontend-tailwind-unye.vercel.app',
-      'http://localhost:3000',
-      'http://localhost:5173',
-    ],
+    origin: isProd
+      ? [frontendUrl]
+      : true, // en desarrollo aceptar cualquier origen (localhost, 127.0.0.1, LAN)
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: false, // pon true solo si usas cookies/sesión

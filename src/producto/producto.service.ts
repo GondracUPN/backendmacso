@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+﻿import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Producto } from './producto.entity';
@@ -13,7 +13,7 @@ import * as crypto from 'node:crypto';
 function normalizeEstado(str?: string | null): string {
   if (!str) return '';
   const s = String(str).trim().toLowerCase();
-  if (s.includes('camino')) return 'comprado_en_camino'; // ← clave base
+  if (s.includes('camino')) return 'comprado_en_camino'; // â† clave base
   if (s === 'comprado_en_camino') return s; // ya normalizado
   return s;
 }
@@ -41,11 +41,16 @@ export class ProductoService {
     // 1) Guardar detalle
     let detalle: ProductoDetalle | null = null;
     if (data.detalle) {
-      detalle = this.detalleRepo.create(data.detalle);
-      detalle = await this.detalleRepo.save(detalle);
+      // Normalizar variantes hacia la clave estándar 'tamaño'
+      const raw: any = { ...(data.detalle as any) };
+      raw['tama\u00f1o'] = raw['tama\u00f1o'] ?? raw.tamanio ?? raw.tamano ?? raw['tama\u00f1o'] ?? null;
+      delete raw.tamanio;
+      delete raw.tamano;
+      detalle = (this.detalleRepo.create(raw as any) as unknown) as ProductoDetalle;
+      detalle = (await this.detalleRepo.save(detalle as any)) as ProductoDetalle;
     }
 
-    // 2) Guardar valor (con cálculos)
+    // 2) Guardar valor (con cÃ¡lculos)
     let valor: ProductoValor | null = null;
     if (data.valor) {
       const { valorProducto, valorDec, peso, fechaCompra } = data.valor;
@@ -99,16 +104,33 @@ export class ProductoService {
 
   /** Devuelve todos los productos (opcionalmente filtrados por estatus) con sus relaciones */
   async findAll(estatus?: string): Promise<Producto[]> {
-    const items = await this.productoRepo.find({
-      relations: ['detalle', 'valor', 'tracking'],
-      order: { id: 'DESC' },
-    });
+    // Usar QueryBuilder con columnas explícitas para evitar problemas con nombres acentuados
+    const qb = this.productoRepo
+      .createQueryBuilder('p')
+      .leftJoin('p.detalle', 'd')
+      .leftJoin('p.valor', 'v')
+      .leftJoin('p.tracking', 't')
+      .addSelect([
+        'p.id', 'p.tipo', 'p.estado', 'p.conCaja',
+        'd.id', 'd.gama', 'd.procesador', 'd.generacion', 'd.numero', 'd.modelo', 'd.tamaño', 'd.almacenamiento', 'd.ram', 'd.conexion', 'd.descripcionOtro',
+        'v.id', 'v.valorProducto', 'v.valorDec', 'v.peso', 'v.fechaCompra', 'v.valorSoles', 'v.costoEnvio', 'v.costoTotal',
+        't.id', 't.productoId', 't.trackingUsa', 't.transportista', 't.casillero', 't.trackingEshop', 't.fechaRecepcion', 't.fechaRecogido', 't.estado'
+      ])
+      .orderBy('p.id', 'DESC');
+
+    let items: Producto[] = [];
+    try {
+      items = await qb.getMany();
+    } catch (e: any) {
+      console.error('[ProductoService.findAll] DB error:', e && e.stack ? e.stack : e);
+      throw e;
+    }
 
     if (!estatus) return items;
 
     const target = normalizeEstado(estatus);
 
-    // Filtro en memoria por producto.estado o ÚLTIMO tracking.estado
+    // Filtro en memoria por producto.estado o ÃšLTIMO tracking.estado
     const result = items.filter((p) => {
       const eProd = normalizeEstado((p as any).estado || (p as any).status);
       if (eProd === target) return true;
@@ -153,11 +175,19 @@ export class ProductoService {
 
     // 3) Actualizar detalle
     if (dto.detalle && producto.detalle) {
-      Object.assign(producto.detalle, dto.detalle);
+      const d: any = { ...dto.detalle };
+      // Normalizar variantes de tamaño
+      const nuevoTam = d['tama\u00f1o'] ?? d.tamanio ?? d.tamano;
+      if (nuevoTam !== undefined) {
+        d['tama\u00f1o'] = nuevoTam;
+        delete d.tamanio;
+        delete d.tamano;
+      }
+      Object.assign(producto.detalle, d);
       await this.detalleRepo.save(producto.detalle);
     }
 
-    // 4) Actualizar valor + recálculos
+    // 4) Actualizar valor + recÃ¡lculos
     if (dto.valor && producto.valor) {
       const v = producto.valor;
       Object.assign(v, dto.valor);
@@ -183,7 +213,7 @@ export class ProductoService {
     });
   }
 
-  /** Elimina un producto (y cascada en detalle/valor/tracking si está configurada) */
+  /** Elimina un producto (y cascada en detalle/valor/tracking si estÃ¡ configurada) */
   async remove(id: number): Promise<void> {
     const producto = await this.productoRepo.findOne({
       where: { id },
@@ -197,7 +227,7 @@ export class ProductoService {
     await this.productoRepo.remove(producto);
   }
 
-  // — Helpers para cálculos —
+  // â€” Helpers para cÃ¡lculos â€”
   private getTarifa(peso: number): number {
     const tabla: [number, number][] = [
       [0.5, 30.6],
@@ -240,9 +270,9 @@ export class ProductoService {
     return 21.1;
   }
 
-  // Nuevas utilidades para sincronizar con Catálogo
-// Sincronización con Catálogo (métodos agregados al mismo servicio)
-  // Determina si un producto está disponible: último tracking 'recogido' y sin ventas
+  // Nuevas utilidades para sincronizar con CatÃ¡logo
+// SincronizaciÃ³n con CatÃ¡logo (mÃ©todos agregados al mismo servicio)
+  // Determina si un producto estÃ¡ disponible: Ãºltimo tracking 'recogido' y sin ventas
   private async isDisponible(prod: any): Promise<boolean> {
     const ventas = await this.ventaRepo.count({ where: { productoId: prod.id } });
     if (ventas > 0) return false;
@@ -259,16 +289,21 @@ export class ProductoService {
 
   private buildTitle(p: any): string {
     const tipo = (p.tipo || '').toString();
-    const d = p.detalle || {};
-    const modelo = (d.modelo || '').toString();
-    const proc = (d.procesador || '').toString();
-    const tam = (d.tamaño || d.tamanio || d.tamano || '').toString();
+    const d: any = p.detalle || {};
+    const numero = d?.numero ? String(d.numero) : '';
+    const modelo = (d?.modelo || '').toString();
+    const proc = (d?.procesador || '').toString();
+    const tam = ((d as any)?.['tama\u00f1o'] || '').toString();
+    if (tipo.toLowerCase() === 'iphone') {
+      const base = ['iPhone', numero, modelo].filter(Boolean).join(' ').trim();
+      return base || `Producto ${p.id}`;
+    }
     return [tipo, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
   }
 
   private buildPayload(p: any) {
     const price = p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
-    // último tracking (si existe)
+    // Ãºltimo tracking (si existe)
     const trk = Array.isArray(p.tracking) ? [...p.tracking] : [];
     trk.sort((a, b) => {
       if (a.createdAt && b.createdAt) {
@@ -285,7 +320,7 @@ export class ProductoService {
       price: String(price ?? '0'),
       status: 'listed',
       stock: 1,
-      // Enviamos especificaciones completas para que el catálogo pueda mostrarlas
+      // Enviamos especificaciones completas para que el catÃ¡logo pueda mostrarlas
       specs: {
         tipo: p.tipo ?? null,
         estado: p.estado ?? null,
@@ -321,7 +356,7 @@ export class ProductoService {
     for (const p of prods) {
       try {
         if (!(await this.isDisponible(p))) continue;
-        // Evitar duplicados consultando el catálogo por SKU
+        // Evitar duplicados consultando el catÃ¡logo por SKU
         const sku = `svc-${p.id}`;
         if (apiBase) {
           try {
@@ -350,7 +385,7 @@ export class ProductoService {
                 procesador: d?.procesador ?? null,
                 generacion: d?.generacion ?? null,
                 modelo: d?.modelo ?? null,
-                ['tama��o']: d?.['tama��o'] ?? d?.tamanio ?? d?.tamano ?? null,
+                ['tama\u00f1o']: (d as any)?.['tama\u00f1o'] ?? null,
                 almacenamiento: d?.almacenamiento ?? null,
                 ram: d?.ram ?? null,
                 conexion: d?.conexion ?? null,
@@ -383,3 +418,6 @@ export class ProductoService {
     return { ok: true, total: candidatos.length, enviados, candidatos, errores };
   }
 }
+
+
+

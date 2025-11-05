@@ -1,4 +1,4 @@
-// producto-detalle.entity.ts
+// src/producto/producto-detalle.entity.ts
 import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
 
 @Entity()
@@ -16,10 +16,14 @@ export class ProductoDetalle {
   generacion: string;
 
   @Column({ nullable: true })
+  numero: string;
+
+  @Column({ nullable: true })
   modelo: string;
 
+  // Usar exactamente el nombre 'tamaño' en propiedad y columna
   @Column({ name: 'tamaño', type: 'varchar', nullable: true })
-  ['tamaño']?: string;
+  tamaño?: string;
 
   @Column({ nullable: true })
   almacenamiento: string;
@@ -33,3 +37,4 @@ export class ProductoDetalle {
   @Column({ nullable: true })
   descripcionOtro: string;
 }
+
