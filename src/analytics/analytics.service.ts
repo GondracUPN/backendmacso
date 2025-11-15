@@ -409,6 +409,7 @@ export class AnalyticsService {
           tipo: p.tipo,
           display: productDisplayClean(p),
           costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
+          fechaCompra: p.valor?.fechaCompra,
           fechaRecogido: frg || null,
           diasDesdeRecogido: dias,
         };
@@ -641,12 +642,18 @@ export class AnalyticsService {
     }));
     // Detalle por tipo: vendidos (en el período filtrado) y stock actual (sin ventas históricas)
     // Ventas en período (ya filtradas por from/to venta)
-    const vendidosPeriodoByTipo = new Map<string, { productoId: number; display: string }[]>();
+    const vendidosPeriodoByTipo = new Map<string, { productoId: number; display: string; fechaVenta?: string | null; precioVenta?: number | null; margen?: number | null }[]>();
     for (const v of ventas) {
       const t = v.producto?.tipo || 'otro';
       const arr = vendidosPeriodoByTipo.get(t) || [];
       if (v.producto) {
-        arr.push({ productoId: v.productoId, display: productDisplayClean(v.producto as any) });
+        arr.push({
+          productoId: v.productoId,
+          display: productDisplayClean(v.producto as any),
+          fechaVenta: v.fechaVenta,
+          precioVenta: Number(v.precioVenta),
+          margen: Number(v.porcentajeGanancia),
+        });
       }
       vendidosPeriodoByTipo.set(t, arr);
     }
@@ -729,6 +736,132 @@ export class AnalyticsService {
     }
     const diasHastaVentaPorTipo = Array.from(daysByType.entries()).map(([k, arr]) => ({ tipo: k, ...quartiles(arr) }));
 
+    // Product groups (MacBook): aggregate stats by gama/proc/pantalla from productos + ventas
+    type GroupKey = string;
+    type CompraDetalle = { productoId: number; fechaCompra?: string | Date | null; precioUSD?: number | null; costoTotal?: number | null; estado?: string | null; };
+    type VentaDetalle = { ventaId: number; fechaVenta?: string | Date | null; precioVenta?: number | null; ganancia?: number | null; porcentaje?: number | null; dias?: number | null; };
+    type Group = {
+      tipo: string;
+      gama: string;
+      proc: string;
+      pantalla: string;
+      compras: number[];
+      ventas: number[];
+      margenes: number[];
+      comprasDet: CompraDetalle[];
+      ventasDet: VentaDetalle[];
+      ramSet: Set<string>;
+      ssdSet: Set<string>;
+    };
+    const groups = new Map<GroupKey, Group>();
+    const extractAttrsLocal = (p: Producto) => {
+      const tipoP = (p.tipo || '').toLowerCase();
+      const d: any = p.detalle || {};
+      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
+      const gama = d?.gama ? String(d.gama) : '';
+      let proc = '';
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { proc = String(d[key] ?? ''); break; }
+      }
+      proc = proc ? proc.replace(/\s+/g, ' ').trim() : '';
+      let pantalla = '';
+      const known = ['10.2','10.9','11','12.9','13','14','15','16'];
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('tamano')||k.includes('tamanio')||k.includes('tamanopantalla')||k.includes('pantalla')||k.includes('screen')||k.includes('size')||k==='tam') { pantalla = String(d[key] ?? ''); break; }
+      }
+      if (!pantalla) {
+        const candidates = Object.values(d || {}).filter((v)=> typeof v === 'string') as string[];
+        const hit = candidates.map(String).find(vs => known.find(x => vs.includes(x)));
+        if (hit) pantalla = known.find(x => String(hit).includes(x)) || '';
+      }
+      const m = String(pantalla).match(/\d+(?:\.\d+)?/);
+      pantalla = m ? m[0] : (pantalla || '');
+      const ram = d?.ram ? String(d.ram) : '';
+      const ssd = (d as any)?.almacenamiento || (d as any)?.ssd ? String((d as any)?.almacenamiento || (d as any)?.ssd) : '';
+      return { tipo: tipoP, gama, proc, pantalla, ram, ssd };
+    };
+    for (const p of productosFiltered) {
+      const a = extractAttrsLocal(p);
+      if (a.tipo !== 'macbook') continue;
+      const k: GroupKey = ['macbook', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
+      const g = groups.get(k) || { tipo: 'macbook', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
+      g.compras.push(Number(p.valor?.costoTotal ?? 0) || 0);
+      g.comprasDet.push({
+        productoId: p.id,
+        fechaCompra: p.valor?.fechaCompra || null,
+        precioUSD: Number(p.valor?.valorProducto ?? 0) || null,
+        costoTotal: Number(p.valor?.costoTotal ?? 0) || null,
+        estado: p.estado || null,
+      });
+      if (a.ram) g.ramSet.add(a.ram);
+      if (a.ssd) g.ssdSet.add(a.ssd);
+      groups.set(k, g);
+    }
+    for (const v of ventas) {
+      const productoLite = v.producto as any as Producto;
+      const productoFull = productoById.get(v.productoId) || productoLite;
+      const p = productoLite || productoFull;
+      if (!p) continue;
+      const a = extractAttrsLocal(p);
+      if (a.tipo !== 'macbook') continue;
+      const k: GroupKey = ['macbook', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
+      const g = groups.get(k) || { tipo: 'macbook', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
+      g.ventas.push(Number(v.precioVenta) || 0);
+      g.margenes.push(Number(v.porcentajeGanancia) || 0);
+      const tracking = productoFull?.tracking || [];
+      const fechasRecogido = tracking
+        .map((t) => t?.fechaRecogido)
+        .filter((d): d is string => !!d)
+        .sort();
+      const fechaRecogido = fechasRecogido.length ? fechasRecogido[fechasRecogido.length - 1] : null;
+      g.ventasDet.push({
+        ventaId: v.id,
+        fechaVenta: v.fechaVenta,
+        precioVenta: Number(v.precioVenta) || null,
+        ganancia: Number(v.ganancia) || null,
+        porcentaje: Number(v.porcentajeGanancia) || null,
+        dias: fechaRecogido ? daysBetween(fechaRecogido, v.fechaVenta) : null,
+      });
+      if (a.ram) g.ramSet.add(a.ram);
+      if (a.ssd) g.ssdSet.add(a.ssd);
+      groups.set(k, g);
+    }
+    function statsLocal(arr: number[]) {
+      const clean = (arr || []).filter((n)=> isFinite(n) && n>0);
+      if (!clean.length) return { count: 0, min: null, mean: null, p25: null, p50: null, p75: null } as any;
+      const s = [...clean].sort((a,b)=> a-b);
+      const q = (p:number) => { const pos=(s.length-1)*p; const base=Math.floor(pos); const rest=pos-base; return s[base+1]!==undefined ? s[base]+rest*(s[base+1]-s[base]) : s[base]; };
+      return { count: clean.length, min: +s[0].toFixed(2), mean: +mean(clean)!, p25: +q(0.25).toFixed(2), p50: +q(0.5).toFixed(2), p75: +q(0.75).toFixed(2) };
+    }
+    const productGroups = Array.from(groups.values()).map((g)=>{
+      const comprasStats = statsLocal(g.compras);
+      const ventasStats = statsLocal(g.ventas);
+      const margenPromedio = mean(g.margenes) ?? null;
+      const recMin = ventasStats.p25 != null ? +(Number(ventasStats.p25)/1.2).toFixed(2) : null;
+      const recMax = ventasStats.p75 != null ? +(Number(ventasStats.p75)/1.2).toFixed(2) : null;
+      const labelParts = ['MacBook']; if (g.gama) labelParts.push(g.gama); if (g.pantalla) labelParts.push(`${g.pantalla}\"`); if (g.proc) labelParts.push(g.proc);
+      return {
+        tipo: g.tipo,
+        gama: g.gama,
+        proc: g.proc,
+        pantalla: g.pantalla,
+        label: labelParts.join(' '),
+        compras: comprasStats,
+        ventas: { ...ventasStats, margenPromedio },
+        recomendaciones: { compraMaxPara20: { min: recMin, max: recMax } },
+        ramDistinct: Array.from(g.ramSet.values()),
+        ssdDistinct: Array.from(g.ssdSet.values()),
+        // Listas crudas para UI
+        comprasList: g.compras,
+        ventasList: g.ventas,
+        margenesList: g.margenes,
+        comprasDetalle: g.comprasDet.slice().sort((a, b) => (Number(a.costoTotal || 0) - Number(b.costoTotal || 0))),
+        ventasDetalle: g.ventasDet.slice().sort((a, b) => (Number(a.precioVenta || 0) - Number(b.precioVenta || 0))),
+      };
+    }).sort((a,b)=> (b.ventas.count||0) - (a.ventas.count||0));
+
     // Alerts
     const lowMarginVentas = ventas
       .filter((v) => Number(v.porcentajeGanancia) < marginThreshold)
@@ -808,6 +941,7 @@ export class AnalyticsService {
         lowMarginVentas,
         transitLongItems,
       },
+      productGroups,
     };
   }
 }
