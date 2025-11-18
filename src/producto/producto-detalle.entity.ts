@@ -21,9 +21,9 @@ export class ProductoDetalle {
   @Column({ nullable: true })
   modelo: string;
 
-  // Usar exactamente el nombre 'tamaño' en columna
-  @Column({ name: 'tamaño', type: 'varchar', nullable: true })
-  tamaño?: string;
+  // Usar ASCII: 'tamano' para evitar problemas de codificación
+  @Column({ name: 'tamano', type: 'varchar', nullable: true })
+  tamano?: string;
 
   @Column({ nullable: true })
   almacenamiento: string;

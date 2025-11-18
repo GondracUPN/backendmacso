@@ -7,8 +7,8 @@ export class CreateProductoDetalleDto {
   @IsOptional() @IsString() generacion?: string;
   @IsOptional() @IsString() numero?: string;
   @IsOptional() @IsString() modelo?: string;
-  // Usar exactamente 'tamaño'
-  @IsOptional() @IsString() tamaño?: string;
+  // Usar 'tamano' (ASCII) para evitar errores de encoding
+  @IsOptional() @IsString() tamano?: string;
   @IsOptional() @IsString() almacenamiento?: string;
   @IsOptional() @IsString() ram?: string;
   @IsOptional() @IsString() conexion?: string;
@@ -38,4 +38,3 @@ export class CreateProductoDto {
   @Type(() => CreateProductoValorDto)
   valor?: CreateProductoValorDto;
 }
-

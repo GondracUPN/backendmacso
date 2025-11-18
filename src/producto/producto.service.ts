@@ -44,12 +44,12 @@ export class ProductoService {
     // 1) Guardar detalle
     let detalle: ProductoDetalle | null = null;
     if (data.detalle) {
-      // Normalizar variantes hacia la clave estándar 'tamaño'
+      // Normalizar variantes hacia la clave estándar ASCII 'tamano'
       const raw: any = { ...(data.detalle as any) };
-      raw['tama\u00f1o'] = raw['tama\u00f1o'] ?? raw.tamanio ?? raw.tamano ?? raw['tama\u00f1o'] ?? null;
+      raw.tamano = raw.tamano ?? raw.tamanio ?? raw['tama\u00f1o'] ?? null;
       delete raw.tamanio;
-      delete raw.tamano;
-      detalle = (this.detalleRepo.create(raw as any) as unknown) as ProductoDetalle;
+      delete raw['tama\u00f1o'];
+      detalle = this.detalleRepo.create(raw as any) as unknown as ProductoDetalle;
       detalle = (await this.detalleRepo.save(detalle as any)) as ProductoDetalle;
     }
 
@@ -203,12 +203,12 @@ export class ProductoService {
     // 3) Actualizar detalle
     if (dto.detalle && producto.detalle) {
       const d: any = { ...dto.detalle };
-      // Normalizar variantes de tamaño
-      const nuevoTam = d['tama\\u00f1o'] ?? d['tamaño'] ?? d.tamano;
+      // Normalizar variantes de tamaño hacia 'tamano' (ASCII)
+      const nuevoTam = d.tamano ?? d.tamanio ?? d['tama\u00f1o'];
       if (nuevoTam !== undefined) {
-        d['tama\u00f1o'] = nuevoTam;
-        delete d['tamaño'];
-        delete d.tamano;
+        d.tamano = nuevoTam;
+        delete d.tamanio;
+        delete d['tama\u00f1o'];
       }
       Object.assign(producto.detalle, d);
       await this.detalleRepo.save(producto.detalle);
@@ -371,7 +371,7 @@ export class ProductoService {
     const numero = d?.numero ? String(d.numero) : '';
     const modelo = (d?.modelo || '').toString();
     const proc = (d?.procesador || '').toString();
-    const tam = ((d as any)?.['tama\u00f1o'] || '').toString();
+    const tam = ((d as any)?.tamano || '').toString();
     if (tipo.toLowerCase() === 'iphone') {
       const base = ['iPhone', numero, modelo].filter(Boolean).join(' ').trim();
       return base || `Producto ${p.id}`;
@@ -463,7 +463,7 @@ export class ProductoService {
                 procesador: d?.procesador ?? null,
                 generacion: d?.generacion ?? null,
                 modelo: d?.modelo ?? null,
-                ['tama\u00f1o']: (d as any)?.['tama\u00f1o'] ?? null,
+                tamano: (d as any)?.tamano ?? null,
                 almacenamiento: d?.almacenamiento ?? null,
                 ram: d?.ram ?? null,
                 conexion: d?.conexion ?? null,

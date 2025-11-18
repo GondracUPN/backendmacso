@@ -6,6 +6,8 @@ import {
   ManyToOne,
   JoinColumn,
   Index,
+  CreateDateColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
 
@@ -65,4 +67,10 @@ export class Tracking {
     default: 'comprado_sin_tracking',
   })
   estado: EstadoTracking;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
 }
