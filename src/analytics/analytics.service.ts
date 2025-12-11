@@ -15,6 +15,9 @@ type Params = {
   fromVenta?: string;
   toVenta?: string;
   tipo?: string;
+  gama?: string;
+  procesador?: string;
+  pantalla?: string;
   estadoTracking?: string;
   vendedor?: string;
   transportista?: string;
@@ -209,6 +212,9 @@ export class AnalyticsService {
       fromVenta,
       toVenta,
       tipo,
+      gama,
+      procesador,
+      pantalla,
       estadoTracking,
       vendedor,
       transportista,
@@ -226,6 +232,52 @@ export class AnalyticsService {
     const dFromVenta = parseDate(fromVenta);
     const dToVenta = parseDate(toVenta);
 
+    type Attrs = { tipo: string; gama: string; proc: string; pantalla: string; ram: string; ssd: string };
+    const attrsCache = new Map<number, Attrs>();
+    const extractAttrs = (p: Producto): Attrs => {
+      const tipoP = (p.tipo || '').toLowerCase();
+      const d: any = p.detalle || {};
+      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
+      const gama = d?.gama ? String(d.gama).trim() : '';
+      let proc = '';
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { proc = String(d[key] ?? ''); break; }
+      }
+      proc = proc ? proc.replace(/\s+/g, ' ').trim() : '';
+      let pantalla = '';
+      const known = ['10.2','10.9','11','12.9','13','14','15','16'];
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('tamano')||k.includes('tamanio')||k.includes('tamanopantalla')||k.includes('pantalla')||k.includes('screen')||k.includes('size')||k==='tam') { pantalla = String(d[key] ?? ''); break; }
+      }
+      if (!pantalla) {
+        const candidates = Object.values(d || {}).filter((v)=> typeof v === 'string') as string[];
+        const hit = candidates.map(String).find(vs => known.find(x => vs.includes(x)));
+        if (hit) pantalla = known.find(x => String(hit).includes(x)) || '';
+      }
+      const m = String(pantalla).match(/\d+(?:\.\d+)?/);
+      pantalla = m ? m[0] : (pantalla || '');
+      const ram = d?.ram ? String(d.ram).trim() : '';
+      const ssd = (d as any)?.almacenamiento || (d as any)?.ssd ? String((d as any)?.almacenamiento || (d as any)?.ssd).trim() : '';
+      return { tipo: tipoP, gama, proc, pantalla, ram, ssd };
+    };
+    const getAttrs = (p: Producto): Attrs => {
+      const existing = attrsCache.get(p.id);
+      if (existing) return existing;
+      const parsed = extractAttrs(p);
+      attrsCache.set(p.id, parsed);
+      return parsed;
+    };
+    const matchesProductFilters = (p: Producto) => {
+      const attrs = getAttrs(p);
+      if (tipo && p.tipo !== tipo) return false;
+      if (gama && attrs.gama !== gama) return false;
+      if (procesador && attrs.proc !== procesador) return false;
+      if (pantalla && attrs.pantalla !== pantalla) return false;
+      return true;
+    };
+
     // Load products + relations for inventory-level metrics
     const productos = await this.prodRepo.find({
       relations: ['valor', 'detalle', 'tracking'],
@@ -242,11 +294,17 @@ export class AnalyticsService {
     if (dToVenta) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: toVenta });
     if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
     if (vendedor) ventaQB.andWhere('v.vendedor = :vendedor', { vendedor });
-    const ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
+    let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
 
     // Map rápido para acceder al producto completo (incluye tracking)
     const productoById = new Map<number, Producto>();
     for (const p of productos) productoById.set(p.id, p);
+
+    // Filtra ventas por filtros de producto (gama/proc/pantalla/tipo)
+    ventas = ventas.filter((v) => {
+      const prod = productoById.get(v.productoId) || (v.producto as any as Producto | undefined);
+      return prod ? matchesProductFilters(prod) : true;
+    });
 
     // Build helper maps
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
@@ -256,7 +314,7 @@ export class AnalyticsService {
 
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
-      if (tipo && p.tipo !== tipo) return false;
+      if (!matchesProductFilters(p)) return false;
       if (dFromCompra && (!p.valor || new Date(p.valor.fechaCompra) < dFromCompra)) return false;
       if (dToCompra && (!p.valor || new Date(p.valor.fechaCompra) > dToCompra)) return false;
       if (estadoTracking) {
@@ -661,7 +719,7 @@ export class AnalyticsService {
     const ventasAll = await this.ventaRepo.find();
     const ventasAllByProducto = new Map<number, boolean>();
     for (const vv of ventasAll) ventasAllByProducto.set(vv.productoId, true);
-    const stockActual = productos.filter((p) => !ventasAllByProducto.get(p.id));
+    const stockActual = productos.filter((p) => !ventasAllByProducto.get(p.id) && matchesProductFilters(p));
     const stockByTipo = new Map<string, { productoId: number; display: string }[]>();
     for (const p of stockActual) {
       if (tipo && p.tipo !== tipo) continue;
@@ -754,36 +812,8 @@ export class AnalyticsService {
       ssdSet: Set<string>;
     };
     const groups = new Map<GroupKey, Group>();
-    const extractAttrsLocal = (p: Producto) => {
-      const tipoP = (p.tipo || '').toLowerCase();
-      const d: any = p.detalle || {};
-      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      const gama = d?.gama ? String(d.gama) : '';
-      let proc = '';
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { proc = String(d[key] ?? ''); break; }
-      }
-      proc = proc ? proc.replace(/\s+/g, ' ').trim() : '';
-      let pantalla = '';
-      const known = ['10.2','10.9','11','12.9','13','14','15','16'];
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('tamano')||k.includes('tamanio')||k.includes('tamanopantalla')||k.includes('pantalla')||k.includes('screen')||k.includes('size')||k==='tam') { pantalla = String(d[key] ?? ''); break; }
-      }
-      if (!pantalla) {
-        const candidates = Object.values(d || {}).filter((v)=> typeof v === 'string') as string[];
-        const hit = candidates.map(String).find(vs => known.find(x => vs.includes(x)));
-        if (hit) pantalla = known.find(x => String(hit).includes(x)) || '';
-      }
-      const m = String(pantalla).match(/\d+(?:\.\d+)?/);
-      pantalla = m ? m[0] : (pantalla || '');
-      const ram = d?.ram ? String(d.ram) : '';
-      const ssd = (d as any)?.almacenamiento || (d as any)?.ssd ? String((d as any)?.almacenamiento || (d as any)?.ssd) : '';
-      return { tipo: tipoP, gama, proc, pantalla, ram, ssd };
-    };
     for (const p of productosFiltered) {
-      const a = extractAttrsLocal(p);
+      const a = getAttrs(p);
       if (a.tipo !== 'macbook') continue;
       const k: GroupKey = ['macbook', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
       const g = groups.get(k) || { tipo: 'macbook', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
@@ -804,7 +834,7 @@ export class AnalyticsService {
       const productoFull = productoById.get(v.productoId) || productoLite;
       const p = productoLite || productoFull;
       if (!p) continue;
-      const a = extractAttrsLocal(p);
+      const a = getAttrs(p);
       if (a.tipo !== 'macbook') continue;
       const k: GroupKey = ['macbook', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
       const g = groups.get(k) || { tipo: 'macbook', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
@@ -905,6 +935,9 @@ export class AnalyticsService {
         fromVenta,
         toVenta,
         tipo,
+        gama,
+        procesador,
+        pantalla,
         estadoTracking,
         vendedor,
         transportista,

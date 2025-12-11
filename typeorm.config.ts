@@ -26,9 +26,4 @@ export default new DataSource({
     // Fallback when compiled
     join(__dirname, '**/*.entity.{ts,js}'),
   ],
-  migrations: [
-    join(__dirname, 'src/migrations/*{.ts,.js}'),
-    join(__dirname, 'migrations/*{.ts,.js}'),
-  ],
 });
-

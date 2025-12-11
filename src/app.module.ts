@@ -37,9 +37,6 @@ import { SchedulesModule } from './schedules/schedules.module';
           logging: cfg.get<string>('DB_LOG') === 'true' || !isProd,
           logger: 'advanced-console',
 
-          // (opcional y seguro) habilita migraciones si ya tienes archivos:
-          migrations: [join(__dirname, 'migrations/*{.ts,.js}')],
-          migrationsRun: cfg.get<string>('RUN_MIGRATIONS') === 'true',
         };
       },
     }),

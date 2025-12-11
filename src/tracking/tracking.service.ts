@@ -5,12 +5,15 @@ import { Repository } from 'typeorm';
 import { Tracking, EstadoTracking } from './tracking.entity';
 import { CreateTrackingDto } from './dto/create-tracking.dto';
 import { UpdateTrackingDto } from './dto/update-tracking.dto';
+import { Producto } from '../producto/producto.entity';
 
 @Injectable()
 export class TrackingService {
   constructor(
     @InjectRepository(Tracking)
     private repo: Repository<Tracking>,
+    @InjectRepository(Producto)
+    private productoRepo: Repository<Producto>,
   ) {}
 
   /** Devuelve el tracking más reciente para un producto (si existieran varios) */
@@ -29,7 +32,9 @@ export class TrackingService {
     const estado: EstadoTracking = estadoCalc ?? 'comprado_sin_tracking';
 
     const t = this.repo.create({ ...dto, estado });
-    return this.repo.save(t);
+    const saved = await this.repo.save(t);
+    await this.syncFacturaFlag(saved.productoId, estado);
+    return saved;
   }
 
   /** Actualiza un tracking por ID recalculando el estado en base al merge */
@@ -43,6 +48,7 @@ export class TrackingService {
 
     Object.assign(t, dto, { estado });
     await this.repo.save(t);
+    await this.syncFacturaFlag(t.productoId, estado);
 
     return this.repo.findOneOrFail({ where: { id: t.id } });
   }
@@ -96,5 +102,17 @@ export class TrackingService {
     if (v == null) return null;
     const s = String(v).trim();
     return s.length ? s : null;
+  }
+
+  private async syncFacturaFlag(
+    productoId: number,
+    estado: EstadoTracking,
+  ): Promise<void> {
+    if (!productoId) return;
+    if (estado !== 'en_eshopex' && estado !== 'recogido') return;
+    await this.productoRepo.update(
+      { id: productoId, facturaDecSubida: false },
+      { facturaDecSubida: true },
+    );
   }
 }

@@ -27,6 +27,10 @@ export class Producto {
   @Column({ type: 'text', array: true, default: '{}' })
   accesorios: string[];
 
+  // Control interno para saber si el HTML/DEC ya marcó factura subida
+  @Column({ type: 'boolean', default: false })
+  facturaDecSubida: boolean;
+
   // producto.entity.ts
 
   @ManyToOne(() => ProductoDetalle, { cascade: true, eager: true })

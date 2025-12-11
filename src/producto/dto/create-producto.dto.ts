@@ -1,4 +1,12 @@
-import { IsString, IsOptional, IsNumber, IsDateString, ValidateNested, IsArray } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsNumber,
+  IsDateString,
+  ValidateNested,
+  IsArray,
+  IsBoolean,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateProductoDetalleDto {
@@ -27,6 +35,10 @@ export class CreateProductoDto {
   @IsString() estado: string; // nuevo, usado, roto
   // Nuevo: accesorios para usado; para 'nuevo' se fuerza Caja internamente
   @IsOptional() @IsArray() accesorios?: string[]; // ['Caja','Cubo','Cable'] o ['Todos']
+
+  @IsOptional()
+  @IsBoolean()
+  facturaDecSubida?: boolean;
 
   @IsOptional()
   @ValidateNested()

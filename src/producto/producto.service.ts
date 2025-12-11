@@ -95,6 +95,7 @@ export class ProductoService {
       accesorios,
       detalle: detalle || undefined,
       valor: valor || undefined,
+      facturaDecSubida: !!data.facturaDecSubida,
     });
     const savedProducto = await this.productoRepo.save(producto);
 
@@ -175,6 +176,9 @@ export class ProductoService {
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
     if (dto.estado !== undefined) producto.estado = dto.estado;
+    if (dto.facturaDecSubida !== undefined) {
+      producto.facturaDecSubida = !!dto.facturaDecSubida;
+    }
     
     await this.productoRepo.save(producto);
 
