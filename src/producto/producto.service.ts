@@ -132,6 +132,23 @@ export class ProductoService {
       throw e;
     }
 
+    // Normalizar detalle y accesorios antes de retornar
+    items = items.map((p) => {
+      const prod = { ...p } as any;
+      const det: any = prod.detalle || {};
+      // Asegura clave ASCII 'tamano' (no mueve el valor en DB, solo en la respuesta)
+      const tam = det.tamano ?? det.tamanio ?? det['tamaño'];
+      if (tam !== undefined) {
+        det.tamano = tam;
+        delete det.tamanio;
+        delete det['tamaño'];
+      }
+      prod.detalle = det;
+      // Asegura accesorios como arreglo (no los borra)
+      if (!Array.isArray(prod.accesorios)) prod.accesorios = [];
+      return prod as Producto;
+    });
+
     if (!estatus) return items;
 
     const target = normalizeEstado(estatus);
