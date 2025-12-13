@@ -91,7 +91,9 @@ export class VentaService {
 
     // 2) Recalcular costos con el tipo de cambio ingresado
     const valorProductoUSD = Number(v.valorProducto); // USD
-    const costoEnvioSoles = Number(v.costoEnvio ?? 0); // S/
+    const costoEnvioSoles = Number(
+      (v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0,
+    ); // S/
     const tipoCambio = Number(dto.tipoCambio);
 
     const valorSolesRecalc = +(valorProductoUSD * tipoCambio).toFixed(2);
@@ -154,7 +156,8 @@ export class VentaService {
         2,
       );
       const costoTotalRecalc = +(
-        valorSolesRecalc + Number(v.costoEnvio ?? 0)
+        valorSolesRecalc +
+        Number((v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0)
       ).toFixed(2);
 
       v.valorSoles = valorSolesRecalc;

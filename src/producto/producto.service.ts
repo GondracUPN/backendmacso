@@ -199,8 +199,10 @@ export class ProductoService {
   private applyProrrateadoView(p: Producto): Producto {
     if (p?.valor && p.valor.costoEnvioProrrateado != null) {
       const v: any = { ...p.valor };
-      v.costoEnvio = Number(p.valor.costoEnvioProrrateado);
-      v.costoTotal = Number(p.valor.costoTotalProrrateado ?? v.costoTotal ?? v.costoEnvio ?? 0);
+      const envio = Number(p.valor.costoEnvioProrrateado);
+      const baseSoles = Number(v.valorSoles ?? v.valorProducto * 3.7 ?? 0);
+      v.costoEnvio = envio;
+      v.costoTotal = Number((baseSoles + envio).toFixed(2));
       p.valor = v;
     }
     return p;
@@ -539,6 +541,9 @@ export class ProductoService {
     let acumulado = 0;
     conValor.forEach((p, idx) => {
       const v = p.valor!;
+      // Recalcular valorSoles con TC fijo actual
+      v.valorSoles = Number((Number(v.valorProducto) * 3.7).toFixed(2));
+
       const factor = Number(v.valorProducto ?? 0) / totalPrecio;
       let asignado = Number((totalEnvio * factor).toFixed(2));
       // Último elemento recibe el residual para cuadrar la suma
