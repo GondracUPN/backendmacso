@@ -31,7 +31,9 @@ export class Producto {
   @Column({ type: 'boolean', default: false })
   facturaDecSubida: boolean;
 
-  // producto.entity.ts
+  // Agrupador de envíos para prorratear costo entre productos vinculados
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  envioGrupoId?: string | null;
 
   @ManyToOne(() => ProductoDetalle, { cascade: true, eager: true })
   @JoinColumn()
@@ -40,6 +42,7 @@ export class Producto {
   @ManyToOne(() => ProductoValor, { cascade: true, eager: true })
   @JoinColumn()
   valor: ProductoValor;
+
   @OneToMany(() => Tracking, (t) => t.producto, {
     cascade: true,
     eager: true,

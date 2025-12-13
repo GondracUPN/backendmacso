@@ -49,4 +49,9 @@ export class CreateProductoDto {
   @ValidateNested()
   @Type(() => CreateProductoValorDto)
   valor?: CreateProductoValorDto;
+
+  // Opcional: vincular este producto con otro para prorratear envío
+  @IsOptional()
+  @IsNumber()
+  vincularCon?: number;
 }

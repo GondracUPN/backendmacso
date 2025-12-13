@@ -1,7 +1,5 @@
 ﻿// src/producto/producto.controller.ts
-import { Controller, Post, Get, Patch, Param, Body, Delete, HttpException, HttpStatus, Query, UseInterceptors } from '@nestjs/common';
-import { CacheInterceptor } from '@nestjs/cache-manager';
-import { CacheTTL } from '@nestjs/cache-manager';
+import { Controller, Post, Get, Patch, Param, Body, Delete, HttpException, HttpStatus, Query } from "@nestjs/common";
 import { ProductoService } from './producto.service';
 import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
@@ -9,7 +7,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 
-@UseInterceptors(CacheInterceptor)
 @Controller('productos')
 export class ProductoController {
   constructor(private readonly productoService: ProductoService) {}
@@ -22,8 +19,7 @@ export class ProductoController {
 
   // Listado pÃºblico para catÃ¡logo/front
   @Get()
-  @CacheTTL(120)
-  async findAll() {
+    async findAll() {
     try {
       const res = await this.productoService.findAll();
       return res;
@@ -40,8 +36,7 @@ export class ProductoController {
 
   // KPIs rápidos para gestión (disponibles, vendidos, total ventas, ganancia total)
   @Get('stats')
-  @CacheTTL(60)
-  async stats(@Query('refresh') refresh?: string) {
+    async stats(@Query('refresh') refresh?: string) {
     if (refresh === 'true') return this.productoService.stats();
     return this.productoService.statsCached();
   }

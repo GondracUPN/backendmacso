@@ -28,4 +28,11 @@ export class ProductoValor {
 
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   costoTotal: number;
+
+  // Costos prorrateados cuando el producto participa en un grupo de envío
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  costoEnvioProrrateado: number;
+
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  costoTotalProrrateado: number;
 }
