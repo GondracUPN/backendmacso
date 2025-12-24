@@ -34,6 +34,7 @@ export class TrackingService {
     const t = this.repo.create({ ...dto, estado });
     const saved = await this.repo.save(t);
     await this.syncFacturaFlag(saved.productoId, estado);
+    await this.propagateToGrupo(saved.productoId, saved);
     return saved;
   }
 
@@ -49,6 +50,7 @@ export class TrackingService {
     Object.assign(t, dto, { estado });
     await this.repo.save(t);
     await this.syncFacturaFlag(t.productoId, estado);
+    await this.propagateToGrupo(t.productoId, { ...t });
 
     return this.repo.findOneOrFail({ where: { id: t.id } });
   }
@@ -102,6 +104,38 @@ export class TrackingService {
     if (v == null) return null;
     const s = String(v).trim();
     return s.length ? s : null;
+  }
+
+  // Propaga tracking a todos los productos del mismo grupo de envío
+  private async propagateToGrupo(productoId: number, tracking: Partial<Tracking>): Promise<void> {
+    if (!productoId) return;
+    const prod = await this.productoRepo.findOne({ where: { id: productoId } });
+    if (!prod?.envioGrupoId) return;
+
+    const peers = await this.productoRepo.find({ where: { envioGrupoId: prod.envioGrupoId } });
+    const payload: UpdateTrackingDto = {
+      trackingUsa: tracking.trackingUsa ?? null,
+      transportista: tracking.transportista ?? null,
+      casillero: tracking.casillero ?? null,
+      trackingEshop: tracking.trackingEshop ?? null,
+      fechaRecepcion: (tracking as any)?.fechaRecepcion ?? null,
+      fechaRecogido: (tracking as any)?.fechaRecogido ?? null,
+    };
+
+    for (const peer of peers) {
+      if (peer.id === productoId) continue;
+      const existing = await this.findByProducto(peer.id);
+      const merged = existing ? { ...existing, ...payload } : { ...payload, productoId: peer.id };
+      const estado = this.calcularEstado(merged) ?? 'comprado_sin_tracking';
+      if (existing) {
+        await this.repo.save({ ...existing, ...payload, estado });
+        await this.syncFacturaFlag(peer.id, estado);
+      } else {
+        const created = this.repo.create({ ...merged, estado } as any);
+        await this.repo.save(created);
+        await this.syncFacturaFlag(peer.id, estado);
+      }
+    }
   }
 
   private async syncFacturaFlag(

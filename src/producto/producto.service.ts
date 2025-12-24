@@ -8,7 +8,7 @@ import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
-import { Tracking } from '../tracking/tracking.entity';
+import { Tracking, EstadoTracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import * as crypto from 'node:crypto';
 
@@ -122,6 +122,9 @@ export class ProductoService {
         estado: 'comprado_sin_tracking',
       }),
     );
+    if (envioGrupoId) {
+      await this.syncTrackingEnGrupo(envioGrupoId);
+    }
 
     // 5) Retornar producto con todas las relaciones (incluye tracking)
     const finalProd = await this.productoRepo.findOneOrFail({
@@ -230,6 +233,7 @@ export class ProductoService {
       producto.envioGrupoId = null;
       envioGrupoId = null;
     }
+    const justLinkedToGroup = !!envioGrupoId && envioGrupoId !== oldEnvioGrupo;
 
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
@@ -347,6 +351,9 @@ export class ProductoService {
       producto.valor.costoEnvioProrrateado = producto.valor.costoEnvio;
       producto.valor.costoTotalProrrateado = producto.valor.costoTotal;
       await this.valorRepo.save(producto.valor);
+    }
+    if (justLinkedToGroup && producto.envioGrupoId) {
+      await this.syncTrackingEnGrupo(producto.envioGrupoId);
     }
 
     // 5) Retornar entidad completa actualizada (incluye tracking)
@@ -659,6 +666,112 @@ export class ProductoService {
 
   private hmac(body: string, secret: string) {
     return crypto.createHmac('sha256', secret || '').update(body).digest('hex');
+  }
+
+  /** Cuando se vincula un producto, replica el tracking mÃ¡s completo del grupo hacia todos */
+  private async syncTrackingEnGrupo(envioGrupoId: string): Promise<void> {
+    if (!envioGrupoId) return;
+    const peers = await this.productoRepo.find({
+      where: { envioGrupoId },
+    });
+    if (!peers.length) return;
+
+    const latestByPeer: Tracking[] = [];
+    for (const peer of peers) {
+      const t = await this.trackingRepo.find({
+        where: { productoId: peer.id },
+        order: { id: 'DESC' },
+        take: 1,
+      });
+      if (t[0]) latestByPeer.push(t[0]);
+    }
+    const source = this.pickBestTracking(latestByPeer);
+    if (!source) return;
+
+    const payload: Partial<Tracking> = {
+      trackingUsa: source.trackingUsa ?? null,
+      transportista: source.transportista ?? null,
+      casillero: source.casillero ?? null,
+      trackingEshop: source.trackingEshop ?? null,
+      fechaRecepcion: (source as any)?.fechaRecepcion ?? null,
+      fechaRecogido: (source as any)?.fechaRecogido ?? null,
+    };
+    const estado = this.calcularEstadoTracking(payload);
+
+    for (const peer of peers) {
+      const existing = await this.trackingRepo.find({
+        where: { productoId: peer.id },
+        order: { id: 'DESC' },
+        take: 1,
+      });
+      if (existing[0]) {
+        Object.assign(existing[0], payload, { estado });
+        await this.trackingRepo.save(existing[0]);
+      } else {
+        const created = this.trackingRepo.create({
+          ...payload,
+          productoId: peer.id,
+          estado,
+        } as any);
+        await this.trackingRepo.save(created);
+      }
+      await this.syncFacturaFlagLocal(peer.id, estado);
+    }
+  }
+
+  private pickBestTracking(trackings: Tracking[]): Tracking | null {
+    if (!Array.isArray(trackings) || !trackings.length) return null;
+    const scored = trackings
+      .filter(Boolean)
+      .map((t) => ({
+        t,
+        score: [
+          t.trackingUsa,
+          t.transportista,
+          t.casillero,
+          t.trackingEshop,
+          (t as any)?.fechaRecepcion,
+          (t as any)?.fechaRecogido,
+        ].filter((v) => v !== null && v !== undefined && String(v).trim().length).length,
+        ts: new Date((t as any)?.updatedAt || (t as any)?.createdAt || 0).getTime(),
+        id: t.id || 0,
+      }))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.ts !== a.ts) return b.ts - a.ts;
+        return b.id - a.id;
+      });
+    return scored[0]?.t ?? null;
+  }
+
+  private calcularEstadoTracking(input: {
+    trackingUsa?: string | null;
+    transportista?: string | null;
+    casillero?: string | null;
+    trackingEshop?: string | null;
+    fechaRecepcion?: string | null;
+    fechaRecogido?: string | null;
+  }): EstadoTracking {
+    const clean = (v?: string | null) => {
+      if (v == null) return null;
+      const s = String(v).trim();
+      return s.length ? s : null;
+    };
+    const hasUsa = !!clean(input.trackingUsa) || !!clean(input.transportista);
+    const hasEshop = !!clean(input.trackingEshop) || !!clean(input.fechaRecepcion);
+    if (clean(input.fechaRecogido)) return 'recogido';
+    if (hasEshop) return 'en_eshopex';
+    if (hasUsa) return 'comprado_en_camino';
+    return 'comprado_sin_tracking';
+  }
+
+  private async syncFacturaFlagLocal(productoId: number, estado: EstadoTracking): Promise<void> {
+    if (!productoId) return;
+    if (estado !== 'en_eshopex' && estado !== 'recogido') return;
+    await this.productoRepo.update(
+      { id: productoId, facturaDecSubida: false },
+      { facturaDecSubida: true },
+    );
   }
 
   async syncDisponiblesConCatalogo() {
