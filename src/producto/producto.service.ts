@@ -22,6 +22,10 @@ function normalizeEstado(str?: string | null): string {
 
 @Injectable()
 export class ProductoService {
+  // Cache corto para listados (mitiga lecturas repetidas en red/DB lenta)
+  private readonly listCacheKeys = new Set<string>();
+  private readonly listCacheTtlSeconds = 30;
+
   constructor(
     @InjectRepository(Producto)
     private readonly productoRepo: Repository<Producto>,
@@ -38,6 +42,19 @@ export class ProductoService {
     private readonly ventaRepo: Repository<Venta>,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
+
+  private buildListCacheKey(estatus?: string | null): string {
+    const normalized = normalizeEstado(estatus);
+    return `productos:list:${normalized || 'all'}`;
+  }
+
+  private async invalidateListCache(): Promise<void> {
+    const keys = Array.from(this.listCacheKeys.values());
+    this.listCacheKeys.clear();
+    await Promise.all(
+      keys.map((k) => this.cache.del(k).catch(() => undefined)),
+    );
+  }
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
   async create(data: CreateProductoDto): Promise<Producto> {
@@ -131,11 +148,15 @@ export class ProductoService {
       where: { id: savedProducto.id },
       relations: ['detalle', 'valor', 'tracking'],
     });
+    await this.invalidateListCache();
     return this.applyProrrateadoView(finalProd);
   }
 
   /** Devuelve todos los productos (opcionalmente filtrados por estatus) con sus relaciones */
   async findAll(estatus?: string): Promise<Producto[]> {
+    const cacheKey = this.buildListCacheKey(estatus);
+    const cached = await this.cache.get<Producto[]>(cacheKey);
+    if (cached !== undefined && cached !== null) return cached;
     // Usar QueryBuilder con columnas explícitas para evitar problemas con nombres acentuados
     const qb = this.productoRepo
       .createQueryBuilder('p')
@@ -169,7 +190,11 @@ export class ProductoService {
       return this.applyProrrateadoView(prod as Producto);
     });
 
-    if (!estatus) return items;
+    if (!estatus) {
+      await this.cache.set(cacheKey, items, this.listCacheTtlSeconds);
+      this.listCacheKeys.add(cacheKey);
+      return items;
+    }
 
     const target = normalizeEstado(estatus);
 
@@ -196,6 +221,8 @@ export class ProductoService {
       return normalizeEstado(last?.estado) === target;
     });
 
+    await this.cache.set(cacheKey, result, this.listCacheTtlSeconds);
+    this.listCacheKeys.add(cacheKey);
     return result;
   }
 
@@ -361,6 +388,7 @@ export class ProductoService {
       where: { id },
       relations: ['detalle', 'valor', 'tracking'],
     });
+    await this.invalidateListCache();
     return this.applyProrrateadoView(updated);
   }
 
@@ -381,6 +409,7 @@ export class ProductoService {
     if (envioGrupoId) {
       await this.recalcEnvioGrupo(envioGrupoId);
     }
+    await this.invalidateListCache();
   }
 
   // â Helpers para cÃ¡lculos â
@@ -689,10 +718,10 @@ export class ProductoService {
     if (!source) return;
 
     const payload: Partial<Tracking> = {
-      trackingUsa: source.trackingUsa ?? null,
-      transportista: source.transportista ?? null,
-      casillero: source.casillero ?? null,
-      trackingEshop: source.trackingEshop ?? null,
+      trackingUsa: source.trackingUsa ?? undefined,
+      transportista: source.transportista ?? undefined,
+      casillero: source.casillero ?? undefined,
+      trackingEshop: source.trackingEshop ?? undefined,
       fechaRecepcion: (source as any)?.fechaRecepcion ?? null,
       fechaRecogido: (source as any)?.fechaRecogido ?? null,
     };

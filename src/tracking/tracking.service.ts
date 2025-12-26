@@ -114,10 +114,10 @@ export class TrackingService {
 
     const peers = await this.productoRepo.find({ where: { envioGrupoId: prod.envioGrupoId } });
     const payload: UpdateTrackingDto = {
-      trackingUsa: tracking.trackingUsa ?? null,
-      transportista: tracking.transportista ?? null,
-      casillero: tracking.casillero ?? null,
-      trackingEshop: tracking.trackingEshop ?? null,
+      trackingUsa: tracking.trackingUsa ?? undefined,
+      transportista: tracking.transportista ?? undefined,
+      casillero: tracking.casillero ?? undefined,
+      trackingEshop: tracking.trackingEshop ?? undefined,
       fechaRecepcion: (tracking as any)?.fechaRecepcion ?? null,
       fechaRecogido: (tracking as any)?.fechaRecogido ?? null,
     };
