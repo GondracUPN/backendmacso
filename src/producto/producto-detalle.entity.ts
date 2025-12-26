@@ -12,6 +12,7 @@ export class ProductoDetalle {
   @Column({ nullable: true })
   procesador: string;
 
+  
   @Column({ nullable: true })
   generacion: string;
 
