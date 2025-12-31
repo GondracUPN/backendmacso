@@ -2,7 +2,6 @@ import { Controller, Get, Put, Body, Query, UseGuards } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
 import {
   CurrentUser,
   JwtUserPayload,
@@ -28,7 +27,7 @@ export class WalletController {
     @Body() body: { efectivoPen?: number; efectivoUsd?: number },
   ) {
     const pen = Number(body?.efectivoPen ?? 0);
-    // Política: en efectivo solo soles; ignoramos efectivoUsd si llega
-    return this.svc.upsert(user.userId, pen, 0);
+    const usd = Number(body?.efectivoUsd ?? 0);
+    return this.svc.upsert(user.userId, pen, usd);
   }
 }

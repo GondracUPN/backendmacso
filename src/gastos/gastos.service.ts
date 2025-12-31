@@ -14,6 +14,11 @@ function normConcept(con?: string) {
     comida: 'comida',
     gusto: 'gusto',
     gustos: 'gusto',
+    transporte: 'transporte',
+    cashback: 'cashback',
+    'cash back': 'cashback',
+    devolucion: 'cashback',
+    devolución: 'cashback',
     ingreso: 'ingreso',
     ingresos: 'ingreso',
     'pago tarjeta': 'pago_tarjeta',
@@ -60,25 +65,36 @@ export class GastosService {
 
     // Validación de conceptos permitidos por método
     const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios']);
-    const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen']);
+    const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'cashback']);
     if ((metodoPago === 'debito' && !allowedDeb.has(concepto)) || (metodoPago === 'credito' && !allowedCred.has(concepto))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
     }
 
+    const gustoDetalle = concepto === 'gusto' ? (dto.detalleGusto ?? null) : null;
+    const notas =
+      dto.notas != null
+        ? dto.notas
+        : gustoDetalle != null
+          ? gustoDetalle
+          : null;
+
+    const montoNum = Number(dto.monto);
+    const montoSigned = concepto === 'cashback' ? -Math.abs(montoNum) : montoNum;
+
     const gasto = this.repo.create({
       userId,
       concepto,
-      detalleGusto: concepto === 'gusto' ? (dto.detalleGusto ?? null) : null,
+      detalleGusto: gustoDetalle,
       cuotasMeses: concepto === 'deuda_cuotas' ? (dto.cuotasMeses ?? null) : null,
       moneda,
-      monto: Number(dto.monto).toFixed(2),
+      monto: montoSigned.toFixed(2),
       fecha: dto.fecha,
       metodoPago,
       // Guardamos la "tarjeta" para ambos métodos (débito=banco, crédito=tarjeta)
       tarjeta: dto.tarjeta ?? null,
       // si es pago a tarjeta hecho desde DÉBITO: destino a quien se paga
       tarjetaPago: metodoPago === 'debito' && concepto === 'pago_tarjeta' ? (dto.tarjetaPago ?? null) : null,
-      notas: dto.notas ?? null,
+      notas,
       // Nuevos campos opcionales para conversión / objetivo de pago
       tasaUsdPen:
         ((): any => {
@@ -90,9 +106,9 @@ export class GastosService {
       montoPen:
         ((): any => {
           const DEFAULT_USD_RATE = 3.7;
-          if (moneda === 'PEN') return (Number(dto.monto).toFixed(2) as any);
+          if (moneda === 'PEN') return (montoSigned.toFixed(2) as any);
           const tc = dto.tipoCambioDia != null && isFinite(Number(dto.tipoCambioDia)) ? Number(dto.tipoCambioDia) : DEFAULT_USD_RATE;
-          return ((Number(dto.monto) * tc).toFixed(2) as any);
+          return ((montoSigned * tc).toFixed(2) as any);
         })(),
       pagoObjetivo:
 
@@ -202,7 +218,12 @@ export class GastosService {
     }
 
     if (dto.concepto !== undefined) g.concepto = normConcept(dto.concepto);
-    if (dto.detalleGusto !== undefined) g.detalleGusto = dto.detalleGusto ?? null;
+    if (dto.detalleGusto !== undefined) {
+      g.detalleGusto = dto.detalleGusto ?? null;
+      if (g.concepto === 'gusto' && dto.notas === undefined) {
+        g.notas = dto.detalleGusto ?? null;
+      }
+    }
     if (dto.cuotasMeses !== undefined) g.cuotasMeses = dto.cuotasMeses ?? null;
     if (dto.monto !== undefined) g.monto = Number(dto.monto).toFixed(2);
     if (dto.fecha !== undefined) g.fecha = dto.fecha;
@@ -222,6 +243,13 @@ export class GastosService {
     }
 
     if (dto.notas !== undefined) g.notas = dto.notas ?? null;
+
+    // Si el concepto es cashback, forzamos monto negativo
+    if (g.concepto === 'cashback' && dto.monto !== undefined) {
+      g.monto = (-Math.abs(Number(dto.monto))).toFixed(2);
+    } else if (dto.monto !== undefined) {
+      g.monto = Number(dto.monto).toFixed(2);
+    }
 
     return this.repo.save(g);
   }

@@ -6,7 +6,7 @@ import { Gasto } from '../gastos/entities/gasto.entity';
 import { Role } from '../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 
-const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen'];
+const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'cashback'];
 
 @Injectable()
 export class CardsService {
