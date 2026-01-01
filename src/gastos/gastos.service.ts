@@ -64,18 +64,17 @@ export class GastosService {
     const moneda: 'PEN' | 'USD' = dto.moneda === 'USD' ? 'USD' : 'PEN';
 
     // Validación de conceptos permitidos por método
-    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios']);
+    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback']);
     const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'cashback']);
     if ((metodoPago === 'debito' && !allowedDeb.has(concepto)) || (metodoPago === 'credito' && !allowedCred.has(concepto))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
     }
 
-    const gustoDetalle = concepto === 'gusto' ? (dto.detalleGusto ?? null) : null;
     const notas =
       dto.notas != null
         ? dto.notas
-        : gustoDetalle != null
-          ? gustoDetalle
+        : (dto as any).detalleGusto != null && concepto === 'gusto'
+          ? (dto as any).detalleGusto
           : null;
 
     const montoNum = Number(dto.monto);
@@ -84,7 +83,7 @@ export class GastosService {
     const gasto = this.repo.create({
       userId,
       concepto,
-      detalleGusto: gustoDetalle,
+      // detalleGusto eliminado: se usa notas
       cuotasMeses: concepto === 'deuda_cuotas' ? (dto.cuotasMeses ?? null) : null,
       moneda,
       monto: montoSigned.toFixed(2),
@@ -94,7 +93,7 @@ export class GastosService {
       tarjeta: dto.tarjeta ?? null,
       // si es pago a tarjeta hecho desde DÉBITO: destino a quien se paga
       tarjetaPago: metodoPago === 'debito' && concepto === 'pago_tarjeta' ? (dto.tarjetaPago ?? null) : null,
-      notas,
+      notas: notas ?? null,
       // Nuevos campos opcionales para conversión / objetivo de pago
       tasaUsdPen:
         ((): any => {
@@ -218,11 +217,8 @@ export class GastosService {
     }
 
     if (dto.concepto !== undefined) g.concepto = normConcept(dto.concepto);
-    if (dto.detalleGusto !== undefined) {
-      g.detalleGusto = dto.detalleGusto ?? null;
-      if (g.concepto === 'gusto' && dto.notas === undefined) {
-        g.notas = dto.detalleGusto ?? null;
-      }
+    if (dto.detalleGusto !== undefined && dto.notas === undefined) {
+      g.notas = dto.detalleGusto ?? null;
     }
     if (dto.cuotasMeses !== undefined) g.cuotasMeses = dto.cuotasMeses ?? null;
     if (dto.monto !== undefined) g.monto = Number(dto.monto).toFixed(2);

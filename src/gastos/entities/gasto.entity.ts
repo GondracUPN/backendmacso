@@ -25,9 +25,6 @@ export class Gasto {
   @Column({ type: 'varchar', length: 140 })
   concepto: string; // 'comida' | 'gusto' | 'ingreso' | 'pago_tarjeta' | 'inversion' | 'pago_envios' | ...
 
-  @Column({ name: 'detalle_gusto', type: 'text', nullable: true })
-  detalleGusto?: string | null;
-
   @Column({ name: 'cuotas_meses', type: 'smallint', nullable: true })
   cuotasMeses?: number | null;
 

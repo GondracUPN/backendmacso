@@ -84,7 +84,6 @@ export class SchedulesService {
         const g = this.gastosRepo.create({
           userId,
           concepto: sc.concepto,
-          detalleGusto: sc.concepto === 'gusto' ? null : null,
           cuotasMeses: null,
           moneda: sc.moneda,
           monto: Number(sc.monto).toFixed(2),
@@ -108,4 +107,3 @@ export class SchedulesService {
     return { ok: true, processed: generated };
   }
 }
-

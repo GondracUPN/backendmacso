@@ -29,13 +29,6 @@ export class CreateGastoDto {
   @IsNotEmpty()
   concepto: string; // comida | gusto | ingreso | pago_tarjeta | inversion | pago_envios | ...
 
-  // Requerido si concepto es "gusto"
-  @ValidateIf((o) => String(o.concepto || '').toLowerCase() === 'gusto')
-  @IsString()
-  @IsNotEmpty()
-  @IsOptional()
-  detalleGusto?: string;
-
   // Requerido si concepto es "compras cuotas"/"cuotas"
   @ValidateIf((o) => {
     const c = String(o.concepto || '').toLowerCase();
@@ -75,8 +68,9 @@ export class CreateGastoDto {
   @IsOptional()
   tarjetaPago?: CardType;
 
-  @IsOptional()
+  @ValidateIf((o) => String(o.concepto || '').toLowerCase() === 'gusto')
   @IsString()
+  @IsNotEmpty()
   notas?: string | null;
 
   // Opcionales para flujos con conversión de moneda (débito pagando USD con PEN, etc.)
