@@ -43,6 +43,17 @@ export class VentaController {
     return this.svc.findByProducto(pid);
   }
 
+  @Get('ultimas')
+  latestByProducto(@Query('ids') ids?: string) {
+    const parsedIds =
+      ids
+        ?.split(',')
+        .map((v) => Number(v))
+        .filter((n) => Number.isFinite(n) && n > 0) || [];
+
+    return this.svc.findLatestByProductos(parsedIds.length ? parsedIds : undefined);
+  }
+
   @Get(':id')
   one(@Param('id', ParseIntPipe) id: number) {
     return this.svc.findOne(id);

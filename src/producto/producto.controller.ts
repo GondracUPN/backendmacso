@@ -1,4 +1,4 @@
-﻿// src/producto/producto.controller.ts
+// src/producto/producto.controller.ts
 import { Controller, Post, Get, Patch, Param, Body, Delete, HttpException, HttpStatus, Query } from "@nestjs/common";
 import { ProductoService } from './producto.service';
 import { CreateProductoDto } from './dto/create-producto.dto';
@@ -11,13 +11,13 @@ import { Roles } from '../auth/decorators/roles.decorator';
 export class ProductoController {
   constructor(private readonly productoService: ProductoService) {}
 
-  // Crear producto sin autenticaciÃ³n (solicitado para "Servicios" pÃºblico)
+  // Crear producto sin autenticación (solicitado para "Servicios" público)
   @Post()
   create(@Body() dto: CreateProductoDto) {
     return this.productoService.create(dto);
   }
 
-  // Listado pÃºblico para catÃ¡logo/front
+  // Listado público para catálogo/front
   @Get()
     async findAll() {
     try {
@@ -41,7 +41,7 @@ export class ProductoController {
     return this.productoService.statsCached();
   }
 
-  // Sincroniza al CatÃ¡logo todos los productos disponibles (recogidos y sin venta)
+  // Sincroniza al Catálogo todos los productos disponibles (recogidos y sin venta)
   @Post('catalog-sync')
   async catalogSync() {
     return this.productoService.syncDisponiblesConCatalogo();
@@ -59,7 +59,6 @@ export class ProductoController {
     return this.productoService.remove(+id);
   }
 }
-
 
 
 

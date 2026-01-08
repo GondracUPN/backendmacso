@@ -70,6 +70,54 @@ export class AnalyticsController {
       marginThreshold: marginThreshold ? Number(marginThreshold) : undefined,
     });
   }
+
+  @Get('profit')
+  async profit(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('groupBy') groupBy?: 'day' | 'month' | 'year',
+    @Query('type') type?: string,
+    @Query('tipo') tipo?: string,
+    @Query('gama') gama?: string,
+    @Query('procesador') procesador?: string,
+    @Query('pantalla') pantalla?: string,
+    @Query('vendedor') vendedor?: string,
+  ) {
+    return this.svc.profit({
+      from,
+      to,
+      groupBy: (groupBy || 'month') as any,
+      type,
+      tipo,
+      gama,
+      procesador,
+      pantalla,
+      vendedor,
+    });
+  }
+
+  @Get('profit/compare')
+  async profitCompare(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('type') type?: string,
+    @Query('tipo') tipo?: string,
+    @Query('gama') gama?: string,
+    @Query('procesador') procesador?: string,
+    @Query('pantalla') pantalla?: string,
+    @Query('vendedor') vendedor?: string,
+  ) {
+    return this.svc.profitCompare({
+      from,
+      to,
+      type,
+      tipo,
+      gama,
+      procesador,
+      pantalla,
+      vendedor,
+    });
+  }
 }
 
 

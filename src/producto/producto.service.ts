@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
+﻿import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -412,7 +412,7 @@ export class ProductoService {
     await this.invalidateListCache();
   }
 
-  // â Helpers para cÃ¡lculos â
+
   private getTarifa(peso: number): number {
     const tabla: [number, number][] = [
       [0.5, 30.6],

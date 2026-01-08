@@ -68,6 +68,22 @@ export class VentaService {
     });
   }
 
+  // Devuelve la Ð¥ltima venta por producto (opcionalmente filtrando por IDs) en una sola query
+  async findLatestByProductos(productoIds?: number[]): Promise<Venta[]> {
+    const qb = this.ventaRepo
+      .createQueryBuilder('v')
+      .distinctOn(['v.productoId'])
+      .orderBy('v.productoId', 'ASC')
+      .addOrderBy('v.fechaVenta', 'DESC')
+      .addOrderBy('v.id', 'DESC');
+
+    if (productoIds?.length) {
+      qb.where('v.productoId IN (:...productoIds)', { productoIds });
+    }
+
+    return qb.getMany();
+  }
+
   async findOne(id: number): Promise<Venta> {
     const v = await this.ventaRepo.findOne({ where: { id } });
     if (!v) throw new NotFoundException(`Venta ${id} no encontrada`);

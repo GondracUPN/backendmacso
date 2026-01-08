@@ -8,6 +8,13 @@ import { ProductoValor } from '../producto/producto-valor.entity';
 import { ProductoDetalle } from '../producto/producto-detalle.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
+import { aggregateProfitByPeriod, type GroupBy, type ProfitInput } from './profit.utils';
+import {
+  buildInsights,
+  computeDeltas,
+  computePreviousRange,
+  type CompareMetric,
+} from './profit-compare.utils';
 
 type Params = {
   fromCompra?: string;
@@ -27,6 +34,18 @@ type Params = {
   aging30?: number; // default 30
   aging60?: number; // default 60
   marginThreshold?: number; // default 15
+};
+
+type ProfitParams = {
+  from?: string;
+  to?: string;
+  groupBy?: GroupBy;
+  tipo?: string;
+  gama?: string;
+  procesador?: string;
+  pantalla?: string;
+  vendedor?: string;
+  type?: string;
 };
 
 function parseDate(d?: string): Date | null {
@@ -68,11 +87,32 @@ function groupBy<T, K extends string | number>(data: T[], key: (t: T) => K) {
 }
 
 function ym(d: string | Date): string {
-  const dd = typeof d === 'string' ? new Date(d) : d;
-  const y = dd.getFullYear();
-  const m = (dd.getMonth() + 1).toString().padStart(2, '0');
+  if (typeof d === 'string') {
+    const s = d.trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 7);
+    const parsed = new Date(s);
+    if (!isNaN(parsed.getTime())) {
+      const y = parsed.getFullYear();
+      const m = (parsed.getMonth() + 1).toString().padStart(2, '0');
+      return `${y}-${m}`;
+    }
+    return '';
+  }
+  const y = d.getFullYear();
+  const m = (d.getMonth() + 1).toString().padStart(2, '0');
   return `${y}-${m}`;
 }
+
+const SPLIT_VENDOR = 'ambos';
+const normalizeSeller = (s?: string | null) => (s == null ? '' : String(s).trim().toLowerCase());
+const shareForSeller = (venta: Venta, seller: string) => {
+  const vend = normalizeSeller(venta?.vendedor as any);
+  if (!seller) return 1;
+  if (!vend) return 0;
+  if (vend === seller) return 1;
+  if (vend === SPLIT_VENDOR) return 0.5;
+  return 0;
+};
 
 // Versión limpia para armar un display legible del producto sin caracteres extraños
 function productDisplayClean(p: Producto): string {
@@ -293,7 +333,6 @@ export class AnalyticsService {
     if (dFromVenta) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: fromVenta });
     if (dToVenta) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: toVenta });
     if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
-    if (vendedor) ventaQB.andWhere('v.vendedor = :vendedor', { vendedor });
     let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
 
     // Map rápido para acceder al producto completo (incluye tracking)
@@ -305,6 +344,33 @@ export class AnalyticsService {
       const prod = productoById.get(v.productoId) || (v.producto as any as Producto | undefined);
       return prod ? matchesProductFilters(prod) : true;
     });
+
+    // Ensure ganancia is available for analytics (fallback to precioVenta - costoTotal)
+    for (const v of ventas) {
+      const curr = Number(v.ganancia);
+      if (v.ganancia != null && isFinite(curr)) continue;
+      const costoTotal =
+        Number(v.producto?.valor?.costoTotal ?? productoById.get(v.productoId)?.valor?.costoTotal ?? 0) || 0;
+      const precioVenta = Number(v.precioVenta ?? 0) || 0;
+      const computed = precioVenta - costoTotal;
+      if (isFinite(computed)) v.ganancia = computed as any;
+    }
+
+    const sellerTarget = normalizeSeller(vendedor);
+    if (sellerTarget) {
+      ventas = ventas
+        .map((v) => {
+          const share = shareForSeller(v, sellerTarget);
+          if (!share) return null;
+          if (share === 1) return v;
+          return {
+            ...v,
+            precioVenta: Number(v.precioVenta ?? 0) * share,
+            ganancia: Number(v.ganancia ?? 0) * share,
+          } as Venta;
+        })
+        .filter(Boolean) as Venta[];
+    }
 
     // Build helper maps
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
@@ -430,10 +496,24 @@ export class AnalyticsService {
     };
 
     // Active inventory = productos sin venta histórica, pero dentro del filtro de compra (si aplica)
-    const active = productosFiltered.filter((p) => !vendidosHistoricos.has(p.id));
-    const inventoryActiveUnits = active.length;
+    const latestTrackingEstado = (p: Producto) => {
+      const trk = Array.isArray(p.tracking) ? [...p.tracking] : [];
+      if (!trk.length) return '';
+      trk.sort((a, b) => {
+        if (a.createdAt && b.createdAt) {
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        }
+        return (b.id || 0) - (a.id || 0);
+      });
+      return String(trk[0]?.estado || '').toLowerCase();
+    };
+
+    const unsold = productosFiltered.filter((p) => !vendidosHistoricos.has(p.id));
+    const inventoryUnsoldUnits = unsold.length;
+    const inventoryAvailableUnits = unsold.filter((p) => latestTrackingEstado(p) === 'recogido').length;
+    const inventoryActiveUnits = inventoryUnsoldUnits;
     const capitalInmovilizado = +(
-      active.reduce((s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0), 0)
+      unsold.reduce((s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0), 0)
     ).toFixed(2);
 
     // Compras del período (filtradas por fecha de compra)
@@ -473,9 +553,9 @@ export class AnalyticsService {
         };
       });
 
-    // Inventory by type for current active
+    // Inventory by type for current unsold
     const byTypeMap = new Map<string, { unidades: number; capital: number }>();
-    for (const p of active) {
+    for (const p of unsold) {
       const k = p.tipo || 'otro';
       const curr = byTypeMap.get(k) || { unidades: 0, capital: 0 };
       curr.unidades += 1;
@@ -488,7 +568,7 @@ export class AnalyticsService {
       capital: +v.capital.toFixed(2),
     }));
 
-    // Aging buckets for active
+    // Aging buckets for unsold
     const today = new Date();
     const aging: any = { bucket15_29: [], bucket30_59: [], bucket60_plus: [] };
     function pushAging(p: Producto, dias: number) {
@@ -505,7 +585,7 @@ export class AnalyticsService {
       else if (dias >= aging30) aging.bucket30_59.push(item);
       else if (dias >= aging15) aging.bucket15_29.push(item);
     }
-    for (const p of active) {
+    for (const p of unsold) {
       // Antigüedad debe calcularse desde fecha de recogido (cuando el producto ya está en stock).
       // Usamos la última fechaRecogido disponible en tracking; si no existe, no se considera para antigüedad.
       const recogidos = (p.tracking || [])
@@ -950,6 +1030,8 @@ export class AnalyticsService {
       },
       summary: {
         inventoryActiveUnits,
+        inventoryUnsoldUnits,
+        inventoryAvailableUnits,
         capitalInmovilizado,
         capitalTotal,
         comprasPeriodoUnidades,
@@ -975,6 +1057,259 @@ export class AnalyticsService {
         transitLongItems,
       },
       productGroups,
+    };
+  }
+
+  async profit(params: ProfitParams) {
+    const groupBy = (params.groupBy || 'month') as GroupBy;
+    const tipo = params.tipo || (params.type && params.type !== 'general' ? params.type : undefined);
+    const { gama, procesador, pantalla, vendedor, from, to } = params;
+
+    const dFrom = parseDate(from);
+    const dTo = parseDate(to);
+
+    type Attrs = { tipo: string; gama: string; proc: string; pantalla: string };
+    const attrsCache = new Map<number, Attrs>();
+    const extractAttrs = (p: Producto): Attrs => {
+      const tipoP = (p.tipo || '').toLowerCase();
+      const d: any = p.detalle || {};
+      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
+      const gamaVal = d?.gama ? String(d.gama).trim() : '';
+      let procVal = '';
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { procVal = String(d[key] ?? ''); break; }
+      }
+      procVal = procVal ? procVal.replace(/\s+/g, ' ').trim() : '';
+      let pantallaVal = '';
+      const known = ['10.2', '10.9', '11', '12.9', '13', '14', '15', '16'];
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('tamano') || k.includes('tamanio') || k.includes('tamanopantalla') || k.includes('pantalla') || k.includes('screen') || k.includes('size') || k === 'tam') {
+          pantallaVal = String(d[key] ?? '');
+          break;
+        }
+      }
+      if (!pantallaVal) {
+        const candidates = Object.values(d || {}).filter((v) => typeof v === 'string') as string[];
+        const hit = candidates.map(String).find((vs) => known.find((x) => vs.includes(x)));
+        if (hit) pantallaVal = known.find((x) => String(hit).includes(x)) || '';
+      }
+      const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
+      pantallaVal = m ? m[0] : (pantallaVal || '');
+      return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
+    };
+    const getAttrs = (p: Producto): Attrs => {
+      const existing = attrsCache.get(p.id);
+      if (existing) return existing;
+      const parsed = extractAttrs(p);
+      attrsCache.set(p.id, parsed);
+      return parsed;
+    };
+    const matchesProductFilters = (p: Producto) => {
+      const attrs = getAttrs(p);
+      if (tipo && p.tipo !== tipo) return false;
+      if (gama && attrs.gama !== gama) return false;
+      if (procesador && attrs.proc !== procesador) return false;
+      if (pantalla && attrs.pantalla !== pantalla) return false;
+      return true;
+    };
+
+    const ventaQB = this.ventaRepo
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.producto', 'p')
+      .leftJoinAndSelect('p.valor', 'val')
+      .leftJoinAndSelect('p.detalle', 'det');
+    if (dFrom) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: from });
+    if (dTo) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: to });
+    if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
+    let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
+
+    ventas = ventas.filter((v) => {
+      const prod = v.producto as any as Producto | undefined;
+      return prod ? matchesProductFilters(prod) : true;
+    });
+
+    const sellerTarget = normalizeSeller(vendedor);
+    const rows: ProfitInput[] = [];
+    for (const v of ventas) {
+      if (!v.fechaVenta) continue;
+      const share = sellerTarget ? shareForSeller(v, sellerTarget) : 1;
+      if (!share) continue;
+      const costoTotal = Number(v.producto?.valor?.costoTotal ?? 0) || 0;
+      const income = (Number(v.precioVenta ?? 0) || 0) * share;
+      const cost = costoTotal * share;
+      rows.push({ fechaVenta: v.fechaVenta, income, cost });
+    }
+
+    const resultRows = aggregateProfitByPeriod(rows, { from, to, groupBy });
+    return {
+      currency: 'PEN',
+      groupBy,
+      from,
+      to,
+      rows: resultRows,
+    };
+  }
+
+  async profitCompare(params: ProfitParams & { from?: string; to?: string }) {
+    const groupBy = (params.groupBy || 'month') as GroupBy;
+    const tipo = params.tipo || (params.type && params.type !== 'general' ? params.type : undefined);
+    const { gama, procesador, pantalla, vendedor } = params;
+    const from = params.from;
+    const to = params.to;
+    if (!from || !to) {
+      return {
+        current: null,
+        previous: null,
+        delta: null,
+        insights: [],
+      };
+    }
+
+    const prevRange = computePreviousRange(from, to);
+    const ranges = [
+      { key: 'current', from, to },
+      { key: 'previous', from: prevRange.from, to: prevRange.to },
+    ];
+
+    const dFrom = parseDate(prevRange.from);
+    const dTo = parseDate(to);
+
+    type Attrs = { tipo: string; gama: string; proc: string; pantalla: string };
+    const attrsCache = new Map<number, Attrs>();
+    const extractAttrs = (p: Producto): Attrs => {
+      const tipoP = (p.tipo || '').toLowerCase();
+      const d: any = p.detalle || {};
+      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
+      const gamaVal = d?.gama ? String(d.gama).trim() : '';
+      let procVal = '';
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { procVal = String(d[key] ?? ''); break; }
+      }
+      procVal = procVal ? procVal.replace(/\s+/g, ' ').trim() : '';
+      let pantallaVal = '';
+      const known = ['10.2', '10.9', '11', '12.9', '13', '14', '15', '16'];
+      for (const key of Object.keys(d || {})) {
+        const k = sanitize(key);
+        if (k.includes('tamano') || k.includes('tamanio') || k.includes('tamanopantalla') || k.includes('pantalla') || k.includes('screen') || k.includes('size') || k === 'tam') {
+          pantallaVal = String(d[key] ?? '');
+          break;
+        }
+      }
+      if (!pantallaVal) {
+        const candidates = Object.values(d || {}).filter((v) => typeof v === 'string') as string[];
+        const hit = candidates.map(String).find((vs) => known.find((x) => vs.includes(x)));
+        if (hit) pantallaVal = known.find((x) => String(hit).includes(x)) || '';
+      }
+      const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
+      pantallaVal = m ? m[0] : (pantallaVal || '');
+      return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
+    };
+    const getAttrs = (p: Producto): Attrs => {
+      const existing = attrsCache.get(p.id);
+      if (existing) return existing;
+      const parsed = extractAttrs(p);
+      attrsCache.set(p.id, parsed);
+      return parsed;
+    };
+    const matchesProductFilters = (p: Producto) => {
+      const attrs = getAttrs(p);
+      if (tipo && p.tipo !== tipo) return false;
+      if (gama && attrs.gama !== gama) return false;
+      if (procesador && attrs.proc !== procesador) return false;
+      if (pantalla && attrs.pantalla !== pantalla) return false;
+      return true;
+    };
+
+    const ventaQB = this.ventaRepo
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.producto', 'p')
+      .leftJoinAndSelect('p.valor', 'val')
+      .leftJoinAndSelect('p.detalle', 'det');
+    if (dFrom) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: prevRange.from });
+    if (dTo) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: to });
+    if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
+    let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
+
+    ventas = ventas.filter((v) => {
+      const prod = v.producto as any as Producto | undefined;
+      return prod ? matchesProductFilters(prod) : true;
+    });
+
+    const sellerTarget = normalizeSeller(vendedor);
+
+    const metricsByKey = new Map<string, CompareMetric>();
+    for (const r of ranges) {
+      metricsByKey.set(r.key, { income: 0, cost: 0, profit: 0, margin: 0, orders: 0, avgTicket: 0 });
+    }
+
+    const topProductMap = new Map<string, { name: string; profit: number }>();
+
+    const inRange = (dateStr: string, start: string, end: string) => {
+      const s = String(dateStr || '').slice(0, 10);
+      return s >= start && s <= end;
+    };
+
+    for (const v of ventas) {
+      if (!v.fechaVenta) continue;
+      const vDateStr = String(v.fechaVenta).slice(0, 10);
+      if (!vDateStr) continue;
+      const share = sellerTarget ? shareForSeller(v, sellerTarget) : 1;
+      if (!share) continue;
+      const cost = (Number(v.producto?.valor?.costoTotal ?? 0) || 0) * share;
+      const income = (Number(v.precioVenta ?? 0) || 0) * share;
+      const profit = income - cost;
+
+      if (inRange(vDateStr, from, to)) {
+        const curr = metricsByKey.get('current')!;
+        curr.income += income;
+        curr.cost += cost;
+        curr.profit += profit;
+        curr.orders = (curr.orders || 0) + 1;
+        const name = v.producto ? productDisplayClean(v.producto as any) : `#${v.productoId}`;
+        const top = topProductMap.get(name) || { name, profit: 0 };
+        top.profit += profit;
+        topProductMap.set(name, top);
+      }
+      if (inRange(vDateStr, prevRange.from, prevRange.to)) {
+        const prev = metricsByKey.get('previous')!;
+        prev.income += income;
+        prev.cost += cost;
+        prev.profit += profit;
+        prev.orders = (prev.orders || 0) + 1;
+      }
+    }
+
+    const finalizeMetric = (m: CompareMetric) => {
+      m.income = +m.income.toFixed(2);
+      m.cost = +m.cost.toFixed(2);
+      m.profit = +(m.income - m.cost).toFixed(2);
+      m.margin = m.income > 0 ? +((m.profit / m.income) * 100).toFixed(2) : 0;
+      const orders = Number(m.orders || 0);
+      m.avgTicket = orders > 0 ? +(m.income / orders).toFixed(2) : 0;
+      return m;
+    };
+
+    const current = finalizeMetric(metricsByKey.get('current')!);
+    const previous = finalizeMetric(metricsByKey.get('previous')!);
+    const delta = computeDeltas(current, previous);
+    const topProducts = Array.from(topProductMap.values())
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, 5);
+    const insights = buildInsights({ current, previous, delta, topProducts });
+
+    return {
+      groupBy,
+      from,
+      to,
+      previousRange: prevRange,
+      current,
+      previous,
+      delta,
+      insights,
+      topProducts,
     };
   }
 }
