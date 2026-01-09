@@ -15,7 +15,10 @@ import { SchedulesModule } from './schedules/schedules.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [join(__dirname, '..', '.env'), join(process.cwd(), '.env')],
+    }),
 
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

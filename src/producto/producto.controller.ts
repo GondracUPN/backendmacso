@@ -41,6 +41,12 @@ export class ProductoController {
     return this.productoService.statsCached();
   }
 
+  // Resumen completo para gestiÇün de productos
+  @Get('resumen')
+    async resumen(@Query('refresh') refresh?: string) {
+    return this.productoService.resumenCached(refresh === 'true');
+  }
+
   // Sincroniza al Catálogo todos los productos disponibles (recogidos y sin venta)
   @Post('catalog-sync')
   async catalogSync() {
@@ -59,7 +65,6 @@ export class ProductoController {
     return this.productoService.remove(+id);
   }
 }
-
 
 
 

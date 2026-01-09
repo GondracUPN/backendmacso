@@ -648,6 +648,103 @@ export class ProductoService {
     return { disponibles, vendidos, totalVentas, gananciaTotal };
   }
 
+  async resumenCached(refresh?: boolean) {
+    if (refresh) return this.resumen();
+    const key = 'productos:resumen';
+    const cached: any = await this.cache.get(key);
+    const now = Date.now();
+    const revalidateMs = 60_000;
+    const ttlSeconds = 300;
+    if (cached?.data) {
+      const age = now - (cached.cachedAt || 0);
+      if (age > revalidateMs && !this.inflight.has(key)) {
+        this.inflight.add(key);
+        this.resumen()
+          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
+          .finally(() => this.inflight.delete(key));
+      }
+      return cached.data;
+    }
+    const data = await this.resumen();
+    await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
+    return data;
+  }
+
+  async resumen() {
+    const productos = await this.productoRepo.find({
+      relations: ['valor', 'tracking'],
+      order: { id: 'DESC' },
+    });
+    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
+    const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
+    const [sumVentaRaw, sumGanRaw] = await Promise.all([
+      this.ventaRepo
+        .createQueryBuilder('v')
+        .select('COALESCE(SUM(v.precioVenta),0)', 's')
+        .getRawOne(),
+      this.ventaRepo
+        .createQueryBuilder('v')
+        .select('COALESCE(SUM(v.ganancia),0)', 's')
+        .getRawOne(),
+    ]);
+
+    let total = 0;
+    let sinTracking = 0;
+    let enCamino = 0;
+    let enEshopex = 0;
+    let disponible = 0;
+    let totalGastadoUsd = 0;
+    let totalEnvioPen = 0;
+    let totalDecUsd = 0;
+    let totalCostoPen = 0;
+
+    const latestEstado = (p: any) => {
+      const trk = Array.isArray(p.tracking) ? [...p.tracking] : [];
+      if (!trk.length) return '';
+      trk.sort((a, b) => {
+        if (a.createdAt && b.createdAt) {
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        }
+        return (b.id || 0) - (a.id || 0);
+      });
+      return String(trk[0]?.estado || '').toLowerCase();
+    };
+
+    for (const raw of productos) {
+      const p = this.applyProrrateadoView(raw);
+      total += 1;
+      const estado = latestEstado(p);
+      if (!estado || estado === 'comprado_sin_tracking') sinTracking += 1;
+      if (estado === 'comprado_en_camino') enCamino += 1;
+      if (estado === 'en_eshopex') enEshopex += 1;
+      if (estado === 'recogido' && !vendidosSet.has(p.id)) disponible += 1;
+
+      const v: any = p.valor || {};
+      totalGastadoUsd += Number(v.valorProducto ?? 0) || 0;
+      totalEnvioPen += Number(v.costoEnvio ?? 0) || 0;
+      totalDecUsd += Number(v.valorDec ?? 0) || 0;
+      totalCostoPen += Number(v.costoTotal ?? 0) || 0;
+    }
+
+    const totalVentaPen = Number((sumVentaRaw as any)?.s ?? 0);
+    const gananciaPen = Number((sumGanRaw as any)?.s ?? 0);
+
+    return {
+      total,
+      sinTracking,
+      enCamino,
+      enEshopex,
+      disponible,
+      vendido: vendidosSet.size,
+      totalGastadoUsd,
+      totalEnvioPen,
+      totalDecUsd,
+      totalCostoPen,
+      totalVentaPen,
+      gananciaPen,
+    };
+  }
+
   private buildTitle(p: any): string {
     const tipo = (p.tipo || '').toString();
     const d: any = p.detalle || {};
