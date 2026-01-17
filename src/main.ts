@@ -74,6 +74,31 @@ async function bootstrap() {
           console.log(`[BOOT][DB_COLUMNS][${tbl}] error`, (e as any)?.message || e);
         }
       }
+
+      try {
+        await dataSource.query(
+          `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
+        );
+        await dataSource.query(
+          `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS estatus_esho varchar`,
+        );
+
+        const renameCandidates = await dataSource.query(
+          `SELECT column_name
+           FROM information_schema.columns
+           WHERE table_schema = $1 AND table_name = 'producto_detalle'`,
+          [schema],
+        );
+        const hasTamano = renameCandidates.some((r: any) => r.column_name === 'tamano');
+        const hasTamanio = renameCandidates.some((r: any) => r.column_name === 'tama\u00f1o');
+        if (!hasTamano && hasTamanio) {
+          await dataSource.query(
+            `ALTER TABLE "${schema}"."producto_detalle" RENAME COLUMN "tama\u00f1o" TO tamano`,
+          );
+        }
+      } catch (e) {
+        console.log('[BOOT][DB_SCHEMA_FIX] error', (e as any)?.message || e);
+      }
     } catch (e) {
       console.log('[BOOT][DB_ENV] error', (e as any)?.message || e);
     }
