@@ -819,6 +819,7 @@ export class ProductoService {
       transportista: source.transportista ?? undefined,
       casillero: source.casillero ?? undefined,
       trackingEshop: source.trackingEshop ?? undefined,
+      estatusEsho: (source as any)?.estatusEsho ?? undefined,
       fechaRecepcion: (source as any)?.fechaRecepcion ?? null,
       fechaRecogido: (source as any)?.fechaRecogido ?? null,
     };
@@ -856,6 +857,7 @@ export class ProductoService {
           t.transportista,
           t.casillero,
           t.trackingEshop,
+          (t as any)?.estatusEsho,
           (t as any)?.fechaRecepcion,
           (t as any)?.fechaRecogido,
         ].filter((v) => v !== null && v !== undefined && String(v).trim().length).length,

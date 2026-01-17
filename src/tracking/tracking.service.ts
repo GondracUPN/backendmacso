@@ -85,6 +85,7 @@ export class TrackingService {
     transportista?: string | null;
     casillero?: string | null;
     trackingEshop?: string | null;
+    estatusEsho?: string | null;
     fechaRecepcion?: string | null;
     fechaRecogido?: string | null;
   }): EstadoTracking {
@@ -118,6 +119,7 @@ export class TrackingService {
       transportista: tracking.transportista ?? undefined,
       casillero: tracking.casillero ?? undefined,
       trackingEshop: tracking.trackingEshop ?? undefined,
+      estatusEsho: (tracking as any)?.estatusEsho ?? undefined,
       fechaRecepcion: (tracking as any)?.fechaRecepcion ?? null,
       fechaRecogido: (tracking as any)?.fechaRecogido ?? null,
     };
@@ -147,6 +149,43 @@ export class TrackingService {
     await this.productoRepo.update(
       { id: productoId, facturaDecSubida: false },
       { facturaDecSubida: true },
+    );
+  }
+
+  async updateEstatusEshoBulk(statusByCode: Record<string, string>): Promise<void> {
+    const codes = Object.keys(statusByCode || {})
+      .map((c) => this.clean(c))
+      .filter(Boolean) as string[];
+    if (!codes.length) return;
+    const rows: Array<{ id: number; tracking_eshop: string }> = await this.repo.query(
+      `SELECT DISTINCT ON (tracking_eshop) id, tracking_eshop
+       FROM tracking
+       WHERE tracking_eshop = ANY($1)
+       ORDER BY tracking_eshop, id DESC`,
+      [codes],
+    );
+    if (!rows.length) return;
+    const cases: string[] = [];
+    const params: any[] = [];
+    const ids: number[] = [];
+    rows.forEach((row) => {
+      const status = statusByCode[row.tracking_eshop];
+      if (!status) return;
+      const idParam = params.length + 1;
+      params.push(row.id);
+      const statusParam = params.length + 1;
+      params.push(status);
+      cases.push(`WHEN $${idParam} THEN $${statusParam}`);
+      ids.push(row.id);
+    });
+    if (!ids.length) return;
+    const idsParams = ids.map((_, i) => `$${params.length + i + 1}`);
+    params.push(...ids);
+    await this.repo.query(
+      `UPDATE tracking
+       SET estatus_esho = CASE id ${cases.join(' ')} END
+       WHERE id IN (${idsParams.join(',')})`,
+      params,
     );
   }
 }

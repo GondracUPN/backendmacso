@@ -48,6 +48,9 @@ export class Tracking {
   @Column({ name: 'tracking_eshop', nullable: true })
   trackingEshop?: string;
 
+  @Column({ name: 'estatus_esho', nullable: true })
+  estatusEsho?: string;
+
   // Fechas del tramo local
   @Column({ type: 'date', nullable: true })
   fechaRecepcion?: string; // recibido por Eshopex (o casillero local)

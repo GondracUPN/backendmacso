@@ -12,6 +12,8 @@ import {
 import { VentaService } from './venta.service';
 import { CreateVentaDto } from './dto/create-venta.dto';
 import { UpdateVentaDto } from './dto/update-venta.dto';
+import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
+import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 
 @Controller('ventas')
 export class VentaController {
@@ -38,6 +40,19 @@ export class VentaController {
     return this.svc.create(dto);
   }
 
+  @Post('adelanto')
+  createAdelanto(@Body() dto: CreateVentaAdelantoDto) {
+    return this.svc.createAdelanto(dto);
+  }
+
+  @Post('adelanto/:id/completar')
+  completeAdelanto(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CompleteVentaAdelantoDto,
+  ) {
+    return this.svc.completeAdelanto(id, dto);
+  }
+
   @Get('producto/:pid')
   byProducto(@Param('pid', ParseIntPipe) pid: number) {
     return this.svc.findByProducto(pid);
@@ -52,6 +67,17 @@ export class VentaController {
         .filter((n) => Number.isFinite(n) && n > 0) || [];
 
     return this.svc.findLatestByProductos(parsedIds.length ? parsedIds : undefined);
+  }
+
+  @Get('adelantos/ultimos')
+  latestAdelantosByProducto(@Query('ids') ids?: string) {
+    const parsedIds =
+      ids
+        ?.split(',')
+        .map((v) => Number(v))
+        .filter((n) => Number.isFinite(n) && n > 0) || [];
+
+    return this.svc.findLatestAdelantosByProductos(parsedIds.length ? parsedIds : undefined);
   }
 
   @Get(':id')

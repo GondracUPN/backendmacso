@@ -185,7 +185,9 @@ const mergeCookies = (jar: Map<string, string>, setCookies: string[]) => {
     if (idx <= 0) continue;
     const name = pair.slice(0, idx).trim();
     const value = pair.slice(idx + 1).trim();
-    if (name) jar.set(name, value);
+    if (!name) continue;
+    if (value === '' && jar.has(name)) continue;
+    jar.set(name, value);
   }
 };
 
@@ -336,6 +338,166 @@ const fetchEshopexCarga = async (account: EshopexAccount): Promise<EshopexCargaR
   return second.rows;
 };
 
+const toAbsoluteUrl = (loc: string, base: string) => {
+  if (!loc) return '';
+  if (/^https?:\/\//i.test(loc)) return loc;
+  const clean = loc.replace(/^\.\/?/, '');
+  if (/ConfirmCli\.aspx/i.test(clean) && !/confirmationpe\//i.test(clean) && !clean.startsWith('/')) {
+    return `https://www.eshopex.com/confirmationpe/${clean}`;
+  }
+  try {
+    return new URL(clean, base).toString();
+  } catch {
+    return clean;
+  }
+};
+
+const extractConfirmUrl = (html: string, base: string) => {
+  if (!html) return '';
+  const direct = html.match(/https?:\/\/[^\s"'<>]*ConfirmCli\.aspx\?id=[^&"'<>]+&re=\d+/i);
+  if (direct) return direct[0];
+  const rel = html.match(/(?:\.\/)?ConfirmCli\.aspx\?id=([A-Za-z0-9]+)&re=(\d+)/i);
+  if (rel) {
+    return `https://www.eshopex.com/confirmationpe/ConfirmCli.aspx?id=${rel[1]}&re=${rel[2]}`;
+  }
+  const path = html.match(/\/confirmationpe\/ConfirmCli\.aspx\?id=([A-Za-z0-9]+)&re=(\d+)/i);
+  if (path) {
+    return `https://www.eshopex.com/confirmationpe/ConfirmCli.aspx?id=${path[1]}&re=${path[2]}`;
+  }
+  const action = html.match(/action="([^"]*ConfirmCli\.aspx\?id=[^"]+)"/i);
+  if (action) return toAbsoluteUrl(action[1], base);
+  return '';
+};
+
+const fetchEshopexPrePago = async (account: EshopexAccount): Promise<string> => {
+  const baseHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'es-PE,es;q=0.9',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-User': '?1',
+    'Sec-Fetch-Dest': 'document',
+    'Cache-Control': 'max-age=0',
+    'Pragma': 'no-cache',
+  };
+
+  const runFlow = async (
+    baseUrl: string,
+    loginUrl: string,
+    dashboardUrl: string,
+    saldoUrl: string,
+  ): Promise<string> => {
+    const jar = new Map<string, string>();
+    jar.set('userInfo', 'language=SP&country=PE');
+    jar.set('Pais%5Fselected', 'PE');
+
+    const fetchWithRedirect = async (url: string, init: any = {}, max = 5) => {
+      let current = url;
+      let last: Response | null = null;
+      for (let i = 0; i < max; i += 1) {
+        const headers = { ...(init.headers || {}) };
+        if (!headers.Cookie && jar.size) {
+          headers.Cookie = cookieHeader(jar);
+        }
+        const res = await fetch(current, { ...init, headers, redirect: 'manual' });
+        mergeCookies(jar, getSetCookies(res));
+        last = res;
+        if (!(res.status >= 300 && res.status < 400)) return res;
+        const loc = res.headers.get('location');
+        if (!loc) return res;
+        current = loc.startsWith('http') ? loc : new URL(loc, current).toString();
+        const nextHeaders = { ...(init.headers || {}), Cookie: cookieHeader(jar) };
+        init = { ...init, headers: nextHeaders };
+      }
+      return last as Response;
+    };
+
+    await fetchWithRedirect(baseUrl, { headers: baseHeaders });
+
+    const loginRes = await fetchWithRedirect(loginUrl, { headers: baseHeaders });
+    const loginHtml = await loginRes.text();
+    const hidden = parseHiddenInputs(loginHtml);
+    if (!Object.keys(hidden).length) return '';
+
+    const form = new URLSearchParams();
+    Object.entries(hidden).forEach(([k, v]) => form.set(k, v || ''));
+    form.set('ctl00$ContentPlaceHolder1$txtEcode', account.email);
+    form.set('ctl00$ContentPlaceHolder1$txtClave', account.password);
+    form.set('ctl00$ContentPlaceHolder1$Button1', 'Entrar');
+
+    const postRes = await fetchWithRedirect(loginUrl, {
+      method: 'POST',
+      headers: {
+        ...baseHeaders,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://www.eshopex.com',
+        'Referer': loginUrl,
+        'Cookie': cookieHeader(jar),
+      },
+      body: form.toString(),
+    });
+    const postHtml = await postRes.text();
+    if (/ContentPlaceHolder1_txtClave/i.test(postHtml)) {
+      return '';
+    }
+
+    if (dashboardUrl) {
+      await fetchWithRedirect(dashboardUrl, {
+        headers: { ...baseHeaders, 'Referer': loginUrl },
+      });
+    }
+
+    const saldoRes = await fetchWithRedirect(saldoUrl, {
+      headers: { ...baseHeaders, 'Referer': dashboardUrl || loginUrl },
+    });
+    const saldoHtml = await saldoRes.text();
+    const saldoHidden = parseHiddenInputs(saldoHtml);
+    if (!Object.keys(saldoHidden).length) return '';
+
+    const saldoForm = new URLSearchParams();
+    Object.entries(saldoHidden).forEach(([k, v]) => saldoForm.set(k, v || ''));
+    saldoForm.set('ctl00$ContentPlaceHolder1$btnPrePago', 'PrePago Carga');
+
+    const prepagoRes = await fetch(saldoUrl, {
+      method: 'POST',
+      headers: {
+        ...baseHeaders,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://www.eshopex.com',
+        'Referer': saldoUrl,
+        'Cookie': cookieHeader(jar),
+      },
+      redirect: 'manual',
+      body: saldoForm.toString(),
+    });
+    mergeCookies(jar, getSetCookies(prepagoRes));
+    const loc = prepagoRes.headers.get('location');
+    if (loc) return toAbsoluteUrl(loc, saldoUrl);
+    const prepagoHtml = await prepagoRes.text();
+    return extractConfirmUrl(prepagoHtml, saldoUrl);
+  };
+
+  const peFlow = {
+    baseUrl: 'https://www.eshopex.com/pe/',
+    loginUrl: 'https://www.eshopex.com/pe/mi_cuenta.aspx',
+    dashboardUrl: 'https://www.eshopex.com/pe/mi_cuenta2.aspx',
+    saldoUrl: 'https://www.eshopex.com/pe/Saldo_Cuenta.aspx',
+  };
+
+  const usFlow = {
+    baseUrl: 'https://www.eshopex.com/us/',
+    loginUrl: 'https://www.eshopex.com/us/mi_cuenta.aspx',
+    dashboardUrl: 'https://www.eshopex.com/us/mi_cuenta2.aspx',
+    saldoUrl: 'https://www.eshopex.com/us/Saldo_Cuenta.aspx',
+  };
+
+  const first = await runFlow(peFlow.baseUrl, peFlow.loginUrl, peFlow.dashboardUrl, peFlow.saldoUrl);
+  if (first) return first;
+  return runFlow(usFlow.baseUrl, usFlow.loginUrl, usFlow.dashboardUrl, usFlow.saldoUrl);
+};
+
 @Controller('tracking')
 export class TrackingController {
   constructor(private readonly svc: TrackingService) {}
@@ -387,7 +549,7 @@ export class TrackingController {
     if (eshopexCargaCache && Date.now() - eshopexCargaCache.ts < ESHOPEX_CARGA_CACHE_TTL_MS) {
       return eshopexCargaCache.data;
     }
-    const accounts = parseAccountsEnv().slice(0, 1);
+    const accounts = parseAccountsEnv();
     console.log('[Eshopex] Accounts loaded:', accounts.map((a) => a.email));
     if (!accounts.length) {
       throw new BadRequestException({
@@ -412,8 +574,39 @@ export class TrackingController {
       if (!unique.has(key)) unique.set(key, row);
     }
     const data = Array.from(unique.values());
+    const statusByCode: Record<string, string> = {};
+    for (const row of data) {
+      const code = String(row?.guia || '').trim();
+      const status = String(row?.estado || '').trim();
+      if (code && status) statusByCode[code] = status;
+    }
+    await this.svc.updateEstatusEshoBulk(statusByCode);
     eshopexCargaCache = { ts: Date.now(), data };
     return data;
+  }
+
+  @Post('eshopex-prepago')
+  async startEshopexPrepago(@Body() body: { account?: string }) {
+    const accounts = parseAccountsEnv();
+    if (!accounts.length) {
+      throw new BadRequestException({
+        message: 'Configura ESHOPEX_ACCOUNTS con cuentas validas',
+        source: lastEshopexEnvSource.source,
+        length: lastEshopexEnvSource.length,
+      });
+    }
+    const requested = String(body?.account || '').trim().toLowerCase();
+    const account = requested
+      ? accounts.find((a) => a.email.toLowerCase() === requested)
+      : accounts[0];
+    if (!account) {
+      throw new BadRequestException('Cuenta de Eshopex no encontrada para prepago.');
+    }
+    const url = await fetchEshopexPrePago(account);
+    if (!url) {
+      throw new BadRequestException('No se pudo iniciar el prepago en Eshopex.');
+    }
+    return { url };
   }
 
   // Obtener tracking por ID

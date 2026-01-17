@@ -28,6 +28,10 @@ export class CreateTrackingDto {
   trackingEshop?: string;
 
   @IsOptional()
+  @IsString()
+  estatusEsho?: string;
+
+  @IsOptional()
   @IsDateString()
   fechaRecepcion?: string;
 

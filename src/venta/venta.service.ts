@@ -7,10 +7,13 @@ import {
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Venta } from './venta.entity';
+import { VentaAdelanto } from './venta-adelanto.entity';
 import { CreateVentaDto } from './dto/create-venta.dto';
 import { UpdateVentaDto } from './dto/update-venta.dto';
+import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
+import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 
@@ -26,6 +29,8 @@ export type ListVentasParams = {
 export class VentaService {
   constructor(
     @InjectRepository(Venta) private readonly ventaRepo: Repository<Venta>,
+    @InjectRepository(VentaAdelanto)
+    private readonly adelantoRepo: Repository<VentaAdelanto>,
     @InjectRepository(Producto)
     private readonly productoRepo: Repository<Producto>,
     @InjectRepository(ProductoValor)
@@ -82,6 +87,114 @@ export class VentaService {
     }
 
     return qb.getMany();
+  }
+
+  async findLatestAdelantosByProductos(productoIds?: number[]): Promise<VentaAdelanto[]> {
+    const qb = this.adelantoRepo
+      .createQueryBuilder('a')
+      .where('a.completadoAt IS NULL')
+      .distinctOn(['a.productoId'])
+      .orderBy('a.productoId', 'ASC')
+      .addOrderBy('a.createdAt', 'DESC')
+      .addOrderBy('a.id', 'DESC');
+
+    if (productoIds?.length) {
+      qb.andWhere('a.productoId IN (:...productoIds)', { productoIds });
+    }
+
+    return qb.getMany();
+  }
+
+  async createAdelanto(dto: CreateVentaAdelantoDto): Promise<VentaAdelanto> {
+    const producto = await this.productoRepo.findOne({
+      where: { id: dto.productoId },
+    });
+    if (!producto)
+      throw new NotFoundException(`Producto ${dto.productoId} no encontrado`);
+
+    const existingVenta = await this.ventaRepo.findOne({
+      where: { productoId: producto.id },
+      order: { id: 'DESC' },
+    });
+    if (existingVenta) {
+      throw new BadRequestException('El producto ya tiene una venta registrada.');
+    }
+
+    const existingAdelanto = await this.adelantoRepo.findOne({
+      where: { productoId: producto.id, completadoAt: IsNull() },
+      order: { id: 'DESC' },
+    });
+    if (existingAdelanto) {
+      throw new BadRequestException('El producto ya tiene un adelanto activo.');
+    }
+
+    const adelanto = this.adelantoRepo.create({
+      productoId: producto.id,
+      montoAdelanto: Number(dto.montoAdelanto),
+      fechaAdelanto: dto.fechaAdelanto,
+      montoVenta: Number(dto.montoVenta),
+    });
+    return this.adelantoRepo.save(adelanto);
+  }
+
+  async completeAdelanto(id: number, dto: CompleteVentaAdelantoDto): Promise<Venta> {
+    const adelanto = await this.adelantoRepo.findOne({ where: { id } });
+    if (!adelanto) throw new NotFoundException(`Adelanto ${id} no encontrado`);
+    if (adelanto.completadoAt) {
+      throw new BadRequestException('El adelanto ya fue completado.');
+    }
+
+    const producto = await this.productoRepo.findOne({
+      where: { id: adelanto.productoId },
+      relations: ['valor'],
+    });
+    if (!producto?.valor)
+      throw new BadRequestException(
+        'El producto no tiene seccion de valor asociada',
+      );
+
+    const v = producto.valor;
+    const valorProductoUSD = Number(v.valorProducto);
+    if (!valorProductoUSD) {
+      throw new BadRequestException(
+        'El producto no tiene valor USD para calcular el tipo de cambio.',
+      );
+    }
+    const tipoCambio = Number(dto.tipoCambio);
+    if (!tipoCambio) {
+      throw new BadRequestException('Tipo de cambio invalido.');
+    }
+    const costoEnvioSoles = Number(
+      (v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0,
+    );
+    const valorSolesRecalc = +(valorProductoUSD * tipoCambio).toFixed(2);
+    const costoTotalRecalc = +(valorSolesRecalc + costoEnvioSoles).toFixed(2);
+
+    v.valorSoles = valorSolesRecalc;
+    v.costoTotal = costoTotalRecalc;
+    await this.valorRepo.save(v);
+
+    const precioVenta = Number(adelanto.montoVenta);
+    const ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
+    const base = Math.max(costoTotalRecalc - Number(adelanto.montoAdelanto || 0), 1);
+    const porcentajeGanancia = +((ganancia / base) * 100).toFixed(3);
+
+    const venta = this.ventaRepo.create({
+      productoId: producto.id,
+      tipoCambio,
+      fechaVenta: dto.fechaVenta,
+      precioVenta,
+      ganancia,
+      porcentajeGanancia,
+      vendedor: null,
+    });
+    const saved = await this.ventaRepo.save(venta);
+
+    adelanto.ventaId = saved.id;
+    adelanto.completadoAt = new Date();
+    await this.adelantoRepo.save(adelanto);
+    await this.cache.del?.('productos:stats').catch?.(() => {});
+    return saved;
   }
 
   async findOne(id: number): Promise<Venta> {

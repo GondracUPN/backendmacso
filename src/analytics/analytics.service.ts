@@ -275,10 +275,11 @@ export class AnalyticsService {
     type Attrs = { tipo: string; gama: string; proc: string; pantalla: string; ram: string; ssd: string };
     const attrsCache = new Map<number, Attrs>();
     const extractAttrs = (p: Producto): Attrs => {
-      const tipoP = (p.tipo || '').toLowerCase();
+      let tipoP = (p.tipo || '').toLowerCase().trim();
+      if (tipoP.includes('watch')) tipoP = 'watch';
       const d: any = p.detalle || {};
       const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      const gama = d?.gama ? String(d.gama).trim() : '';
+      let gama = d?.gama ? String(d.gama).trim() : '';
       let proc = '';
       for (const key of Object.keys(d || {})) {
         const k = sanitize(key);
@@ -298,6 +299,10 @@ export class AnalyticsService {
       }
       const m = String(pantalla).match(/\d+(?:\.\d+)?/);
       pantalla = m ? m[0] : (pantalla || '');
+      if (!gama && (tipoP === 'iphone' || tipoP === 'watch' || tipoP === 'ipad')) {
+        const modelo = d?.modelo ? String(d.modelo).trim() : '';
+        if (modelo) gama = modelo;
+      }
       const ram = d?.ram ? String(d.ram).trim() : '';
       const ssd = (d as any)?.almacenamiento || (d as any)?.ssd ? String((d as any)?.almacenamiento || (d as any)?.ssd).trim() : '';
       return { tipo: tipoP, gama, proc, pantalla, ram, ssd };
@@ -311,7 +316,7 @@ export class AnalyticsService {
     };
     const matchesProductFilters = (p: Producto) => {
       const attrs = getAttrs(p);
-      if (tipo && p.tipo !== tipo) return false;
+      if (tipo && attrs.tipo !== tipo) return false;
       if (gama && attrs.gama !== gama) return false;
       if (procesador && attrs.proc !== procesador) return false;
       if (pantalla && attrs.pantalla !== pantalla) return false;
@@ -877,7 +882,7 @@ export class AnalyticsService {
     // Product groups (MacBook): aggregate stats by gama/proc/pantalla from productos + ventas
     type GroupKey = string;
     type CompraDetalle = { productoId: number; fechaCompra?: string | Date | null; precioUSD?: number | null; costoTotal?: number | null; estado?: string | null; };
-    type VentaDetalle = { ventaId: number; fechaVenta?: string | Date | null; precioVenta?: number | null; ganancia?: number | null; porcentaje?: number | null; dias?: number | null; };
+    type VentaDetalle = { ventaId: number; productoId: number; fechaVenta?: string | Date | null; precioVenta?: number | null; ganancia?: number | null; porcentaje?: number | null; dias?: number | null; };
     type Group = {
       tipo: string;
       gama: string;
@@ -894,9 +899,8 @@ export class AnalyticsService {
     const groups = new Map<GroupKey, Group>();
     for (const p of productosFiltered) {
       const a = getAttrs(p);
-      if (a.tipo !== 'macbook') continue;
-      const k: GroupKey = ['macbook', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
-      const g = groups.get(k) || { tipo: 'macbook', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
+      const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
+      const g = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
       g.compras.push(Number(p.valor?.costoTotal ?? 0) || 0);
       g.comprasDet.push({
         productoId: p.id,
@@ -915,9 +919,8 @@ export class AnalyticsService {
       const p = productoLite || productoFull;
       if (!p) continue;
       const a = getAttrs(p);
-      if (a.tipo !== 'macbook') continue;
-      const k: GroupKey = ['macbook', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
-      const g = groups.get(k) || { tipo: 'macbook', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
+      const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
+      const g = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
       g.ventas.push(Number(v.precioVenta) || 0);
       g.margenes.push(Number(v.porcentajeGanancia) || 0);
       const tracking = productoFull?.tracking || [];
@@ -928,6 +931,7 @@ export class AnalyticsService {
       const fechaRecogido = fechasRecogido.length ? fechasRecogido[fechasRecogido.length - 1] : null;
       g.ventasDet.push({
         ventaId: v.id,
+        productoId: v.productoId,
         fechaVenta: v.fechaVenta,
         precioVenta: Number(v.precioVenta) || null,
         ganancia: Number(v.ganancia) || null,
@@ -951,7 +955,30 @@ export class AnalyticsService {
       const margenPromedio = mean(g.margenes) ?? null;
       const recMin = ventasStats.p25 != null ? +(Number(ventasStats.p25)/1.2).toFixed(2) : null;
       const recMax = ventasStats.p75 != null ? +(Number(ventasStats.p75)/1.2).toFixed(2) : null;
-      const labelParts = ['MacBook']; if (g.gama) labelParts.push(g.gama); if (g.pantalla) labelParts.push(`${g.pantalla}\"`); if (g.proc) labelParts.push(g.proc);
+      const tipoKey = (g.tipo || '').toLowerCase();
+      const labelParts: string[] = [];
+      if (tipoKey === 'macbook') {
+        labelParts.push('MacBook');
+        if (g.gama) labelParts.push(g.gama);
+        if (g.pantalla) labelParts.push(`${g.pantalla}\"`);
+        if (g.proc) labelParts.push(g.proc);
+      } else if (tipoKey === 'iphone') {
+        labelParts.push('iPhone');
+        if (g.gama) labelParts.push(g.gama);
+      } else if (tipoKey === 'ipad') {
+        labelParts.push('iPad');
+        if (g.gama) labelParts.push(g.gama);
+        if (g.pantalla) labelParts.push(`${g.pantalla}\"`);
+        if (g.proc) labelParts.push(g.proc);
+      } else if (tipoKey === 'watch') {
+        labelParts.push('Apple Watch');
+        if (g.gama) labelParts.push(g.gama);
+      } else {
+        labelParts.push(g.tipo || 'Producto');
+        if (g.gama) labelParts.push(g.gama);
+        if (g.pantalla) labelParts.push(`${g.pantalla}\"`);
+        if (g.proc) labelParts.push(g.proc);
+      }
       return {
         tipo: g.tipo,
         gama: g.gama,
@@ -1071,10 +1098,11 @@ export class AnalyticsService {
     type Attrs = { tipo: string; gama: string; proc: string; pantalla: string };
     const attrsCache = new Map<number, Attrs>();
     const extractAttrs = (p: Producto): Attrs => {
-      const tipoP = (p.tipo || '').toLowerCase();
+      let tipoP = (p.tipo || '').toLowerCase().trim();
+      if (tipoP.includes('watch')) tipoP = 'watch';
       const d: any = p.detalle || {};
       const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      const gamaVal = d?.gama ? String(d.gama).trim() : '';
+      let gamaVal = d?.gama ? String(d.gama).trim() : '';
       let procVal = '';
       for (const key of Object.keys(d || {})) {
         const k = sanitize(key);
@@ -1097,6 +1125,10 @@ export class AnalyticsService {
       }
       const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
       pantallaVal = m ? m[0] : (pantallaVal || '');
+      if (!gamaVal && (tipoP === 'iphone' || tipoP === 'watch' || tipoP === 'ipad')) {
+        const modelo = d?.modelo ? String(d.modelo).trim() : '';
+        if (modelo) gamaVal = modelo;
+      }
       return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
     };
     const getAttrs = (p: Producto): Attrs => {
@@ -1108,7 +1140,7 @@ export class AnalyticsService {
     };
     const matchesProductFilters = (p: Producto) => {
       const attrs = getAttrs(p);
-      if (tipo && p.tipo !== tipo) return false;
+      if (tipo && attrs.tipo !== tipo) return false;
       if (gama && attrs.gama !== gama) return false;
       if (procesador && attrs.proc !== procesador) return false;
       if (pantalla && attrs.pantalla !== pantalla) return false;
@@ -1122,7 +1154,7 @@ export class AnalyticsService {
       .leftJoinAndSelect('p.detalle', 'det');
     if (dFrom) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: from });
     if (dTo) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: to });
-    if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
+    if (tipo && tipo !== 'watch') ventaQB.andWhere('p.tipo = :tipo', { tipo });
     let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
 
     ventas = ventas.filter((v) => {
@@ -1179,10 +1211,11 @@ export class AnalyticsService {
     type Attrs = { tipo: string; gama: string; proc: string; pantalla: string };
     const attrsCache = new Map<number, Attrs>();
     const extractAttrs = (p: Producto): Attrs => {
-      const tipoP = (p.tipo || '').toLowerCase();
+      let tipoP = (p.tipo || '').toLowerCase().trim();
+      if (tipoP.includes('watch')) tipoP = 'watch';
       const d: any = p.detalle || {};
       const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      const gamaVal = d?.gama ? String(d.gama).trim() : '';
+      let gamaVal = d?.gama ? String(d.gama).trim() : '';
       let procVal = '';
       for (const key of Object.keys(d || {})) {
         const k = sanitize(key);
@@ -1205,6 +1238,10 @@ export class AnalyticsService {
       }
       const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
       pantallaVal = m ? m[0] : (pantallaVal || '');
+      if (!gamaVal && (tipoP === 'iphone' || tipoP === 'watch' || tipoP === 'ipad')) {
+        const modelo = d?.modelo ? String(d.modelo).trim() : '';
+        if (modelo) gamaVal = modelo;
+      }
       return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
     };
     const getAttrs = (p: Producto): Attrs => {
@@ -1216,7 +1253,7 @@ export class AnalyticsService {
     };
     const matchesProductFilters = (p: Producto) => {
       const attrs = getAttrs(p);
-      if (tipo && p.tipo !== tipo) return false;
+      if (tipo && attrs.tipo !== tipo) return false;
       if (gama && attrs.gama !== gama) return false;
       if (procesador && attrs.proc !== procesador) return false;
       if (pantalla && attrs.pantalla !== pantalla) return false;
@@ -1230,7 +1267,7 @@ export class AnalyticsService {
       .leftJoinAndSelect('p.detalle', 'det');
     if (dFrom) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: prevRange.from });
     if (dTo) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: to });
-    if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
+    if (tipo && tipo !== 'watch') ventaQB.andWhere('p.tipo = :tipo', { tipo });
     let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
 
     ventas = ventas.filter((v) => {
