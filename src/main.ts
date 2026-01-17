@@ -74,6 +74,7 @@ async function bootstrap() {
       console.log('[BOOT][DB_INFO] error', (e as any)?.message || e);
     }
 
+    
     try {
       await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
