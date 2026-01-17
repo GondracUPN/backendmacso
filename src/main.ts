@@ -44,65 +44,80 @@ async function bootstrap() {
   // app.setGlobalPrefix('api');
 
   // Log de entorno y columnas de tablas clave para diagnostico en despliegues
-  (async () => {
-    try {
-      const rawUrl = process.env.DATABASE_URL || cfg.get<string>('DATABASE_URL') || '';
-      const schema = process.env.DB_SCHEMA || cfg.get<string>('DB_SCHEMA') || 'public';
-      const sync = process.env.DB_SYNC || cfg.get<string>('DB_SYNC') || '';
-      const nodeEnv = process.env.NODE_ENV || cfg.get<string>('NODE_ENV') || '';
-      let parsed = { host: 'n/a', db: 'n/a' };
-      try {
-        const u = new URL(rawUrl);
-        parsed = { host: u.host, db: u.pathname.replace(/^\//, '') || 'n/a' };
-      } catch {
-        parsed = { host: 'invalid_url', db: 'invalid_url' };
-      }
-      console.log('[BOOT][DB_ENV]', { ...parsed, schema, sync, nodeEnv });
-
-      const tables = ['producto', 'producto_detalle', 'producto_valor', 'tracking'];
-      for (const tbl of tables) {
-        try {
-          const cols = await dataSource.query(
-            `SELECT column_name, data_type, is_nullable, column_default
-             FROM information_schema.columns
-             WHERE table_schema = $1 AND table_name = $2
-             ORDER BY ordinal_position`,
-            [schema, tbl],
-          );
-          console.log(`[BOOT][DB_COLUMNS][${tbl}]`, cols);
-        } catch (e) {
-          console.log(`[BOOT][DB_COLUMNS][${tbl}] error`, (e as any)?.message || e);
-        }
-      }
-
-      try {
-        await dataSource.query(
-          `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
-        );
-        await dataSource.query(
-          `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS estatus_esho varchar`,
-        );
-
-        const renameCandidates = await dataSource.query(
-          `SELECT column_name
-           FROM information_schema.columns
-           WHERE table_schema = $1 AND table_name = 'producto_detalle'`,
-          [schema],
-        );
-        const hasTamano = renameCandidates.some((r: any) => r.column_name === 'tamano');
-        const hasTamanio = renameCandidates.some((r: any) => r.column_name === 'tama\u00f1o');
-        if (!hasTamano && hasTamanio) {
-          await dataSource.query(
-            `ALTER TABLE "${schema}"."producto_detalle" RENAME COLUMN "tama\u00f1o" TO tamano`,
-          );
-        }
-      } catch (e) {
-        console.log('[BOOT][DB_SCHEMA_FIX] error', (e as any)?.message || e);
-      }
-    } catch (e) {
-      console.log('[BOOT][DB_ENV] error', (e as any)?.message || e);
+  try {
+    if (!dataSource.isInitialized) {
+      await dataSource.initialize();
     }
-  })();
+
+    const rawUrl = process.env.DATABASE_URL || cfg.get<string>('DATABASE_URL') || '';
+    const schema = process.env.DB_SCHEMA || cfg.get<string>('DB_SCHEMA') || 'public';
+    const sync = process.env.DB_SYNC || cfg.get<string>('DB_SYNC') || '';
+    const nodeEnv = process.env.NODE_ENV || cfg.get<string>('NODE_ENV') || '';
+    let parsed = { host: 'n/a', db: 'n/a' };
+    try {
+      const u = new URL(rawUrl);
+      parsed = { host: u.host, db: u.pathname.replace(/^\//, '') || 'n/a' };
+    } catch {
+      parsed = { host: 'invalid_url', db: 'invalid_url' };
+    }
+    console.log('[BOOT][DB_ENV]', { ...parsed, schema, sync, nodeEnv });
+
+    try {
+      const info = await dataSource.query(
+        `SELECT current_database() AS db,
+                current_schema() AS schema,
+                current_user AS "user",
+                current_setting('search_path') AS search_path`,
+      );
+      console.log('[BOOT][DB_INFO]', info?.[0] || info);
+    } catch (e) {
+      console.log('[BOOT][DB_INFO] error', (e as any)?.message || e);
+    }
+
+    try {
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS estatus_esho varchar`,
+      );
+
+      const renameCandidates = await dataSource.query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = 'producto_detalle'`,
+        [schema],
+      );
+      const hasTamano = renameCandidates.some((r: any) => r.column_name === 'tamano');
+      const hasTamanio = renameCandidates.some((r: any) => r.column_name === 'tama\u00f1o');
+      if (!hasTamano && hasTamanio) {
+        await dataSource.query(
+          `ALTER TABLE "${schema}"."producto_detalle" RENAME COLUMN "tama\u00f1o" TO tamano`,
+        );
+      }
+      console.log('[BOOT][DB_SCHEMA_FIX] ok');
+    } catch (e) {
+      console.log('[BOOT][DB_SCHEMA_FIX] error', (e as any)?.message || e);
+    }
+
+    const tables = ['producto', 'producto_detalle', 'producto_valor', 'tracking'];
+    for (const tbl of tables) {
+      try {
+        const cols = await dataSource.query(
+          `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+           WHERE table_schema = $1 AND table_name = $2
+           ORDER BY ordinal_position`,
+          [schema, tbl],
+        );
+        console.log(`[BOOT][DB_COLUMNS][${tbl}]`, cols);
+      } catch (e) {
+        console.log(`[BOOT][DB_COLUMNS][${tbl}] error`, (e as any)?.message || e);
+      }
+    }
+  } catch (e) {
+    console.log('[BOOT][DB_ENV] error', (e as any)?.message || e);
+  }
 
   const port = Number(process.env.PORT || cfg.get<string>('PORT') || 3001);
   await app.listen(port, '0.0.0.0');
