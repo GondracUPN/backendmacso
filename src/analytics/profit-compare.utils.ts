@@ -3,6 +3,7 @@ export type CompareMetric = {
   cost: number;
   profit: number;
   margin: number;
+  purchases?: number;
   orders?: number;
   avgTicket?: number;
 };

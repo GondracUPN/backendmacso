@@ -299,8 +299,17 @@ export class AnalyticsService {
       }
       const m = String(pantalla).match(/\d+(?:\.\d+)?/);
       pantalla = m ? m[0] : (pantalla || '');
-      if (!gama && (tipoP === 'iphone' || tipoP === 'watch' || tipoP === 'ipad')) {
-        const modelo = d?.modelo ? String(d.modelo).trim() : '';
+      const modelo = d?.modelo ? String(d.modelo).trim() : '';
+      const numero = d?.numero != null ? String(d.numero).trim() : '';
+      if (tipoP === 'iphone') {
+        if (numero && modelo) {
+          gama = `${numero} ${modelo}`.trim();
+        } else if (numero) {
+          gama = numero;
+        } else if (modelo && !gama) {
+          gama = modelo;
+        }
+      } else if (!gama && (tipoP === 'watch' || tipoP === 'ipad')) {
         if (modelo) gama = modelo;
       }
       const ram = d?.ram ? String(d.ram).trim() : '';
@@ -1125,8 +1134,17 @@ export class AnalyticsService {
       }
       const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
       pantallaVal = m ? m[0] : (pantallaVal || '');
-      if (!gamaVal && (tipoP === 'iphone' || tipoP === 'watch' || tipoP === 'ipad')) {
-        const modelo = d?.modelo ? String(d.modelo).trim() : '';
+      const modelo = d?.modelo ? String(d.modelo).trim() : '';
+      const numero = d?.numero != null ? String(d.numero).trim() : '';
+      if (tipoP === 'iphone') {
+        if (numero && modelo) {
+          gamaVal = `${numero} ${modelo}`.trim();
+        } else if (numero) {
+          gamaVal = numero;
+        } else if (modelo && !gamaVal) {
+          gamaVal = modelo;
+        }
+      } else if (!gamaVal && (tipoP === 'watch' || tipoP === 'ipad')) {
         if (modelo) gamaVal = modelo;
       }
       return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
@@ -1238,8 +1256,17 @@ export class AnalyticsService {
       }
       const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
       pantallaVal = m ? m[0] : (pantallaVal || '');
-      if (!gamaVal && (tipoP === 'iphone' || tipoP === 'watch' || tipoP === 'ipad')) {
-        const modelo = d?.modelo ? String(d.modelo).trim() : '';
+      const modelo = d?.modelo ? String(d.modelo).trim() : '';
+      const numero = d?.numero != null ? String(d.numero).trim() : '';
+      if (tipoP === 'iphone') {
+        if (numero && modelo) {
+          gamaVal = `${numero} ${modelo}`.trim();
+        } else if (numero) {
+          gamaVal = numero;
+        } else if (modelo && !gamaVal) {
+          gamaVal = modelo;
+        }
+      } else if (!gamaVal && (tipoP === 'watch' || tipoP === 'ipad')) {
         if (modelo) gamaVal = modelo;
       }
       return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
@@ -1279,10 +1306,17 @@ export class AnalyticsService {
 
     const metricsByKey = new Map<string, CompareMetric>();
     for (const r of ranges) {
-      metricsByKey.set(r.key, { income: 0, cost: 0, profit: 0, margin: 0, orders: 0, avgTicket: 0 });
+      metricsByKey.set(r.key, { income: 0, cost: 0, profit: 0, margin: 0, purchases: 0, orders: 0, avgTicket: 0 });
     }
 
     const topProductMap = new Map<string, { name: string; profit: number }>();
+
+    const toYmd = (value: unknown) => {
+      if (!value) return '';
+      const d = value instanceof Date ? value : new Date(value as any);
+      if (isNaN(d.getTime())) return '';
+      return d.toISOString().slice(0, 10);
+    };
 
     const inRange = (dateStr: string, start: string, end: string) => {
       const s = String(dateStr || '').slice(0, 10);
@@ -1319,10 +1353,36 @@ export class AnalyticsService {
       }
     }
 
+    const purchaseQB = this.prodRepo
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.valor', 'val')
+      .leftJoinAndSelect('p.detalle', 'det');
+    if (dFrom) purchaseQB.andWhere('val.fechaCompra >= :fcFrom', { fcFrom: prevRange.from });
+    if (dTo) purchaseQB.andWhere('val.fechaCompra <= :fcTo', { fcTo: to });
+    if (tipo && tipo !== 'watch') purchaseQB.andWhere('p.tipo = :tipo', { tipo });
+
+    let compras = await purchaseQB.getMany();
+    compras = compras.filter((p) => matchesProductFilters(p));
+
+    for (const p of compras) {
+      const compraDate = toYmd(p.valor?.fechaCompra || '');
+      if (!compraDate) continue;
+      const costoTotal = Number(p.valor?.costoTotal ?? 0) || 0;
+      if (inRange(compraDate, from, to)) {
+        const curr = metricsByKey.get('current')!;
+        curr.purchases = (curr.purchases || 0) + costoTotal;
+      }
+      if (inRange(compraDate, prevRange.from, prevRange.to)) {
+        const prev = metricsByKey.get('previous')!;
+        prev.purchases = (prev.purchases || 0) + costoTotal;
+      }
+    }
+
     const finalizeMetric = (m: CompareMetric) => {
       m.income = +m.income.toFixed(2);
       m.cost = +m.cost.toFixed(2);
       m.profit = +(m.income - m.cost).toFixed(2);
+      if (m.purchases != null) m.purchases = +m.purchases.toFixed(2);
       m.margin = m.income > 0 ? +((m.profit / m.income) * 100).toFixed(2) : 0;
       const orders = Number(m.orders || 0);
       m.avgTicket = orders > 0 ? +(m.income / orders).toFixed(2) : 0;

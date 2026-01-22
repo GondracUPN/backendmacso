@@ -12,6 +12,8 @@ import { WalletModule } from './wallet/wallet.module';
 import { CardsModule } from './cards/cards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { SchedulesModule } from './schedules/schedules.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 
 @Module({
   imports: [
@@ -53,5 +55,7 @@ import { SchedulesModule } from './schedules/schedules.module';
     AnalyticsModule,
     SchedulesModule,
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}
