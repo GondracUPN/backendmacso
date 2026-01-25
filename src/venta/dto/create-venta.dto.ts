@@ -13,6 +13,14 @@ export class CreateVentaDto {
   @IsNumber()
   tipoCambio: number;
 
+  @IsOptional()
+  @IsNumber()
+  tipoCambioGonzalo?: number;
+
+  @IsOptional()
+  @IsNumber()
+  tipoCambioRenato?: number;
+
   @IsDateString()
   fechaVenta: string; // YYYY-MM-DD
 

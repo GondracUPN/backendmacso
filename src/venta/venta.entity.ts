@@ -28,6 +28,13 @@ export class Venta {
   @Column('decimal', { precision: 10, scale: 4 })
   tipoCambio: number; // ejemplo: 3.85
 
+  // Tipo de cambio por vendedor cuando la venta es conjunta
+  @Column('decimal', { precision: 10, scale: 4, nullable: true })
+  tipoCambioGonzalo?: number | null;
+
+  @Column('decimal', { precision: 10, scale: 4, nullable: true })
+  tipoCambioRenato?: number | null;
+
   @Column({ type: 'date' })
   fechaVenta: string; // YYYY-MM-DD
 
@@ -43,7 +50,7 @@ export class Venta {
 
   // — Opcional: vendedor asignado a la venta —
   @Column({ type: 'varchar', length: 20, nullable: true })
-  vendedor?: 'Gonzalo' | 'Renato' | null;
+  vendedor?: 'Gonzalo' | 'Renato' | 'ambos' | null;
 
   @CreateDateColumn()
   createdAt: Date;

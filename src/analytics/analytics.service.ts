@@ -105,6 +105,7 @@ function ym(d: string | Date): string {
 
 const SPLIT_VENDOR = 'ambos';
 const normalizeSeller = (s?: string | null) => (s == null ? '' : String(s).trim().toLowerCase());
+const SELLERS = ['gonzalo', 'renato'];
 const shareForSeller = (venta: Venta, seller: string) => {
   const vend = normalizeSeller(venta?.vendedor as any);
   if (!seller) return 1;
@@ -112,6 +113,76 @@ const shareForSeller = (venta: Venta, seller: string) => {
   if (vend === seller) return 1;
   if (vend === SPLIT_VENDOR) return 0.5;
   return 0;
+};
+
+const splitTipoCambio = (venta: Venta, seller: string) => {
+  const slug = normalizeSeller(seller);
+  const base = Number((venta as any)?.tipoCambio ?? 0);
+  if (slug === 'gonzalo') {
+    const v = Number((venta as any)?.tipoCambioGonzalo ?? base);
+    return v || base || 0;
+  }
+  if (slug === 'renato') {
+    const v = Number((venta as any)?.tipoCambioRenato ?? base);
+    return v || base || 0;
+  }
+  return base || 0;
+};
+
+const sellerMetrics = (venta: Venta, seller: string) => {
+  const vend = normalizeSeller(venta?.vendedor as any);
+  const target = normalizeSeller(seller);
+  if (!vend || !target) return null;
+
+  const precioVentaTotal = Number(venta?.precioVenta ?? 0) || 0;
+  const costoTotal = Number(venta?.producto?.valor?.costoTotal ?? 0) || 0;
+  const baseGanancia = Number(venta?.ganancia ?? (precioVentaTotal - costoTotal)) || 0;
+
+  if (vend === target) {
+    const pct = costoTotal > 0 ? (baseGanancia / costoTotal) * 100 : 0;
+    return {
+      income: precioVentaTotal,
+      cost: costoTotal,
+      ganancia: baseGanancia,
+      porcentaje: pct,
+      share: 1,
+    };
+  }
+
+  if (vend === SPLIT_VENDOR && SELLERS.includes(target)) {
+    const valorUsd = Number(venta?.producto?.valor?.valorProducto ?? 0) || 0;
+    const envioSoles = Number(
+      (venta?.producto?.valor as any)?.costoEnvioProrrateado ??
+        (venta?.producto?.valor as any)?.costoEnvio ??
+        0,
+    );
+    const tc = splitTipoCambio(venta, target);
+    const income = precioVentaTotal / 2;
+    const cost = (valorUsd / 2) * tc + (envioSoles / 2);
+    const ganancia = income - cost;
+    const porcentaje = cost > 0 ? (ganancia / cost) * 100 : 0;
+    return {
+      income,
+      cost,
+      ganancia,
+      porcentaje,
+      share: 0.5,
+    };
+  }
+  return null;
+};
+
+const mapVentaForSeller = (venta: Venta, seller: string) => {
+  const metrics = sellerMetrics(venta, seller);
+  if (!metrics) return null;
+  const vend = normalizeSeller(venta?.vendedor as any);
+  if (vend === normalizeSeller(seller)) return venta;
+  return {
+    ...venta,
+    precioVenta: metrics.income,
+    ganancia: metrics.ganancia,
+    porcentajeGanancia: metrics.porcentaje,
+  } as Venta;
 };
 
 // Versión limpia para armar un display legible del producto sin caracteres extraños
@@ -373,16 +444,7 @@ export class AnalyticsService {
     const sellerTarget = normalizeSeller(vendedor);
     if (sellerTarget) {
       ventas = ventas
-        .map((v) => {
-          const share = shareForSeller(v, sellerTarget);
-          if (!share) return null;
-          if (share === 1) return v;
-          return {
-            ...v,
-            precioVenta: Number(v.precioVenta ?? 0) * share,
-            ganancia: Number(v.ganancia ?? 0) * share,
-          } as Venta;
-        })
+        .map((v) => mapVentaForSeller(v, sellerTarget))
         .filter(Boolean) as Venta[];
     }
 
@@ -1184,12 +1246,15 @@ export class AnalyticsService {
     const rows: ProfitInput[] = [];
     for (const v of ventas) {
       if (!v.fechaVenta) continue;
-      const share = sellerTarget ? shareForSeller(v, sellerTarget) : 1;
-      if (!share) continue;
-      const costoTotal = Number(v.producto?.valor?.costoTotal ?? 0) || 0;
-      const income = (Number(v.precioVenta ?? 0) || 0) * share;
-      const cost = costoTotal * share;
-      rows.push({ fechaVenta: v.fechaVenta, income, cost });
+      if (sellerTarget) {
+        const metrics = sellerMetrics(v, sellerTarget);
+        if (!metrics) continue;
+        rows.push({ fechaVenta: v.fechaVenta, income: metrics.income, cost: metrics.cost });
+      } else {
+        const costoTotal = Number(v.producto?.valor?.costoTotal ?? 0) || 0;
+        const income = Number(v.precioVenta ?? 0) || 0;
+        rows.push({ fechaVenta: v.fechaVenta, income, cost: costoTotal });
+      }
     }
 
     const resultRows = aggregateProfitByPeriod(rows, { from, to, groupBy });
@@ -1327,10 +1392,34 @@ export class AnalyticsService {
       if (!v.fechaVenta) continue;
       const vDateStr = String(v.fechaVenta).slice(0, 10);
       if (!vDateStr) continue;
-      const share = sellerTarget ? shareForSeller(v, sellerTarget) : 1;
-      if (!share) continue;
-      const cost = (Number(v.producto?.valor?.costoTotal ?? 0) || 0) * share;
-      const income = (Number(v.precioVenta ?? 0) || 0) * share;
+      if (sellerTarget) {
+        const metrics = sellerMetrics(v, sellerTarget);
+        if (!metrics) continue;
+        const cost = metrics.cost;
+        const income = metrics.income;
+        const profit = income - cost;
+        if (inRange(vDateStr, from, to)) {
+          const curr = metricsByKey.get('current')!;
+          curr.income += income;
+          curr.cost += cost;
+          curr.profit += profit;
+          curr.orders = (curr.orders || 0) + 1;
+          const name = v.producto ? productDisplayClean(v.producto as any) : `#${v.productoId}`;
+          const top = topProductMap.get(name) || { name, profit: 0 };
+          top.profit += profit;
+          topProductMap.set(name, top);
+        }
+        if (inRange(vDateStr, prevRange.from, prevRange.to)) {
+          const prev = metricsByKey.get('previous')!;
+          prev.income += income;
+          prev.cost += cost;
+          prev.profit += profit;
+          prev.orders = (prev.orders || 0) + 1;
+        }
+        continue;
+      }
+      const cost = Number(v.producto?.valor?.costoTotal ?? 0) || 0;
+      const income = Number(v.precioVenta ?? 0) || 0;
       const profit = income - cost;
 
       if (inRange(vDateStr, from, to)) {

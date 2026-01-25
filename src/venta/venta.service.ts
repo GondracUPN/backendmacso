@@ -17,6 +17,20 @@ import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 
+const normalizeSeller = (s?: string | null) =>
+  s == null ? '' : String(s).trim().toLowerCase();
+const isSplitSeller = (s?: string | null) => normalizeSeller(s) === 'ambos';
+
+const calcSplitCosts = (usdTotal: number, envioSoles: number, tcG: number, tcR: number) => {
+  const halfUsd = usdTotal / 2;
+  const halfEnvio = envioSoles / 2;
+  const costoG = +(halfUsd * tcG + halfEnvio).toFixed(2);
+  const costoR = +(halfUsd * tcR + halfEnvio).toFixed(2);
+  const total = +(costoG + costoR).toFixed(2);
+  const valorSoles = +(usdTotal * ((tcG + tcR) / 2)).toFixed(2);
+  return { costoG, costoR, total, valorSoles };
+};
+
 // 👇 filtros para listar ventas (export opcional)
 export type ListVentasParams = {
   from?: string; // 'YYYY-MM-DD'
@@ -223,8 +237,63 @@ export class VentaService {
     const costoEnvioSoles = Number(
       (v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0,
     ); // S/
-    const tipoCambio = Number(dto.tipoCambio);
 
+    const splitRequested =
+      isSplitSeller((dto as any).vendedor) ||
+      (dto as any).tipoCambioGonzalo != null ||
+      (dto as any).tipoCambioRenato != null;
+
+    if (splitRequested) {
+      const tipoCambioGonzalo = Number(
+        (dto as any).tipoCambioGonzalo ?? dto.tipoCambio,
+      );
+      const tipoCambioRenato = Number(
+        (dto as any).tipoCambioRenato ?? dto.tipoCambio,
+      );
+      if (!tipoCambioGonzalo || !tipoCambioRenato) {
+        throw new BadRequestException(
+          'Tipo de cambio invalido para venta conjunta.',
+        );
+      }
+
+      const { total, valorSoles } = calcSplitCosts(
+        valorProductoUSD,
+        costoEnvioSoles,
+        tipoCambioGonzalo,
+        tipoCambioRenato,
+      );
+
+      v.valorSoles = valorSoles;
+      v.costoTotal = total;
+      await this.valorRepo.save(v);
+
+      const precioVenta = Number(dto.precioVenta);
+      const ganancia = +(precioVenta - total).toFixed(2);
+      const porcentajeGanancia = +(
+        (ganancia / (total || 1)) *
+        100
+      ).toFixed(3);
+
+      const avgTc = +(((tipoCambioGonzalo + tipoCambioRenato) / 2).toFixed(4));
+
+      const venta = this.ventaRepo.create({
+        productoId: producto.id,
+        tipoCambio: avgTc,
+        tipoCambioGonzalo,
+        tipoCambioRenato,
+        fechaVenta: dto.fechaVenta,
+        precioVenta,
+        ganancia,
+        porcentajeGanancia,
+        vendedor: 'ambos',
+      });
+      const saved = await this.ventaRepo.save(venta);
+      // invalidar KPIs de productos
+      await this.cache.del?.('productos:stats').catch?.(() => {});
+      return saved;
+    }
+
+    const tipoCambio = Number(dto.tipoCambio);
     const valorSolesRecalc = +(valorProductoUSD * tipoCambio).toFixed(2);
     const costoTotalRecalc = +(valorSolesRecalc + costoEnvioSoles).toFixed(2);
 
@@ -259,49 +328,107 @@ export class VentaService {
 
   async update(id: number, dto: UpdateVentaDto): Promise<Venta> {
     const venta = await this.findOne(id);
+    const nextVendedor =
+      (dto as any).vendedor !== undefined ? (dto as any).vendedor : venta.vendedor;
+    const splitMode =
+      isSplitSeller(nextVendedor) ||
+      (dto as any).tipoCambioGonzalo !== undefined ||
+      (dto as any).tipoCambioRenato !== undefined;
 
     // Si actualizan tipoCambio o precioVenta, recomputamos con el estado ACTUAL del producto
-    if (dto.tipoCambio !== undefined || dto.precioVenta !== undefined) {
+    if (
+      dto.tipoCambio !== undefined ||
+      dto.precioVenta !== undefined ||
+      (dto as any).tipoCambioGonzalo !== undefined ||
+      (dto as any).tipoCambioRenato !== undefined
+    ) {
       const producto = await this.productoRepo.findOne({
         where: { id: venta.productoId },
         relations: ['valor'],
       });
       if (!producto?.valor)
         throw new BadRequestException(
-          'El producto no tiene sección de valor asociada',
+          'El producto no tiene seccion de valor asociada',
         );
 
-      const tipoCambio =
-        dto.tipoCambio !== undefined
-          ? Number(dto.tipoCambio)
-          : Number(venta.tipoCambio);
       const precioVenta =
         dto.precioVenta !== undefined
           ? Number(dto.precioVenta)
           : Number(venta.precioVenta);
 
       const v = producto.valor;
-      const valorSolesRecalc = +(Number(v.valorProducto) * tipoCambio).toFixed(
-        2,
+      const valorProductoUSD = Number(v.valorProducto);
+      const costoEnvioSoles = Number(
+        (v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0,
       );
-      const costoTotalRecalc = +(
-        valorSolesRecalc +
-        Number((v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0)
-      ).toFixed(2);
 
-      v.valorSoles = valorSolesRecalc;
-      v.costoTotal = costoTotalRecalc;
-      await this.valorRepo.save(v);
+      if (splitMode) {
+        const tipoCambioGonzalo = Number(
+          (dto as any).tipoCambioGonzalo ??
+            venta.tipoCambioGonzalo ??
+            venta.tipoCambio ??
+            dto.tipoCambio,
+        );
+        const tipoCambioRenato = Number(
+          (dto as any).tipoCambioRenato ??
+            venta.tipoCambioRenato ??
+            venta.tipoCambio ??
+            dto.tipoCambio,
+        );
+        if (!tipoCambioGonzalo || !tipoCambioRenato) {
+          throw new BadRequestException(
+            'Tipo de cambio invalido para venta conjunta.',
+          );
+        }
 
-      venta.tipoCambio = tipoCambio;
-      venta.precioVenta = precioVenta;
-      venta.ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
-      venta.porcentajeGanancia = +(
-        (venta.ganancia / (costoTotalRecalc || 1)) *
-        100
-      ).toFixed(3);
+        const { total, valorSoles } = calcSplitCosts(
+          valorProductoUSD,
+          costoEnvioSoles,
+          tipoCambioGonzalo,
+          tipoCambioRenato,
+        );
+
+        v.valorSoles = valorSoles;
+        v.costoTotal = total;
+        await this.valorRepo.save(v);
+
+        const avgTc = +(((tipoCambioGonzalo + tipoCambioRenato) / 2).toFixed(4));
+        venta.tipoCambio = avgTc;
+        venta.tipoCambioGonzalo = tipoCambioGonzalo;
+        venta.tipoCambioRenato = tipoCambioRenato;
+        venta.precioVenta = precioVenta;
+        venta.ganancia = +(precioVenta - total).toFixed(2);
+        venta.porcentajeGanancia = +(
+          (venta.ganancia / (total || 1)) *
+          100
+        ).toFixed(3);
+      } else {
+        const tipoCambio =
+          dto.tipoCambio !== undefined
+            ? Number(dto.tipoCambio)
+            : Number(venta.tipoCambio);
+
+        const valorSolesRecalc = +(valorProductoUSD * tipoCambio).toFixed(2);
+        const costoTotalRecalc = +(
+          valorSolesRecalc +
+          Number((v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0)
+        ).toFixed(2);
+
+        v.valorSoles = valorSolesRecalc;
+        v.costoTotal = costoTotalRecalc;
+        await this.valorRepo.save(v);
+
+        venta.tipoCambio = tipoCambio;
+        venta.tipoCambioGonzalo = null;
+        venta.tipoCambioRenato = null;
+        venta.precioVenta = precioVenta;
+        venta.ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
+        venta.porcentajeGanancia = +(
+          (venta.ganancia / (costoTotalRecalc || 1)) *
+          100
+        ).toFixed(3);
+      }
     }
-
     // permitir asignar vendedor
     if ((dto as any).vendedor !== undefined) {
       // guardar string o null si viene vacío
@@ -322,3 +449,4 @@ export class VentaService {
     await this.cache.del?.('productos:stats').catch?.(() => {});
   }
 }
+

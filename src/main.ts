@@ -82,6 +82,12 @@ async function bootstrap() {
       await dataSource.query(
         `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS estatus_esho varchar`,
       );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "tipoCambioGonzalo" numeric(10,4)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "tipoCambioRenato" numeric(10,4)`,
+      );
 
       const renameCandidates = await dataSource.query(
         `SELECT column_name
