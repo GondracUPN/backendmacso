@@ -25,7 +25,12 @@ import { AppService } from './app.service';
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => {
-        const isProd = process.env.NODE_ENV === 'production';
+        const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
+        const syncFlag = cfg.get<string>('DB_SYNC');
+        const allowSync = !isProd && (syncFlag ?? 'true') === 'true';
+        if (isProd && syncFlag === 'true') {
+          console.log('[DB_SYNC] Ignorado en produccion para evitar cambios de esquema.');
+        }
         return {
           type: 'postgres',
           url: cfg.get<string>('DATABASE_URL'),
@@ -34,7 +39,7 @@ import { AppService } from './app.service';
           // Ensure all entities are picked up in dev/prod
           entities: [join(__dirname, '/**/*.entity{.ts,.js}')],
           // En desarrollo, si DB_SYNC no está definido, se habilita por defecto
-          synchronize: (cfg.get<string>('DB_SYNC') ?? (isProd ? 'false' : 'true')) === 'true',
+          synchronize: allowSync,
           // 👇 fuerza a usar el schema donde ya están tus tablas
           schema: cfg.get<string>('DB_SCHEMA') || 'public',
 
