@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Post, Query, Res } from '@n
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import type { Response } from 'express';
-import archiver from 'archiver';
+import * as archiver from 'archiver';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
