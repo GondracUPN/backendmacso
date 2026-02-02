@@ -952,7 +952,7 @@ export class AnalyticsService {
 
     // Product groups (MacBook): aggregate stats by gama/proc/pantalla from productos + ventas
     type GroupKey = string;
-    type CompraDetalle = { productoId: number; fechaCompra?: string | Date | null; precioUSD?: number | null; costoTotal?: number | null; estado?: string | null; };
+    type CompraDetalle = { productoId: number; fechaCompra?: string | Date | null; precioUSD?: number | null; costoTotal?: number | null; estado?: string | null; ram?: string | null; ssd?: string | null; };
     type VentaDetalle = { ventaId: number; productoId: number; fechaVenta?: string | Date | null; precioVenta?: number | null; ganancia?: number | null; porcentaje?: number | null; dias?: number | null; };
     type Group = {
       tipo: string;
@@ -979,6 +979,8 @@ export class AnalyticsService {
         precioUSD: Number(p.valor?.valorProducto ?? 0) || null,
         costoTotal: Number(p.valor?.costoTotal ?? 0) || null,
         estado: p.estado || null,
+        ram: a.ram || null,
+        ssd: a.ssd || null,
       });
       if (a.ram) g.ramSet.add(a.ram);
       if (a.ssd) g.ssdSet.add(a.ssd);
