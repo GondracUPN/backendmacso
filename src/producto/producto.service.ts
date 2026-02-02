@@ -750,13 +750,14 @@ export class ProductoService {
     const d: any = p.detalle || {};
     const numero = d?.numero ? String(d.numero) : '';
     const modelo = (d?.modelo || '').toString();
+    const gama = (d?.gama || '').toString();
     const proc = (d?.procesador || '').toString();
     const tam = ((d as any)?.tamano || '').toString();
     if (tipo.toLowerCase() === 'iphone') {
       const base = ['iPhone', numero, modelo].filter(Boolean).join(' ').trim();
       return base || `Producto ${p.id}`;
     }
-    return [tipo, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
+    return [tipo, gama, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
   }
 
   private buildPayload(p: any) {

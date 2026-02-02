@@ -227,6 +227,43 @@ let ebayTokenCache: { token: string; expiresAt: number } | null = null;
 const normalizeEnvToken = (val: string) =>
   val.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, '');
 
+const requestEbayToken = async (params: {
+  grantType: 'refresh_token' | 'client_credentials';
+  refreshToken?: string;
+  scope?: string;
+}): Promise<{ access_token: string; expires_in: number }> => {
+  const clientId = normalizeEnvToken(process.env.EBAY_CLIENT_ID || '');
+  const clientSecret = normalizeEnvToken(process.env.EBAY_CLIENT_SECRET || '');
+  if (!clientId || !clientSecret) {
+    throw new BadRequestException('Faltan credenciales eBay (client id/secret)');
+  }
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const body = new URLSearchParams({
+    grant_type: params.grantType,
+  });
+  if (params.grantType === 'refresh_token') {
+    body.set('refresh_token', params.refreshToken || '');
+  }
+  const scopeVal = params.scope || '';
+  if (scopeVal) {
+    body.set('scope', scopeVal);
+  }
+  const res = await fetch(`${getEbayApiBase()}/identity/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body,
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.log('[eBay] token error', { status: res.status, body: errText.slice(0, 400) });
+    throw new BadRequestException(`No se pudo obtener token eBay (${res.status})`);
+  }
+  return (await res.json()) as { access_token: string; expires_in: number };
+};
+
 const getEbayAccessToken = async (): Promise<string> => {
   const now = Date.now();
   if (ebayTokenCache && now < ebayTokenCache.expiresAt - 60_000) {
@@ -236,31 +273,33 @@ const getEbayAccessToken = async (): Promise<string> => {
   const clientId = normalizeEnvToken(process.env.EBAY_CLIENT_ID || '');
   const clientSecret = normalizeEnvToken(process.env.EBAY_CLIENT_SECRET || '');
   const refreshToken = normalizeEnvToken(process.env.EBAY_REFRESH_TOKEN || '');
+  const scopeEnv = normalizeEnvToken(process.env.EBAY_SCOPE || '');
+  const defaultScope = scopeEnv || 'https://api.ebay.com/oauth/api_scope';
 
   if (clientId && clientSecret && refreshToken) {
-    const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-    });
-    const scopeEnv = normalizeEnvToken(process.env.EBAY_SCOPE || '');
-    if (scopeEnv) {
-      body.set('scope', scopeEnv);
+    try {
+      const data = await requestEbayToken({
+        grantType: 'refresh_token',
+        refreshToken,
+        scope: scopeEnv || undefined,
+      });
+      ebayTokenCache = {
+        token: data.access_token,
+        expiresAt: now + Number(data.expires_in || 0) * 1000,
+      };
+      return ebayTokenCache.token;
+    } catch (err) {
+      console.log('[eBay] refresh token failed, trying client_credentials', {
+        reason: (err as any)?.message || err,
+      });
     }
-    const res = await fetch(`${getEbayApiBase()}/identity/v1/oauth2/token`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${basic}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body,
+  }
+
+  if (clientId && clientSecret) {
+    const data = await requestEbayToken({
+      grantType: 'client_credentials',
+      scope: defaultScope,
     });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.log('[eBay] token error', { status: res.status, body: errText.slice(0, 400) });
-      throw new BadRequestException(`No se pudo obtener token eBay (${res.status})`);
-    }
-    const data = (await res.json()) as { access_token: string; expires_in: number };
     ebayTokenCache = {
       token: data.access_token,
       expiresAt: now + Number(data.expires_in || 0) * 1000,
