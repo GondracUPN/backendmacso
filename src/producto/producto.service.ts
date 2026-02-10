@@ -456,21 +456,7 @@ export class ProductoService {
   }
 
   // Nuevas utilidades para sincronizar con CatÃ¡logo
-// SincronizaciÃ³n con CatÃ¡logo (mÃ©todos agregados al mismo servicio)
-  // Determina si un producto estÃ¡ disponible: Ãºltimo tracking 'recogido' y sin ventas
-  private async isDisponible(prod: any): Promise<boolean> {
-    const ventas = await this.ventaRepo.count({ where: { productoId: prod.id } });
-    if (ventas > 0) return false;
-    const trk = Array.isArray(prod.tracking) ? [...prod.tracking] : [];
-    if (!trk.length) return false;
-    trk.sort((a, b) => {
-      if (a.createdAt && b.createdAt) {
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      }
-      return (b.id || 0) - (a.id || 0);
-    });
-    return (trk[0]?.estado || '').toLowerCase() === 'recogido';
-  }
+  // SincronizaciÃ³n con CatÃ¡logo (mÃ©todos agregados al mismo servicio)
 
   private getUltimoTrackingEstado(prod: any): string {
     const trk = Array.isArray((prod as any).tracking) ? [...(prod as any).tracking] : [];
@@ -911,6 +897,9 @@ export class ProductoService {
     }
     const apiBase = (() => { try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; } })();
 
+    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
+    const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
+
     const prods = await this.productoRepo.find({
       relations: ['detalle', 'valor', 'tracking'],
       order: { id: 'DESC' },
@@ -922,7 +911,9 @@ export class ProductoService {
 
     for (const p of prods) {
       try {
-        if (!(await this.isDisponible(p))) continue;
+        if (vendidosSet.has(p.id)) continue;
+        const estado = this.getUltimoTrackingEstado(p);
+        if (estado !== 'recogido') continue;
         // Evitar duplicados consultando el catÃ¡logo por SKU
         const sku = `svc-${p.id}`;
         if (apiBase) {
