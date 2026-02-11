@@ -1,8 +1,10 @@
-import { BadRequestException, Body, Controller, Get, Post, Query, Res } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Query, Res } from '@nestjs/common';
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import type { Response } from 'express';
 import * as archiver from 'archiver';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -223,6 +225,9 @@ const getEbayApiBase = () => {
 };
 
 let ebayTokenCache: { token: string; expiresAt: number } | null = null;
+const TM_STORAGE_DIR = join(process.cwd(), 'storage', 'tm');
+const TM_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'ebay-template.html');
+const TM_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'ebay-template.meta.json');
 
 const normalizeEnvToken = (val: string) =>
   val.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, '');
@@ -376,6 +381,65 @@ export class AppController {
   @Get()
   getHello(): string {
     return this.appService.getHello();
+  }
+
+  @Get('tm/ebay-template')
+  async getTmEbayTemplate(@Res() res: Response) {
+    try {
+      const [html, fileStats] = await Promise.all([
+        readFile(TM_TEMPLATE_FILE, 'utf8'),
+        stat(TM_TEMPLATE_FILE),
+      ]);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.setHeader('X-TM-Template-Updated-At', fileStats.mtime.toISOString());
+      res.send(html);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        throw new NotFoundException('Aun no hay plantilla publicada');
+      }
+      throw e;
+    }
+  }
+
+  @Get('tm/ebay-template/meta')
+  async getTmEbayTemplateMeta() {
+    try {
+      const raw = await readFile(TM_TEMPLATE_META_FILE, 'utf8');
+      const meta = JSON.parse(raw);
+      return { ok: true, ...meta };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        throw new NotFoundException('Aun no hay metadatos de plantilla');
+      }
+      throw e;
+    }
+  }
+
+  @Post('tm/ebay-template')
+  async saveTmEbayTemplate(@Body('html') html: string, @Body('source') source?: string) {
+    const normalizedHtml = String(html || '').trim();
+    if (!normalizedHtml) {
+      throw new BadRequestException('El campo "html" es obligatorio');
+    }
+    if (normalizedHtml.length > 500_000) {
+      throw new BadRequestException('El HTML excede el tamano maximo permitido');
+    }
+
+    const updatedAt = new Date().toISOString();
+    const meta = {
+      updatedAt,
+      size: normalizedHtml.length,
+      source: String(source || 'unknown'),
+    };
+
+    await mkdir(TM_STORAGE_DIR, { recursive: true });
+    await Promise.all([
+      writeFile(TM_TEMPLATE_FILE, normalizedHtml, 'utf8'),
+      writeFile(TM_TEMPLATE_META_FILE, JSON.stringify(meta, null, 2), 'utf8'),
+    ]);
+
+    return { ok: true, ...meta };
   }
 
   @Get('utils/ebay')
