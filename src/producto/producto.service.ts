@@ -227,6 +227,9 @@ export class ProductoService {
   }
 
   private applyProrrateadoView(p: Producto): Producto {
+    if (Array.isArray(p?.tracking)) {
+      p.tracking = this.sortTrackingDesc(p.tracking);
+    }
     if (p?.valor && p.valor.costoEnvioProrrateado != null) {
       const v: any = { ...p.valor };
       const envio = Number(p.valor.costoEnvioProrrateado);
@@ -236,6 +239,15 @@ export class ProductoService {
       p.valor = v;
     }
     return p;
+  }
+
+  private sortTrackingDesc(trackings: Tracking[]): Tracking[] {
+    return [...trackings].sort((a, b) => {
+      if (a?.createdAt && b?.createdAt) {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      }
+      return (b?.id || 0) - (a?.id || 0);
+    });
   }
 
   /** Actualiza tipo, estado, accesorios, detalle y/o valor */

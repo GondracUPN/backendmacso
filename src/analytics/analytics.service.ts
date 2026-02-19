@@ -630,17 +630,19 @@ export class AnalyticsService {
       });
 
     // Inventory by type for current unsold
-    const byTypeMap = new Map<string, { unidades: number; capital: number }>();
+    const byTypeMap = new Map<string, { unidades: number; activos: number; capital: number }>();
     for (const p of unsold) {
       const k = p.tipo || 'otro';
-      const curr = byTypeMap.get(k) || { unidades: 0, capital: 0 };
+      const curr = byTypeMap.get(k) || { unidades: 0, activos: 0, capital: 0 };
       curr.unidades += 1;
+      if (latestTrackingEstado(p) === 'recogido') curr.activos += 1;
       curr.capital += Number(p.valor?.costoTotal ?? 0) || 0;
       byTypeMap.set(k, curr);
     }
     const inventoryByType = Array.from(byTypeMap.entries()).map(([tipo, v]) => ({
       tipo,
       unidades: v.unidades,
+      activos: v.activos,
       capital: +v.capital.toFixed(2),
     }));
 
