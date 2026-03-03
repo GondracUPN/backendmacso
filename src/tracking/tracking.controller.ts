@@ -22,6 +22,15 @@ const ESHOPEX_CACHE_TTL_MS = 5 * 60 * 1000;
 const eshopexCache = new Map<string, { ts: number; data: { status: string | null; date: string | null; time: string | null; items: Array<{ date: string; time: string; status: string; detail: string }> } }>();
 const ESHOPEX_CARGA_CACHE_TTL_MS = 5 * 60 * 1000;
 let eshopexCargaCache: { ts: number; data: Array<{ guia: string; estado: string; tienda: string; descripcion: string; peso: string; valor: string; fechaRecepcion: string; factura: string; fotos: string[]; account: string }> } | null = null;
+const ESHOPEX_CASILLERO_BY_ACCOUNT: Record<string, string> = {
+  'gongarc2001@gmail.com': 'Walter',
+  'renato1carbajal@gmail.com': 'Renato',
+  'limonimofelip@gmail.com': 'Christian',
+  'dracgonic12@gmail.com': 'Alex',
+  'renato1carbajal@outlook.com': 'MamaRen',
+  'goneba2526@gmail.com': 'Jorge',
+  'gondrac10@gmail.com': 'Kenny',
+};
 
 type EshopexAccount = { email: string; password: string };
 type EshopexCargaRow = {
@@ -35,6 +44,51 @@ type EshopexCargaRow = {
   factura: string;
   fotos: string[];
   account: string;
+};
+type EshopexCargaProgressStatus = 'idle' | 'running' | 'done' | 'error';
+type EshopexCargaProgress = {
+  status: EshopexCargaProgressStatus;
+  startedAt: number | null;
+  updatedAt: number | null;
+  finishedAt: number | null;
+  total: number;
+  completed: number;
+  remaining: number;
+  currentAccount: string;
+  currentCasillero: string;
+  message: string;
+  error: string | null;
+};
+
+const initialEshopexCargaProgress = (): EshopexCargaProgress => ({
+  status: 'idle',
+  startedAt: null,
+  updatedAt: Date.now(),
+  finishedAt: null,
+  total: 0,
+  completed: 0,
+  remaining: 0,
+  currentAccount: '',
+  currentCasillero: '',
+  message: '',
+  error: null,
+});
+
+let eshopexCargaProgress: EshopexCargaProgress = initialEshopexCargaProgress();
+let eshopexCargaInFlight: Promise<EshopexCargaRow[]> | null = null;
+
+const getCasilleroByAccount = (email: string): string => {
+  const key = String(email || '').trim().toLowerCase();
+  if (!key) return '';
+  return ESHOPEX_CASILLERO_BY_ACCOUNT[key] || '';
+};
+
+const setEshopexCargaProgress = (patch: Partial<EshopexCargaProgress>) => {
+  eshopexCargaProgress = {
+    ...eshopexCargaProgress,
+    ...patch,
+    updatedAt: Date.now(),
+  };
 };
 
 const parseHiddenInputs = (html: string) => {
@@ -544,45 +598,162 @@ export class TrackingController {
     return data;
   }
 
+  @Get('eshopex-carga-progress')
+  getEshopexCargaProgress() {
+    return eshopexCargaProgress;
+  }
+
   @Get('eshopex-carga')
   async getEshopexCarga() {
     if (eshopexCargaCache && Date.now() - eshopexCargaCache.ts < ESHOPEX_CARGA_CACHE_TTL_MS) {
+      setEshopexCargaProgress({
+        status: 'done',
+        finishedAt: Date.now(),
+        total: eshopexCargaProgress.total || 0,
+        completed: eshopexCargaProgress.total || 0,
+        remaining: 0,
+        currentAccount: '',
+        currentCasillero: '',
+        message: 'Datos de cache reciente.',
+        error: null,
+      });
       return eshopexCargaCache.data;
     }
+    if (eshopexCargaInFlight) {
+      return eshopexCargaInFlight;
+    }
+
     const accounts = parseAccountsEnv();
     console.log('[Eshopex] Accounts loaded:', accounts.map((a) => a.email));
     if (!accounts.length) {
+      setEshopexCargaProgress({
+        status: 'error',
+        finishedAt: Date.now(),
+        total: 0,
+        completed: 0,
+        remaining: 0,
+        currentAccount: '',
+        currentCasillero: '',
+        message: 'No hay cuentas configuradas.',
+        error: 'Configura ESHOPEX_ACCOUNTS con cuentas validas.',
+      });
       throw new BadRequestException({
         message: 'Configura ESHOPEX_ACCOUNTS con cuentas validas',
         source: lastEshopexEnvSource.source,
         length: lastEshopexEnvSource.length,
       });
     }
-    const rows: EshopexCargaRow[] = [];
-    for (const account of accounts) {
+
+    const job = (async () => {
+      const startedAt = Date.now();
+      setEshopexCargaProgress({
+        status: 'running',
+        startedAt,
+        finishedAt: null,
+        total: accounts.length,
+        completed: 0,
+        remaining: accounts.length,
+        currentAccount: '',
+        currentCasillero: '',
+        message: 'Iniciando busqueda...',
+        error: null,
+      });
+
+      const rows: EshopexCargaRow[] = [];
       try {
-        const data = await fetchEshopexCarga(account);
-        rows.push(...data);
-      } catch (err) {
-        console.warn('[Eshopex] Error en cuenta', account.email, err);
+        for (let i = 0; i < accounts.length; i += 1) {
+          const account = accounts[i];
+          const casillero = getCasilleroByAccount(account.email);
+          setEshopexCargaProgress({
+            status: 'running',
+            total: accounts.length,
+            completed: i,
+            remaining: Math.max(accounts.length - i, 0),
+            currentAccount: account.email,
+            currentCasillero: casillero,
+            message: `Consultando ${casillero || account.email} (${i + 1}/${accounts.length})`,
+            error: null,
+          });
+
+          try {
+            const data = await fetchEshopexCarga(account);
+            rows.push(...data);
+            const completed = i + 1;
+            setEshopexCargaProgress({
+              status: 'running',
+              total: accounts.length,
+              completed,
+              remaining: Math.max(accounts.length - completed, 0),
+              currentAccount: account.email,
+              currentCasillero: casillero,
+              message: `Listo ${casillero || account.email}. Faltan ${Math.max(accounts.length - completed, 0)} casilleros.`,
+              error: null,
+            });
+          } catch (err) {
+            console.warn('[Eshopex] Error en cuenta', account.email, err);
+            const completed = i + 1;
+            setEshopexCargaProgress({
+              status: 'running',
+              total: accounts.length,
+              completed,
+              remaining: Math.max(accounts.length - completed, 0),
+              currentAccount: account.email,
+              currentCasillero: casillero,
+              message: `Error en ${casillero || account.email}. Continuando con el siguiente.`,
+              error: null,
+            });
+          }
+        }
+
+        const unique = new Map<string, EshopexCargaRow>();
+        for (const row of rows) {
+          const key = `${row.guia}`.trim();
+          if (!key) continue;
+          if (!unique.has(key)) unique.set(key, row);
+        }
+        const data = Array.from(unique.values());
+        const statusByCode: Record<string, string> = {};
+        for (const row of data) {
+          const code = String(row?.guia || '').trim();
+          const status = String(row?.estado || '').trim();
+          if (code && status) statusByCode[code] = status;
+        }
+        await this.svc.updateEstatusEshoBulk(statusByCode);
+        eshopexCargaCache = { ts: Date.now(), data };
+        setEshopexCargaProgress({
+          status: 'done',
+          total: accounts.length,
+          completed: accounts.length,
+          remaining: 0,
+          currentAccount: '',
+          currentCasillero: '',
+          finishedAt: Date.now(),
+          message: `Busqueda finalizada. ${data.length} guias encontradas.`,
+          error: null,
+        });
+        return data;
+      } catch (err: any) {
+        setEshopexCargaProgress({
+          status: 'error',
+          total: accounts.length,
+          completed: eshopexCargaProgress.completed || 0,
+          remaining: Math.max(accounts.length - (eshopexCargaProgress.completed || 0), 0),
+          currentAccount: eshopexCargaProgress.currentAccount || '',
+          currentCasillero: eshopexCargaProgress.currentCasillero || '',
+          finishedAt: Date.now(),
+          message: 'La busqueda de Eshopex termino con error.',
+          error: err?.message || 'Error inesperado durante la busqueda.',
+        });
+        throw err;
       }
+    })();
+
+    eshopexCargaInFlight = job;
+    try {
+      return await job;
+    } finally {
+      eshopexCargaInFlight = null;
     }
-    const unique = new Map<string, EshopexCargaRow>();
-    for (const row of rows) {
-      const key = `${row.guia}`.trim();
-      if (!key) continue;
-      if (!unique.has(key)) unique.set(key, row);
-    }
-    const data = Array.from(unique.values());
-    const statusByCode: Record<string, string> = {};
-    for (const row of data) {
-      const code = String(row?.guia || '').trim();
-      const status = String(row?.estado || '').trim();
-      if (code && status) statusByCode[code] = status;
-    }
-    await this.svc.updateEstatusEshoBulk(statusByCode);
-    eshopexCargaCache = { ts: Date.now(), data };
-    return data;
   }
 
   @Post('eshopex-prepago')
