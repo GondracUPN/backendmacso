@@ -5,7 +5,8 @@ import { join } from 'path';
 
 dotenv();
 
-const isProd = process.env.NODE_ENV === 'production';
+const env = (process.env.NODE_ENV || '').toLowerCase();
+const isProd = env === 'production' || env === 'prod';
 const dbUrl = process.env.DATABASE_URL;
 
 if (!dbUrl) {

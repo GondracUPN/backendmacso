@@ -25,12 +25,16 @@ import { AppService } from './app.service';
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => {
-        const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
-        const syncFlag = cfg.get<string>('DB_SYNC');
-        const allowSync = !isProd && (syncFlag ?? 'true') === 'true';
+        const nodeEnv = (cfg.get<string>('NODE_ENV') || process.env.NODE_ENV || '').toLowerCase();
+        const isProd = nodeEnv === 'production' || nodeEnv === 'prod';
+        const syncFlag = (cfg.get<string>('DB_SYNC') || '').toLowerCase();
+        // Safety-first: never sync unless explicitly requested outside production.
+        const allowSync = syncFlag === 'true' && !isProd;
+
         if (isProd && syncFlag === 'true') {
           console.log('[DB_SYNC] Ignorado en produccion para evitar cambios de esquema.');
         }
+
         return {
           type: 'postgres',
           url: cfg.get<string>('DATABASE_URL'),
@@ -38,15 +42,13 @@ import { AppService } from './app.service';
           autoLoadEntities: true,
           // Ensure all entities are picked up in dev/prod
           entities: [join(__dirname, '/**/*.entity{.ts,.js}')],
-          // En desarrollo, si DB_SYNC no está definido, se habilita por defecto
+          // Solo sincroniza si DB_SYNC=true y nunca en produccion.
           synchronize: allowSync,
-          // 👇 fuerza a usar el schema donde ya están tus tablas
+          // Fuerza a usar el schema donde ya estan tus tablas.
           schema: cfg.get<string>('DB_SCHEMA') || 'public',
-
-          // (opcional) deja logging solo mientras verificas en prod:
+          // (Opcional) deja logging solo mientras verificas en prod.
           logging: cfg.get<string>('DB_LOG') === 'true' || !isProd,
           logger: 'advanced-console',
-
         };
       },
     }),

@@ -18,7 +18,8 @@ async function bootstrap() {
   // app.use(helmet());
 
   // CORS (en dev permitimos cualquier origen; en prod, el configurado)
-  const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
+  const env = (process.env.NODE_ENV || '').toLowerCase();
+  const isProd = env === 'production' || env === 'prod';
   const frontendUrl = cfg.get<string>('FRONTEND_URL') ?? 'https://frontend-tailwind-unye.vercel.app';
   app.enableCors({
     origin: isProd

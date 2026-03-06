@@ -15,8 +15,9 @@ export class AdminSeedProvider implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const env = this.cfg.get<string>('NODE_ENV') || process.env.NODE_ENV || 'development';
-    const enabled = (this.cfg.get<string>('SEED_ADMIN') ?? (env !== 'production' ? 'true' : 'false')) === 'true';
+    const env = (this.cfg.get<string>('NODE_ENV') || process.env.NODE_ENV || 'development').toLowerCase();
+    const isProd = env === 'production' || env === 'prod';
+    const enabled = (this.cfg.get<string>('SEED_ADMIN') ?? (isProd ? 'false' : 'true')) === 'true';
     if (!enabled) return;
 
     const adminUser = this.cfg.get<string>('SEED_ADMIN_USERNAME') || 'admin';
@@ -31,4 +32,3 @@ export class AdminSeedProvider implements OnModuleInit {
     this.logger.log(`Admin seed creado: ${adminUser}`);
   }
 }
-
