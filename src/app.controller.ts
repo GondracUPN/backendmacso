@@ -1,7 +1,7 @@
-import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Query, Res } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Query, Req, Res } from '@nestjs/common';
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import * as archiver from 'archiver';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -228,6 +228,8 @@ let ebayTokenCache: { token: string; expiresAt: number } | null = null;
 const TM_STORAGE_DIR = join(process.cwd(), 'storage', 'tm');
 const TM_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'ebay-template.html');
 const TM_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'ebay-template.meta.json');
+const TM_AMAZON_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'amazon-template.html');
+const TM_AMAZON_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'amazon-template.meta.json');
 
 const normalizeEnvToken = (val: string) =>
   val.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, '');
@@ -440,6 +442,106 @@ export class AppController {
     ]);
 
     return { ok: true, ...meta };
+  }
+
+  @Get('tm/amazon-template')
+  async getTmAmazonTemplate(@Res() res: Response) {
+    try {
+      const [html, fileStats] = await Promise.all([
+        readFile(TM_AMAZON_TEMPLATE_FILE, 'utf8'),
+        stat(TM_AMAZON_TEMPLATE_FILE),
+      ]);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.setHeader('X-TM-Template-Updated-At', fileStats.mtime.toISOString());
+      res.send(html);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        throw new NotFoundException('Aun no hay plantilla Amazon publicada');
+      }
+      throw e;
+    }
+  }
+
+  @Get('tm/amazon-template/meta')
+  async getTmAmazonTemplateMeta() {
+    try {
+      const raw = await readFile(TM_AMAZON_TEMPLATE_META_FILE, 'utf8');
+      const meta = JSON.parse(raw);
+      return { ok: true, ...meta };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        throw new NotFoundException('Aun no hay metadatos de plantilla Amazon');
+      }
+      throw e;
+    }
+  }
+
+  @Post('tm/amazon-template')
+  async saveTmAmazonTemplate(@Req() req: Request, @Query('source') source?: string) {
+    const normalizedHtml = String(req.body || '').trim();
+    if (!normalizedHtml) {
+      throw new BadRequestException('El body con HTML es obligatorio');
+    }
+    if (normalizedHtml.length > 3_000_000) {
+      throw new BadRequestException('El HTML Amazon excede el tamano maximo permitido');
+    }
+
+    const updatedAt = new Date().toISOString();
+    const meta = {
+      updatedAt,
+      size: normalizedHtml.length,
+      source: String(source || 'unknown'),
+    };
+
+    await mkdir(TM_STORAGE_DIR, { recursive: true });
+    await Promise.all([
+      writeFile(TM_AMAZON_TEMPLATE_FILE, normalizedHtml, 'utf8'),
+      writeFile(TM_AMAZON_TEMPLATE_META_FILE, JSON.stringify(meta, null, 2), 'utf8'),
+    ]);
+
+    return { ok: true, ...meta };
+  }
+
+  @Get('utils/image-proxy')
+  async proxyImage(@Query('url') url: string, @Res() res: Response) {
+    if (!url) {
+      throw new BadRequestException('URL requerida');
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new BadRequestException('URL invalida');
+    }
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new BadRequestException('Solo se permite http o https');
+    }
+
+    const upstream = await fetch(parsed.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'User-Agent': UA,
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      },
+    });
+
+    if (!upstream.ok) {
+      throw new BadRequestException('No se pudo descargar la imagen');
+    }
+
+    const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      throw new BadRequestException('La URL no devolvio una imagen');
+    }
+
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(body);
   }
 
   @Get('utils/ebay')

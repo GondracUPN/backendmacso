@@ -4,6 +4,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
+import { text } from 'express';
 // (opcional) si quieres headers de seguridad extra, instala helmet y descomenta:
 // import helmet from 'helmet';
 
@@ -13,6 +14,7 @@ async function bootstrap() {
 
   const cfg = app.get(ConfigService);
   const dataSource = app.get(DataSource);
+  app.use('/tm/amazon-template', text({ type: 'text/plain', limit: '3mb' }));
 
   // Seguridad básica (opcional)
   // app.use(helmet());

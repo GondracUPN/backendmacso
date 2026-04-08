@@ -118,6 +118,11 @@ export class AnalyticsController {
       vendedor,
     });
   }
+
+  @Get('sunat/exchange-rate')
+  async sunatExchangeRate(@Query('date') date?: string) {
+    return this.svc.sunatExchangeRate(date);
+  }
 }
 
 

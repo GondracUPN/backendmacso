@@ -284,6 +284,7 @@ export class AnalyticsService {
   ) {}
 
   private readonly inflight = new Set<string>();
+  private readonly fallbackTc = 3.7;
 
   private buildKey(prefix: string, params: Params): string {
     const entries = Object.entries(params || {})
@@ -572,25 +573,61 @@ export class AnalyticsService {
     };
 
     // Active inventory = productos sin venta histórica, pero dentro del filtro de compra (si aplica)
+    const latestTrackingEstadoCache = new Map<number, string>();
     const latestTrackingEstado = (p: Producto) => {
+      const cached = latestTrackingEstadoCache.get(p.id);
+      if (cached !== undefined) return cached;
       const trk = Array.isArray(p.tracking) ? [...p.tracking] : [];
-      if (!trk.length) return '';
+      if (!trk.length) {
+        latestTrackingEstadoCache.set(p.id, '');
+        return '';
+      }
       trk.sort((a, b) => {
         if (a.createdAt && b.createdAt) {
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
         }
         return (b.id || 0) - (a.id || 0);
       });
-      return String(trk[0]?.estado || '').toLowerCase();
+      const estado = String(trk[0]?.estado || '').toLowerCase();
+      latestTrackingEstadoCache.set(p.id, estado);
+      return estado;
+    };
+
+    const productCostParts = (p: Producto) => {
+      const valorProductoUsd = Number(p.valor?.valorProducto ?? 0) || 0;
+      const baseSoles = Number(p.valor?.valorSoles ?? (valorProductoUsd * 3.7)) || 0;
+      const costoTotal = Number(p.valor?.costoTotal ?? 0) || 0;
+      const envioInferido = Math.max(0, costoTotal - baseSoles);
+      const envioSoles =
+        Number((p.valor as any)?.costoEnvioProrrateado ?? p.valor?.costoEnvio ?? envioInferido) || 0;
+      return { baseSoles, envioSoles };
     };
 
     const unsold = productosFiltered.filter((p) => !vendidosHistoricos.has(p.id));
-    const inventoryUnsoldUnits = unsold.length;
-    const inventoryAvailableUnits = unsold.filter((p) => latestTrackingEstado(p) === 'recogido').length;
+    const unsoldValuation = unsold.map((p) => {
+      const estadoActual = latestTrackingEstado(p);
+      const { baseSoles, envioSoles } = productCostParts(p);
+      // Solo incluir envio para unidades recogidas (listas para venta).
+      const envioIncluido = estadoActual === 'recogido' ? envioSoles : 0;
+      return {
+        p,
+        estadoActual,
+        baseSoles,
+        envioIncluido,
+        total: baseSoles + envioIncluido,
+      };
+    });
+
+    const inventoryUnsoldUnits = unsoldValuation.length;
+    const inventoryAvailableUnits = unsoldValuation.filter((x) => x.estadoActual === 'recogido').length;
     const inventoryActiveUnits = inventoryUnsoldUnits;
-    const capitalInmovilizado = +(
-      unsold.reduce((s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0), 0)
-    ).toFixed(2);
+    const capitalInmovilizadoProducto = +unsoldValuation
+      .reduce((s, x) => s + x.baseSoles, 0)
+      .toFixed(2);
+    const capitalInmovilizadoEnvio = +unsoldValuation
+      .reduce((s, x) => s + x.envioIncluido, 0)
+      .toFixed(2);
+    const capitalInmovilizado = +(capitalInmovilizadoProducto + capitalInmovilizadoEnvio).toFixed(2);
 
     // Compras del período (filtradas por fecha de compra)
     const comprasPeriodoUnidades = productosFiltered.length;
@@ -606,6 +643,24 @@ export class AnalyticsService {
       fechaCompra: p.valor?.fechaCompra,
       costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
     }));
+
+    // SUNAT: gasto del periodo con envio solo para productos recogidos.
+    const isRecogido = (estado: string) => estado === 'recogido';
+    const sunatRows = productosFiltered.map((p) => {
+      const estadoActual = latestTrackingEstado(p);
+      const { baseSoles, envioSoles } = productCostParts(p);
+      const envioIncluido = isRecogido(estadoActual) ? envioSoles : 0;
+      return {
+        baseSoles,
+        envioIncluido,
+        valorDec: Number(p.valor?.valorDec ?? 0) || 0,
+      };
+    });
+    const sunatGastoProductos = +sunatRows.reduce((s, x) => s + x.baseSoles, 0).toFixed(2);
+    const sunatGastoEnvio = +sunatRows.reduce((s, x) => s + x.envioIncluido, 0).toFixed(2);
+    const sunatGastoTotal = +(sunatGastoProductos + sunatGastoEnvio).toFixed(2);
+    const sunatValorDecTotal = +sunatRows.reduce((s, x) => s + x.valorDec, 0).toFixed(2);
+    const sunatGananciaTotal = +(ventas.reduce((s, v) => s + (Number(v.ganancia) || 0), 0)).toFixed(2);
 
     // No vendidos del período (comprados en el período y aún sin vender)
     const nowForNoVendidos = new Date();
@@ -631,12 +686,13 @@ export class AnalyticsService {
 
     // Inventory by type for current unsold
     const byTypeMap = new Map<string, { unidades: number; activos: number; capital: number }>();
-    for (const p of unsold) {
+    for (const row of unsoldValuation) {
+      const p = row.p;
       const k = p.tipo || 'otro';
       const curr = byTypeMap.get(k) || { unidades: 0, activos: 0, capital: 0 };
       curr.unidades += 1;
-      if (latestTrackingEstado(p) === 'recogido') curr.activos += 1;
-      curr.capital += Number(p.valor?.costoTotal ?? 0) || 0;
+      if (row.estadoActual === 'recogido') curr.activos += 1;
+      curr.capital += row.total;
       byTypeMap.set(k, curr);
     }
     const inventoryByType = Array.from(byTypeMap.entries()).map(([tipo, v]) => ({
@@ -1135,11 +1191,20 @@ export class AnalyticsService {
         inventoryUnsoldUnits,
         inventoryAvailableUnits,
         capitalInmovilizado,
+        capitalInmovilizadoProducto,
+        capitalInmovilizadoEnvio,
         capitalTotal,
         comprasPeriodoUnidades,
         comprasPeriodoCapital,
         rotationMedianDaysOverall,
         monthlies,
+        sunat: {
+          gastoTotal: sunatGastoTotal,
+          gastoProductos: sunatGastoProductos,
+          gastoEnvio: sunatGastoEnvio,
+          gananciaTotal: sunatGananciaTotal,
+          valorDecTotal: sunatValorDecTotal,
+        },
       },
       comprasPeriodo,
       inventoryByType,
@@ -1501,5 +1566,171 @@ export class AnalyticsService {
       insights,
       topProducts,
     };
+  }
+
+  async sunatExchangeRate(date?: string) {
+    const dateKey = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : 'today';
+    const cacheKey = `analytics:sunat:fx:v2:${dateKey}`;
+    const cached = await this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
+    const token =
+      process.env.DECOLECTA_API_TOKEN ||
+      process.env.APIS_NET_PE_TOKEN ||
+      process.env.APIS_TOKEN ||
+      '';
+
+    const params = new URLSearchParams();
+    if (dateKey !== 'today') params.set('date', dateKey);
+    const query = params.toString();
+    const url = `https://api.decolecta.com/v1/tipo-cambio/sunat${query ? `?${query}` : ''}`;
+
+    try {
+      const todayYmd = (() => {
+        const now = new Date();
+        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      })();
+      const baseDate = dateKey === 'today' ? todayYmd : dateKey;
+      const minusDays = (ymd: string, days: number) => {
+        const [y, m, d] = ymd.split('-').map((x) => Number(x));
+        const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+        dt.setUTCDate(dt.getUTCDate() - days);
+        return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+      };
+
+      // Public SUNAT mirror without token. Try target day and a few previous days (weekend/holiday safe).
+      let publicReason = 'public source not attempted';
+      for (let i = 0; i <= 7; i += 1) {
+        const d = minusDays(baseDate, i);
+        const pubUrl = `https://free.e-api.net.pe/tipo-cambio/${d}.json`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const resp = await fetch(pubUrl, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (!resp.ok) {
+            publicReason = `public-eapi: HTTP ${resp.status}`;
+            continue;
+          }
+          const body: any = await resp.json();
+          const buy = Number(body?.compra ?? body?.buy ?? body?.buy_price ?? body?.sunat);
+          const sell = Number(body?.venta ?? body?.sell ?? body?.sell_price ?? body?.sunat);
+          const fxDate = String(body?.fecha ?? body?.date ?? d).slice(0, 10);
+          if (!isFinite(buy) || !isFinite(sell) || sell <= 0) {
+            publicReason = 'public-eapi: invalid payload';
+            continue;
+          }
+          const result = {
+            source: 'sunat-eapi',
+            buy: +buy.toFixed(3),
+            sell: +sell.toFixed(3),
+            date: fxDate || d,
+            fallback: false,
+            authMode: 'public-eapi',
+            reason: '',
+          };
+          await this.cache.set(cacheKey, result, 3600);
+          return result;
+        } catch (e: any) {
+          clearTimeout(timeout);
+          publicReason = `public-eapi: ${String(e?.message || 'request error').slice(0, 120)}`;
+        }
+      }
+
+      const parseBody = (body: any) => {
+        const buy = Number(body?.buy_price ?? body?.compra ?? body?.buyPrice);
+        const sell = Number(body?.sell_price ?? body?.venta ?? body?.sellPrice);
+        const fxDate = String(body?.date || dateKey || '').slice(0, 10);
+        if (!isFinite(buy) || !isFinite(sell) || sell <= 0) return null;
+        return {
+          source: 'sunat',
+          buy: +buy.toFixed(3),
+          sell: +sell.toFixed(3),
+          date: fxDate || null,
+          fallback: false,
+          authMode: null as string | null,
+          reason: '',
+        };
+      };
+
+      const attempts: { authMode: string; reqUrl: string; headers: Record<string, string> }[] = [];
+      const baseHeaders: Record<string, string> = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Referer: 'https://apis.net.pe/tipo-de-cambio-sunat-api',
+      };
+      attempts.push({ authMode: 'none', reqUrl: url, headers: { ...baseHeaders } });
+      if (token) {
+        attempts.push({ authMode: 'bearer', reqUrl: url, headers: { ...baseHeaders, Authorization: `Bearer ${token}` } });
+        attempts.push({ authMode: 'apikey-header', reqUrl: url, headers: { ...baseHeaders, apikey: token } });
+        attempts.push({
+          authMode: 'api_token-query',
+          reqUrl: `${url}${url.includes('?') ? '&' : '?'}api_token=${encodeURIComponent(token)}`,
+          headers: { ...baseHeaders },
+        });
+        attempts.push({
+          authMode: 'apikey-query',
+          reqUrl: `${url}${url.includes('?') ? '&' : '?'}apikey=${encodeURIComponent(token)}`,
+          headers: { ...baseHeaders },
+        });
+      }
+
+      let lastReason = publicReason || 'unknown';
+      for (const attempt of attempts) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const resp = await fetch(attempt.reqUrl, {
+            method: 'GET',
+            headers: attempt.headers,
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          const text = await resp.text();
+          let body: any = null;
+          try {
+            body = text ? JSON.parse(text) : null;
+          } catch {
+            body = null;
+          }
+          if (!resp.ok) {
+            const errMsg = body?.error || body?.message || text || `HTTP ${resp.status}`;
+            lastReason = `${attempt.authMode}: HTTP ${resp.status} - ${String(errMsg).slice(0, 160)}`;
+            continue;
+          }
+          const parsed = parseBody(body);
+          if (!parsed) {
+            lastReason = `${attempt.authMode}: invalid payload`;
+            continue;
+          }
+          parsed.authMode = attempt.authMode;
+          await this.cache.set(cacheKey, parsed, 3600);
+          return parsed;
+        } catch (e: any) {
+          clearTimeout(timeout);
+          const msg = e?.message || 'request error';
+          lastReason = `${attempt.authMode}: ${String(msg).slice(0, 160)}`;
+        }
+      }
+
+      throw new Error(lastReason);
+    } catch (e: any) {
+      const reason = String(e?.message || 'fallback').slice(0, 180);
+      const fallback = {
+        source: 'fallback',
+        buy: this.fallbackTc,
+        sell: this.fallbackTc,
+        date: dateKey === 'today' ? null : dateKey,
+        fallback: true,
+        authMode: null,
+        reason,
+      };
+      await this.cache.set(cacheKey, fallback, 300);
+      return fallback;
+    }
   }
 }
