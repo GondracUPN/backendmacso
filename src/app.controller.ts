@@ -106,20 +106,25 @@ const parseTitleAttrs = (title: string): TitleAttrs => {
   else if (t.includes('ipad')) attrs.tipo = 'ipad';
   else if (t.includes('watch')) attrs.tipo = 'watch';
 
-  if (/\bpro max\b/.test(t)) attrs.gama = 'Pro Max';
+  if (attrs.tipo === 'macbook' && /\bneo\b/.test(t)) attrs.gama = 'Neo';
+  else if (/\bpro max\b/.test(t)) attrs.gama = 'Pro Max';
   else if (/\bpro\b/.test(t)) attrs.gama = 'Pro';
   else if (/\bair\b/.test(t)) attrs.gama = 'Air';
   else if (/\bmini\b/.test(t)) attrs.gama = 'Mini';
   else if (/\bplus\b/.test(t)) attrs.gama = 'Plus';
   else if (/\bultra\b/.test(t)) attrs.gama = 'Ultra';
 
+  const a18Match = t.match(/\b(a18)\s*(pro)\b/);
   const procMatch =
+    a18Match ||
     t.match(/\b(m[1-5])\s*(pro|max|ultra)?\b/) ||
     t.match(/\b(i[3579])\b/) ||
     t.match(/\b(ryzen\s*\d)\b/);
   if (procMatch) {
     const base = procMatch[1].toUpperCase();
-    const suffix = procMatch[2] ? ` ${procMatch[2].toUpperCase()}` : '';
+    const suffix = procMatch[2]
+      ? ` ${procMatch[2].charAt(0).toUpperCase()}${procMatch[2].slice(1).toLowerCase()}`
+      : '';
     attrs.proc = `${base}${suffix}`.trim();
   }
   else if (t.includes('intel')) attrs.proc = 'Intel';
