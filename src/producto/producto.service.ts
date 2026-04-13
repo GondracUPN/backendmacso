@@ -20,6 +20,14 @@ function normalizeEstado(str?: string | null): string {
   return s;
 }
 
+function normalizeVendedor(value?: string | null): 'Gonzalo' | 'Renato' | 'ambos' | null {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'gonzalo') return 'Gonzalo';
+  if (raw === 'renato') return 'Renato';
+  if (raw === 'ambos') return 'ambos';
+  return null;
+}
+
 @Injectable()
 export class ProductoService {
   // Cache corto para listados (mitiga lecturas repetidas en red/DB lenta)
@@ -115,6 +123,7 @@ export class ProductoService {
     const producto = this.productoRepo.create({
       tipo: data.tipo,
       estado: data.estado,
+      vendedor: normalizeVendedor((data as any).vendedor),
       accesorios,
       envioGrupoId: envioGrupoId || null,
       detalle: detalle || undefined,
@@ -277,6 +286,9 @@ export class ProductoService {
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
     if (dto.estado !== undefined) producto.estado = dto.estado;
+    if ((dto as any).vendedor !== undefined) {
+      producto.vendedor = normalizeVendedor((dto as any).vendedor);
+    }
     if (dto.facturaDecSubida !== undefined) {
       producto.facturaDecSubida = !!dto.facturaDecSubida;
     }

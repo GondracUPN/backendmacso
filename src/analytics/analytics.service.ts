@@ -106,8 +106,21 @@ function ym(d: string | Date): string {
 const SPLIT_VENDOR = 'ambos';
 const normalizeSeller = (s?: string | null) => (s == null ? '' : String(s).trim().toLowerCase());
 const SELLERS = ['gonzalo', 'renato'];
-const shareForSeller = (venta: Venta, seller: string) => {
-  const vend = normalizeSeller(venta?.vendedor as any);
+const getProductoSeller = (producto?: Producto | null) => normalizeSeller((producto as any)?.vendedor as any);
+const getVentaSellerHistorico = (venta: Venta) => normalizeSeller((venta as any)?.vendedor as any);
+const getVentaSellerProducto = (venta: Venta) => getProductoSeller((venta?.producto as any) || null);
+const getVentaSellerBySource = (venta: Venta, source: 'producto' | 'venta') =>
+  source === 'producto' ? getVentaSellerProducto(venta) : getVentaSellerHistorico(venta);
+const matchesProductoSeller = (producto: Producto | null | undefined, seller: string) => {
+  const target = normalizeSeller(seller);
+  if (!target) return true;
+  if (!producto) return false;
+  const vend = getProductoSeller(producto);
+  if (!vend) return false;
+  return vend === target || vend === SPLIT_VENDOR;
+};
+const shareForSeller = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
+  const vend = getVentaSellerBySource(venta, source);
   if (!seller) return 1;
   if (!vend) return 0;
   if (vend === seller) return 1;
@@ -129,8 +142,8 @@ const splitTipoCambio = (venta: Venta, seller: string) => {
   return base || 0;
 };
 
-const sellerMetrics = (venta: Venta, seller: string) => {
-  const vend = normalizeSeller(venta?.vendedor as any);
+const sellerMetrics = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
+  const vend = getVentaSellerBySource(venta, source);
   const target = normalizeSeller(seller);
   if (!vend || !target) return null;
 
@@ -172,10 +185,10 @@ const sellerMetrics = (venta: Venta, seller: string) => {
   return null;
 };
 
-const mapVentaForSeller = (venta: Venta, seller: string) => {
-  const metrics = sellerMetrics(venta, seller);
+const mapVentaForSeller = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
+  const metrics = sellerMetrics(venta, seller, source);
   if (!metrics) return null;
-  const vend = normalizeSeller(venta?.vendedor as any);
+  const vend = getVentaSellerBySource(venta, source);
   if (vend === normalizeSeller(seller)) return venta;
   return {
     ...venta,
@@ -445,7 +458,8 @@ export class AnalyticsService {
     const sellerTarget = normalizeSeller(vendedor);
     if (sellerTarget) {
       ventas = ventas
-        .map((v) => mapVentaForSeller(v, sellerTarget))
+        .filter((v) => matchesProductoSeller((v.producto as any) || productoById.get(v.productoId), sellerTarget))
+        .map((v) => mapVentaForSeller(v, sellerTarget, 'producto'))
         .filter(Boolean) as Venta[];
     }
 
@@ -458,6 +472,7 @@ export class AnalyticsService {
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
       if (!matchesProductFilters(p)) return false;
+      if (sellerTarget && !matchesProductoSeller(p, sellerTarget)) return false;
       if (dFromCompra && (!p.valor || new Date(p.valor.fechaCompra) < dFromCompra)) return false;
       if (dToCompra && (!p.valor || new Date(p.valor.fechaCompra) > dToCompra)) return false;
       if (estadoTracking) {
@@ -1316,7 +1331,7 @@ export class AnalyticsService {
     for (const v of ventas) {
       if (!v.fechaVenta) continue;
       if (sellerTarget) {
-        const metrics = sellerMetrics(v, sellerTarget);
+        const metrics = sellerMetrics(v, sellerTarget, 'venta');
         if (!metrics) continue;
         rows.push({ fechaVenta: v.fechaVenta, income: metrics.income, cost: metrics.cost });
       } else {
@@ -1462,7 +1477,7 @@ export class AnalyticsService {
       const vDateStr = String(v.fechaVenta).slice(0, 10);
       if (!vDateStr) continue;
       if (sellerTarget) {
-        const metrics = sellerMetrics(v, sellerTarget);
+        const metrics = sellerMetrics(v, sellerTarget, 'venta');
         if (!metrics) continue;
         const cost = metrics.cost;
         const income = metrics.income;

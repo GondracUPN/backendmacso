@@ -20,6 +20,15 @@ import { ProductoValor } from '../producto/producto-valor.entity';
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
 const isSplitSeller = (s?: string | null) => normalizeSeller(s) === 'ambos';
+const normalizeSellerLabel = (s?: string | null): 'Gonzalo' | 'Renato' | 'ambos' | null => {
+  const slug = normalizeSeller(s);
+  if (slug === 'gonzalo') return 'Gonzalo';
+  if (slug === 'renato') return 'Renato';
+  if (slug === 'ambos') return 'ambos';
+  return null;
+};
+const sellerFromProducto = (producto?: Producto | null, fallback?: string | null) =>
+  normalizeSellerLabel((producto as any)?.vendedor ?? fallback);
 
 const calcSplitCosts = (usdTotal: number, envioSoles: number, tcG: number, tcR: number) => {
   const halfUsd = usdTotal / 2;
@@ -35,7 +44,7 @@ const calcSplitCosts = (usdTotal: number, envioSoles: number, tcG: number, tcR: 
 export type ListVentasParams = {
   from?: string; // 'YYYY-MM-DD'
   to?: string; // 'YYYY-MM-DD'
-  unassigned?: boolean; // ventas sin vendedor
+  unassigned?: boolean; // ventas cuyo producto no tiene vendedor
   productoId?: number; // opcional
 };
 
@@ -70,8 +79,7 @@ export class VentaService {
       qb.andWhere('v.fechaVenta <= :to', { to: params.to });
     }
     if (params.unassigned) {
-      // requiere columna 'vendedor' en la entidad Venta
-      qb.andWhere("(v.vendedor IS NULL OR v.vendedor = '')");
+      qb.andWhere("(p.vendedor IS NULL OR p.vendedor = '')");
     }
 
     return qb
@@ -200,7 +208,7 @@ export class VentaService {
       precioVenta,
       ganancia,
       porcentajeGanancia,
-      vendedor: null,
+      vendedor: sellerFromProducto(producto, null),
     });
     const saved = await this.ventaRepo.save(venta);
 
@@ -231,6 +239,10 @@ export class VentaService {
       );
 
     const v = producto.valor;
+    const resolvedSeller = sellerFromProducto(
+      producto,
+      (dto as any).vendedor ?? null,
+    );
 
     // 2) Recalcular costos con el tipo de cambio ingresado
     const valorProductoUSD = Number(v.valorProducto); // USD
@@ -239,7 +251,7 @@ export class VentaService {
     ); // S/
 
     const splitRequested =
-      isSplitSeller((dto as any).vendedor) ||
+      isSplitSeller(resolvedSeller) ||
       (dto as any).tipoCambioGonzalo != null ||
       (dto as any).tipoCambioRenato != null;
 
@@ -285,7 +297,7 @@ export class VentaService {
         precioVenta,
         ganancia,
         porcentajeGanancia,
-        vendedor: 'ambos',
+        vendedor: sellerFromProducto(producto, 'ambos'),
       });
       const saved = await this.ventaRepo.save(venta);
       // invalidar KPIs de productos
@@ -318,7 +330,7 @@ export class VentaService {
       precioVenta,
       ganancia,
       porcentajeGanancia,
-      vendedor: (dto as any).vendedor ?? null, // opcional
+      vendedor: resolvedSeller,
     });
     const saved = await this.ventaRepo.save(venta);
     // invalidar KPIs de productos
@@ -328,8 +340,20 @@ export class VentaService {
 
   async update(id: number, dto: UpdateVentaDto): Promise<Venta> {
     const venta = await this.findOne(id);
+    const producto = await this.productoRepo.findOne({
+      where: { id: venta.productoId },
+      relations: ['valor'],
+    });
+    if (!producto?.valor)
+      throw new BadRequestException(
+        'El producto no tiene seccion de valor asociada',
+      );
+    const resolvedSeller = sellerFromProducto(
+      producto,
+      (dto as any).vendedor !== undefined ? (dto as any).vendedor : venta.vendedor,
+    );
     const nextVendedor =
-      (dto as any).vendedor !== undefined ? (dto as any).vendedor : venta.vendedor;
+      resolvedSeller ?? null;
     const splitMode =
       isSplitSeller(nextVendedor) ||
       (dto as any).tipoCambioGonzalo !== undefined ||
@@ -342,15 +366,6 @@ export class VentaService {
       (dto as any).tipoCambioGonzalo !== undefined ||
       (dto as any).tipoCambioRenato !== undefined
     ) {
-      const producto = await this.productoRepo.findOne({
-        where: { id: venta.productoId },
-        relations: ['valor'],
-      });
-      if (!producto?.valor)
-        throw new BadRequestException(
-          'El producto no tiene seccion de valor asociada',
-        );
-
       const precioVenta =
         dto.precioVenta !== undefined
           ? Number(dto.precioVenta)
@@ -430,9 +445,9 @@ export class VentaService {
       }
     }
     // permitir asignar vendedor
-    if ((dto as any).vendedor !== undefined) {
+    if ((dto as any).vendedor !== undefined || producto?.vendedor != null) {
       // guardar string o null si viene vacío
-      venta.vendedor = (dto as any).vendedor || null;
+      venta.vendedor = resolvedSeller;
     }
 
     if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;

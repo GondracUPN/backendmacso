@@ -35,6 +35,9 @@ export class Producto {
   @Column({ type: 'varchar', length: 64, nullable: true })
   envioGrupoId?: string | null;
 
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  vendedor?: 'Gonzalo' | 'Renato' | 'ambos' | null;
+
   @ManyToOne(() => ProductoDetalle, { cascade: true, eager: true })
   @JoinColumn()
   detalle: ProductoDetalle;
