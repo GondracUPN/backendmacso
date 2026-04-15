@@ -111,13 +111,18 @@ const getVentaSellerHistorico = (venta: Venta) => normalizeSeller((venta as any)
 const getVentaSellerProducto = (venta: Venta) => getProductoSeller((venta?.producto as any) || null);
 const getVentaSellerBySource = (venta: Venta, source: 'producto' | 'venta') =>
   source === 'producto' ? getVentaSellerProducto(venta) : getVentaSellerHistorico(venta);
-const matchesProductoSeller = (producto: Producto | null | undefined, seller: string) => {
+const productoShareForSeller = (producto: Producto | null | undefined, seller?: string | null) => {
   const target = normalizeSeller(seller);
-  if (!target) return true;
-  if (!producto) return false;
+  if (!target) return 1;
+  if (!producto) return 0;
   const vend = getProductoSeller(producto);
-  if (!vend) return false;
-  return vend === target || vend === SPLIT_VENDOR;
+  if (!vend) return 0;
+  if (vend === target) return 1;
+  if (vend === SPLIT_VENDOR && SELLERS.includes(target)) return 0.5;
+  return 0;
+};
+const matchesProductoSeller = (producto: Producto | null | undefined, seller: string) => {
+  return productoShareForSeller(producto, seller) > 0;
 };
 const shareForSeller = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
   const vend = getVentaSellerBySource(venta, source);
@@ -466,8 +471,15 @@ export class AnalyticsService {
     // Build helper maps
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
     // Para stock activo, necesitamos saber todos los productos vendidos históricamente
-    const ventasAllMin = await this.ventaRepo.find({ select: { productoId: true } as any });
-    const vendidosHistoricos = new Set<number>(ventasAllMin.map((x: any) => x.productoId));
+    const ventasHistoricasIds = await this.ventaRepo
+      .createQueryBuilder('v')
+      .select('DISTINCT v.productoId', 'productoId')
+      .getRawMany<{ productoId: string | number }>();
+    const vendidosHistoricos = new Set<number>(
+      ventasHistoricasIds
+        .map((x) => Number(x.productoId))
+        .filter((x) => Number.isFinite(x) && x > 0),
+    );
 
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
@@ -489,6 +501,10 @@ export class AnalyticsService {
       }
       return true;
     });
+    const productoShareById = new Map<number, number>();
+    for (const p of productosFiltered) {
+      productoShareById.set(p.id, productoShareForSeller(p, sellerTarget));
+    }
 
     // Helper to build a user-friendly display for each product
     const productDisplay = (p: Producto): string => {
@@ -622,19 +638,24 @@ export class AnalyticsService {
     const unsoldValuation = unsold.map((p) => {
       const estadoActual = latestTrackingEstado(p);
       const { baseSoles, envioSoles } = productCostParts(p);
+      const share = productoShareById.get(p.id) ?? 1;
       // Solo incluir envio para unidades recogidas (listas para venta).
-      const envioIncluido = estadoActual === 'recogido' ? envioSoles : 0;
+      const envioIncluido = estadoActual === 'recogido' ? envioSoles * share : 0;
       return {
         p,
+        share,
         estadoActual,
-        baseSoles,
+        baseSoles: baseSoles * share,
         envioIncluido,
-        total: baseSoles + envioIncluido,
+        total: baseSoles * share + envioIncluido,
       };
     });
 
-    const inventoryUnsoldUnits = unsoldValuation.length;
-    const inventoryAvailableUnits = unsoldValuation.filter((x) => x.estadoActual === 'recogido').length;
+    const inventoryUnsoldUnits = +unsoldValuation.reduce((s, x) => s + x.share, 0).toFixed(2);
+    const inventoryAvailableUnits = +unsoldValuation
+      .filter((x) => x.estadoActual === 'recogido')
+      .reduce((s, x) => s + x.share, 0)
+      .toFixed(2);
     const inventoryActiveUnits = inventoryUnsoldUnits;
     const capitalInmovilizadoProducto = +unsoldValuation
       .reduce((s, x) => s + x.baseSoles, 0)
@@ -645,9 +666,14 @@ export class AnalyticsService {
     const capitalInmovilizado = +(capitalInmovilizadoProducto + capitalInmovilizadoEnvio).toFixed(2);
 
     // Compras del período (filtradas por fecha de compra)
-    const comprasPeriodoUnidades = productosFiltered.length;
+    const comprasPeriodoUnidades = +productosFiltered
+      .reduce((s, p) => s + (productoShareById.get(p.id) ?? 1), 0)
+      .toFixed(2);
     const comprasPeriodoCapital = +(
-      productosFiltered.reduce((s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0), 0)
+      productosFiltered.reduce(
+        (s, p) => s + (Number(p.valor?.costoTotal ?? 0) || 0) * (productoShareById.get(p.id) ?? 1),
+        0,
+      )
     ).toFixed(2);
     // Capital total = suma de todo lo comprado en el universo filtrado (por fecha/tipo que aplique)
     const capitalTotal = comprasPeriodoCapital;
@@ -656,7 +682,8 @@ export class AnalyticsService {
       tipo: p.tipo,
       display: productDisplayClean(p),
       fechaCompra: p.valor?.fechaCompra,
-      costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
+      costoTotal: +(Number(p.valor?.costoTotal ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
+      participacion: productoShareById.get(p.id) ?? 1,
     }));
 
     // SUNAT: gasto del periodo con envio solo para productos recogidos.
@@ -664,11 +691,12 @@ export class AnalyticsService {
     const sunatRows = productosFiltered.map((p) => {
       const estadoActual = latestTrackingEstado(p);
       const { baseSoles, envioSoles } = productCostParts(p);
-      const envioIncluido = isRecogido(estadoActual) ? envioSoles : 0;
+      const share = productoShareById.get(p.id) ?? 1;
+      const envioIncluido = isRecogido(estadoActual) ? envioSoles * share : 0;
       return {
-        baseSoles,
+        baseSoles: baseSoles * share,
         envioIncluido,
-        valorDec: Number(p.valor?.valorDec ?? 0) || 0,
+        valorDec: (Number(p.valor?.valorDec ?? 0) || 0) * share,
       };
     });
     const sunatGastoProductos = +sunatRows.reduce((s, x) => s + x.baseSoles, 0).toFixed(2);
@@ -692,7 +720,8 @@ export class AnalyticsService {
           productoId: p.id,
           tipo: p.tipo,
           display: productDisplayClean(p),
-          costoTotal: Number(p.valor?.costoTotal ?? 0) || 0,
+          costoTotal: +(Number(p.valor?.costoTotal ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
+          participacion: productoShareById.get(p.id) ?? 1,
           fechaCompra: p.valor?.fechaCompra,
           fechaRecogido: frg || null,
           diasDesdeRecogido: dias,
@@ -705,8 +734,8 @@ export class AnalyticsService {
       const p = row.p;
       const k = p.tipo || 'otro';
       const curr = byTypeMap.get(k) || { unidades: 0, activos: 0, capital: 0 };
-      curr.unidades += 1;
-      if (row.estadoActual === 'recogido') curr.activos += 1;
+      curr.unidades += row.share;
+      if (row.estadoActual === 'recogido') curr.activos += row.share;
       curr.capital += row.total;
       byTypeMap.set(k, curr);
     }
@@ -945,10 +974,12 @@ export class AnalyticsService {
       vendidosPeriodoByTipo.set(t, arr);
     }
     // Stock actual independiente del filtro de ventas (productos sin ninguna venta histórica)
-    const ventasAll = await this.ventaRepo.find();
-    const ventasAllByProducto = new Map<number, boolean>();
-    for (const vv of ventasAll) ventasAllByProducto.set(vv.productoId, true);
-    const stockActual = productos.filter((p) => !ventasAllByProducto.get(p.id) && matchesProductFilters(p));
+    const stockActual = productos.filter(
+      (p) =>
+        !vendidosHistoricos.has(p.id) &&
+        matchesProductFilters(p) &&
+        (!sellerTarget || matchesProductoSeller(p, sellerTarget)),
+    );
     const stockByTipo = new Map<string, { productoId: number; display: string }[]>();
     for (const p of stockActual) {
       if (tipo && p.tipo !== tipo) continue;

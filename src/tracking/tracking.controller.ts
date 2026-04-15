@@ -30,6 +30,7 @@ const ESHOPEX_CASILLERO_BY_ACCOUNT: Record<string, string> = {
   'renato1carbajal@outlook.com': 'MamaRen',
   'goneba2526@gmail.com': 'Jorge',
   'gondrac10@gmail.com': 'Kenny',
+  'macsominus@gmail.com': 'Sebastian',
 };
 
 type EshopexAccount = { email: string; password: string };
