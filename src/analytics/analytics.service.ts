@@ -48,6 +48,21 @@ type ProfitParams = {
   type?: string;
 };
 
+type ProductAttrs = {
+  tipo: string;
+  gama: string;
+  proc: string;
+  pantalla: string;
+  ram: string;
+  ssd: string;
+};
+
+type AnalyticsUniverse = {
+  productos: Producto[];
+  ventas: Venta[];
+  vendidosHistoricosIds: number[];
+};
+
 function parseDate(d?: string): Date | null {
   if (!d) return null;
   const dt = new Date(d);
@@ -84,6 +99,95 @@ function groupBy<T, K extends string | number>(data: T[], key: (t: T) => K) {
     map.set(k, arr);
   });
   return map;
+}
+
+function sanitizeAttrKey(s: string) {
+  return s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
+}
+
+function extractProductAttrs(p: Producto): ProductAttrs {
+  let tipoP = (p.tipo || '').toLowerCase().trim();
+  if (tipoP.includes('watch')) tipoP = 'watch';
+
+  const d: any = p.detalle || {};
+  let gama = d?.gama ? String(d.gama).trim() : '';
+  let proc = '';
+  for (const key of Object.keys(d || {})) {
+    const k = sanitizeAttrKey(key);
+    if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) {
+      proc = String(d[key] ?? '');
+      break;
+    }
+  }
+  proc = proc ? proc.replace(/\s+/g, ' ').trim() : '';
+
+  let pantalla = '';
+  const known = ['10.2', '10.9', '11', '12.9', '13', '14', '15', '16'];
+  for (const key of Object.keys(d || {})) {
+    const k = sanitizeAttrKey(key);
+    if (
+      k.includes('tamano') ||
+      k.includes('tamanio') ||
+      k.includes('tamanopantalla') ||
+      k.includes('pantalla') ||
+      k.includes('screen') ||
+      k.includes('size') ||
+      k === 'tam'
+    ) {
+      pantalla = String(d[key] ?? '');
+      break;
+    }
+  }
+  if (!pantalla) {
+    const candidates = Object.values(d || {}).filter((v) => typeof v === 'string') as string[];
+    const hit = candidates.map(String).find((vs) => known.find((x) => vs.includes(x)));
+    if (hit) pantalla = known.find((x) => String(hit).includes(x)) || '';
+  }
+  const screenMatch = String(pantalla).match(/\d+(?:\.\d+)?/);
+  pantalla = screenMatch ? screenMatch[0] : pantalla || '';
+
+  const modelo = d?.modelo ? String(d.modelo).trim() : '';
+  const numero = d?.numero != null ? String(d.numero).trim() : '';
+  if (tipoP === 'iphone') {
+    if (numero && modelo) gama = `${numero} ${modelo}`.trim();
+    else if (numero) gama = numero;
+    else if (modelo && !gama) gama = modelo;
+  } else if (!gama && (tipoP === 'watch' || tipoP === 'ipad')) {
+    if (modelo) gama = modelo;
+  }
+
+  const ram = d?.ram ? String(d.ram).trim() : '';
+  const ssd =
+    (d as any)?.almacenamiento || (d as any)?.ssd
+      ? String((d as any)?.almacenamiento || (d as any)?.ssd).trim()
+      : '';
+
+  return { tipo: tipoP, gama, proc, pantalla, ram, ssd };
+}
+
+function createAttrsMatcher(filters: {
+  tipo?: string;
+  gama?: string;
+  procesador?: string;
+  pantalla?: string;
+}) {
+  const attrsCache = new Map<number, ProductAttrs>();
+  const getAttrs = (p: Producto): ProductAttrs => {
+    const existing = attrsCache.get(p.id);
+    if (existing) return existing;
+    const parsed = extractProductAttrs(p);
+    attrsCache.set(p.id, parsed);
+    return parsed;
+  };
+  const matchesProductFilters = (p: Producto) => {
+    const attrs = getAttrs(p);
+    if (filters.tipo && attrs.tipo !== filters.tipo) return false;
+    if (filters.gama && attrs.gama !== filters.gama) return false;
+    if (filters.procesador && attrs.proc !== filters.procesador) return false;
+    if (filters.pantalla && attrs.pantalla !== filters.pantalla) return false;
+    return true;
+  };
+  return { getAttrs, matchesProductFilters };
 }
 
 function ym(d: string | Date): string {
@@ -302,6 +406,7 @@ export class AnalyticsService {
   ) {}
 
   private readonly inflight = new Set<string>();
+  private readonly sharedInflight = new Map<string, Promise<any>>();
   private readonly fallbackTc = 3.7;
 
   private buildKey(prefix: string, params: Params): string {
@@ -309,6 +414,53 @@ export class AnalyticsService {
       .filter(([, v]) => v !== undefined && v !== null && v !== '')
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return `${prefix}:${entries.map(([k, v]) => `${k}=${v}`).join('&')}`;
+  }
+
+  private async rememberCached<T>(
+    key: string,
+    ttlSeconds: number,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    const cached = await this.cache.get<T>(key);
+    if (cached) return cached;
+
+    const inflight = this.sharedInflight.get(key);
+    if (inflight) return inflight as Promise<T>;
+
+    const promise = loader()
+      .then(async (value) => {
+        await this.cache.set(key, value, ttlSeconds);
+        return value;
+      })
+      .finally(() => this.sharedInflight.delete(key));
+
+    this.sharedInflight.set(key, promise);
+    return promise;
+  }
+
+  private async getAnalyticsUniverseCached(): Promise<AnalyticsUniverse> {
+    return this.rememberCached('analytics:universe:v1', 45, async () => {
+      const [productos, ventas] = await Promise.all([
+        this.prodRepo.find({
+          relations: ['valor', 'detalle', 'tracking'],
+          order: { id: 'DESC' },
+        }),
+        this.ventaRepo
+          .createQueryBuilder('v')
+          .leftJoinAndSelect('v.producto', 'p')
+          .leftJoinAndSelect('p.valor', 'val')
+          .leftJoinAndSelect('p.detalle', 'det')
+          .orderBy('v.fechaVenta', 'DESC')
+          .addOrderBy('v.id', 'DESC')
+          .getMany(),
+      ]);
+
+      const vendidosHistoricosIds = ventas
+        .map((v) => Number(v.productoId))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
+      return { productos, ventas, vendidosHistoricosIds };
+    });
   }
 
   // Stale‑while‑revalidate wrapper for the heavy summary aggregation
@@ -362,82 +514,21 @@ export class AnalyticsService {
     const dFromVenta = parseDate(fromVenta);
     const dToVenta = parseDate(toVenta);
 
-    type Attrs = { tipo: string; gama: string; proc: string; pantalla: string; ram: string; ssd: string };
-    const attrsCache = new Map<number, Attrs>();
-    const extractAttrs = (p: Producto): Attrs => {
-      let tipoP = (p.tipo || '').toLowerCase().trim();
-      if (tipoP.includes('watch')) tipoP = 'watch';
-      const d: any = p.detalle || {};
-      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      let gama = d?.gama ? String(d.gama).trim() : '';
-      let proc = '';
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { proc = String(d[key] ?? ''); break; }
-      }
-      proc = proc ? proc.replace(/\s+/g, ' ').trim() : '';
-      let pantalla = '';
-      const known = ['10.2','10.9','11','12.9','13','14','15','16'];
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('tamano')||k.includes('tamanio')||k.includes('tamanopantalla')||k.includes('pantalla')||k.includes('screen')||k.includes('size')||k==='tam') { pantalla = String(d[key] ?? ''); break; }
-      }
-      if (!pantalla) {
-        const candidates = Object.values(d || {}).filter((v)=> typeof v === 'string') as string[];
-        const hit = candidates.map(String).find(vs => known.find(x => vs.includes(x)));
-        if (hit) pantalla = known.find(x => String(hit).includes(x)) || '';
-      }
-      const m = String(pantalla).match(/\d+(?:\.\d+)?/);
-      pantalla = m ? m[0] : (pantalla || '');
-      const modelo = d?.modelo ? String(d.modelo).trim() : '';
-      const numero = d?.numero != null ? String(d.numero).trim() : '';
-      if (tipoP === 'iphone') {
-        if (numero && modelo) {
-          gama = `${numero} ${modelo}`.trim();
-        } else if (numero) {
-          gama = numero;
-        } else if (modelo && !gama) {
-          gama = modelo;
-        }
-      } else if (!gama && (tipoP === 'watch' || tipoP === 'ipad')) {
-        if (modelo) gama = modelo;
-      }
-      const ram = d?.ram ? String(d.ram).trim() : '';
-      const ssd = (d as any)?.almacenamiento || (d as any)?.ssd ? String((d as any)?.almacenamiento || (d as any)?.ssd).trim() : '';
-      return { tipo: tipoP, gama, proc, pantalla, ram, ssd };
-    };
-    const getAttrs = (p: Producto): Attrs => {
-      const existing = attrsCache.get(p.id);
-      if (existing) return existing;
-      const parsed = extractAttrs(p);
-      attrsCache.set(p.id, parsed);
-      return parsed;
-    };
-    const matchesProductFilters = (p: Producto) => {
-      const attrs = getAttrs(p);
-      if (tipo && attrs.tipo !== tipo) return false;
-      if (gama && attrs.gama !== gama) return false;
-      if (procesador && attrs.proc !== procesador) return false;
-      if (pantalla && attrs.pantalla !== pantalla) return false;
-      return true;
-    };
-
-    // Load products + relations for inventory-level metrics
-    const productos = await this.prodRepo.find({
-      relations: ['valor', 'detalle', 'tracking'],
-      order: { id: 'DESC' },
+    const { getAttrs, matchesProductFilters } = createAttrsMatcher({
+      tipo,
+      gama,
+      procesador,
+      pantalla,
     });
-
-    // Load ventas with joins for sales-level metrics
-    const ventaQB = this.ventaRepo
-      .createQueryBuilder('v')
-      .leftJoinAndSelect('v.producto', 'p')
-      .leftJoinAndSelect('p.valor', 'val')
-      .leftJoinAndSelect('p.detalle', 'det');
-    if (dFromVenta) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: fromVenta });
-    if (dToVenta) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: toVenta });
-    if (tipo) ventaQB.andWhere('p.tipo = :tipo', { tipo });
-    let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
+    const { productos, ventas: universeVentas, vendidosHistoricosIds } =
+      await this.getAnalyticsUniverseCached();
+    let ventas = universeVentas.filter((v) => {
+      if (!v.fechaVenta) return false;
+      const fechaVenta = String(v.fechaVenta).slice(0, 10);
+      if (dFromVenta && fechaVenta < String(fromVenta)) return false;
+      if (dToVenta && fechaVenta > String(toVenta)) return false;
+      return true;
+    });
 
     // Map rápido para acceder al producto completo (incluye tracking)
     const productoById = new Map<number, Producto>();
@@ -471,15 +562,7 @@ export class AnalyticsService {
     // Build helper maps
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
     // Para stock activo, necesitamos saber todos los productos vendidos históricamente
-    const ventasHistoricasIds = await this.ventaRepo
-      .createQueryBuilder('v')
-      .select('DISTINCT v.productoId', 'productoId')
-      .getRawMany<{ productoId: string | number }>();
-    const vendidosHistoricos = new Set<number>(
-      ventasHistoricasIds
-        .map((x) => Number(x.productoId))
-        .filter((x) => Number.isFinite(x) && x > 0),
-    );
+    const vendidosHistoricos = new Set<number>(vendidosHistoricosIds);
 
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
@@ -1001,6 +1084,46 @@ export class AnalyticsService {
         stock: { total: stk.length, items: stk },
       };
     });
+    const comprasByTipo = groupBy(productosFiltered, (p) => p.tipo || 'otro');
+    const totalProductosFiltrados = productosFiltered.length;
+    const financialByType = Array.from(
+      new Set<string>([
+        ...Array.from(comprasByTipo.keys()),
+        ...Array.from(ventasByTipo.keys()),
+      ]),
+    )
+      .map((tipoKey) => {
+        const comprasTipo = comprasByTipo.get(tipoKey) || [];
+        const ventasTipo = ventasByTipo.get(tipoKey) || [];
+        const unidadesCompradas = comprasTipo.length;
+        const unidadesVendidas = ventasTipo.length;
+        const compradoTotal = comprasTipo.reduce(
+          (s, p) => s + ((Number(p.valor?.costoTotal ?? 0) || 0) * (productoShareById.get(p.id) ?? 1)),
+          0,
+        );
+        const vendidoTotal = ventasTipo.reduce((s, v) => s + (Number(v.precioVenta) || 0), 0);
+        const gananciaTotal = ventasTipo.reduce((s, v) => s + (Number(v.ganancia) || 0), 0);
+        const margenPromedio = mean(ventasTipo.map((v) => Number(v.porcentajeGanancia) || 0)) ?? 0;
+        const rotacionMedia = mean(byType_compraToVenta.get(tipoKey) || []);
+        return {
+          tipo: tipoKey,
+          unidadesCompradas,
+          unidadesVendidas,
+          porcentajeSobreTotalProductos: totalProductosFiltrados
+            ? +((unidadesVendidas / totalProductosFiltrados) * 100).toFixed(2)
+            : 0,
+          compradoTotal: +compradoTotal.toFixed(2),
+          vendidoTotal: +vendidoTotal.toFixed(2),
+          gananciaTotal: +gananciaTotal.toFixed(2),
+          margenPromedio: +(margenPromedio?.toFixed(2) || 0),
+          rotacionMedia: rotacionMedia != null ? +rotacionMedia.toFixed(1) : null,
+        };
+      })
+      .sort((a, b) =>
+        (b.unidadesVendidas - a.unidadesVendidas) ||
+        (b.gananciaTotal - a.gananciaTotal) ||
+        (b.compradoTotal - a.compradoTotal),
+      );
     // Eliminado: margen % por modelo (solicitado)
 
     // Top/bottom ventas by ganancia
@@ -1260,6 +1383,7 @@ export class AnalyticsService {
       sales: {
         perMonth: monthlies,
         marginByType,
+        financialByType,
         porTipoDetalle,
         topVentas,
         bottomVentas,
@@ -1281,76 +1405,20 @@ export class AnalyticsService {
     const dFrom = parseDate(from);
     const dTo = parseDate(to);
 
-    type Attrs = { tipo: string; gama: string; proc: string; pantalla: string };
-    const attrsCache = new Map<number, Attrs>();
-    const extractAttrs = (p: Producto): Attrs => {
-      let tipoP = (p.tipo || '').toLowerCase().trim();
-      if (tipoP.includes('watch')) tipoP = 'watch';
-      const d: any = p.detalle || {};
-      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      let gamaVal = d?.gama ? String(d.gama).trim() : '';
-      let procVal = '';
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { procVal = String(d[key] ?? ''); break; }
-      }
-      procVal = procVal ? procVal.replace(/\s+/g, ' ').trim() : '';
-      let pantallaVal = '';
-      const known = ['10.2', '10.9', '11', '12.9', '13', '14', '15', '16'];
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('tamano') || k.includes('tamanio') || k.includes('tamanopantalla') || k.includes('pantalla') || k.includes('screen') || k.includes('size') || k === 'tam') {
-          pantallaVal = String(d[key] ?? '');
-          break;
-        }
-      }
-      if (!pantallaVal) {
-        const candidates = Object.values(d || {}).filter((v) => typeof v === 'string') as string[];
-        const hit = candidates.map(String).find((vs) => known.find((x) => vs.includes(x)));
-        if (hit) pantallaVal = known.find((x) => String(hit).includes(x)) || '';
-      }
-      const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
-      pantallaVal = m ? m[0] : (pantallaVal || '');
-      const modelo = d?.modelo ? String(d.modelo).trim() : '';
-      const numero = d?.numero != null ? String(d.numero).trim() : '';
-      if (tipoP === 'iphone') {
-        if (numero && modelo) {
-          gamaVal = `${numero} ${modelo}`.trim();
-        } else if (numero) {
-          gamaVal = numero;
-        } else if (modelo && !gamaVal) {
-          gamaVal = modelo;
-        }
-      } else if (!gamaVal && (tipoP === 'watch' || tipoP === 'ipad')) {
-        if (modelo) gamaVal = modelo;
-      }
-      return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
-    };
-    const getAttrs = (p: Producto): Attrs => {
-      const existing = attrsCache.get(p.id);
-      if (existing) return existing;
-      const parsed = extractAttrs(p);
-      attrsCache.set(p.id, parsed);
-      return parsed;
-    };
-    const matchesProductFilters = (p: Producto) => {
-      const attrs = getAttrs(p);
-      if (tipo && attrs.tipo !== tipo) return false;
-      if (gama && attrs.gama !== gama) return false;
-      if (procesador && attrs.proc !== procesador) return false;
-      if (pantalla && attrs.pantalla !== pantalla) return false;
+    const { matchesProductFilters } = createAttrsMatcher({
+      tipo,
+      gama,
+      procesador,
+      pantalla,
+    });
+    const { ventas: universeVentas } = await this.getAnalyticsUniverseCached();
+    let ventas = universeVentas.filter((v) => {
+      if (!v.fechaVenta) return false;
+      const fechaVenta = String(v.fechaVenta).slice(0, 10);
+      if (dFrom && fechaVenta < String(from)) return false;
+      if (dTo && fechaVenta > String(to)) return false;
       return true;
-    };
-
-    const ventaQB = this.ventaRepo
-      .createQueryBuilder('v')
-      .leftJoinAndSelect('v.producto', 'p')
-      .leftJoinAndSelect('p.valor', 'val')
-      .leftJoinAndSelect('p.detalle', 'det');
-    if (dFrom) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: from });
-    if (dTo) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: to });
-    if (tipo && tipo !== 'watch') ventaQB.andWhere('p.tipo = :tipo', { tipo });
-    let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
+    });
 
     ventas = ventas.filter((v) => {
       const prod = v.producto as any as Producto | undefined;
@@ -1406,76 +1474,21 @@ export class AnalyticsService {
     const dFrom = parseDate(prevRange.from);
     const dTo = parseDate(to);
 
-    type Attrs = { tipo: string; gama: string; proc: string; pantalla: string };
-    const attrsCache = new Map<number, Attrs>();
-    const extractAttrs = (p: Producto): Attrs => {
-      let tipoP = (p.tipo || '').toLowerCase().trim();
-      if (tipoP.includes('watch')) tipoP = 'watch';
-      const d: any = p.detalle || {};
-      const sanitize = (s: string) => s?.toString()?.toLowerCase()?.normalize('NFD')?.replace(/[\u0300-\u036f]/g, '') || '';
-      let gamaVal = d?.gama ? String(d.gama).trim() : '';
-      let procVal = '';
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('procesador') || k === 'cpu' || k.includes('chip') || k.startsWith('proc')) { procVal = String(d[key] ?? ''); break; }
-      }
-      procVal = procVal ? procVal.replace(/\s+/g, ' ').trim() : '';
-      let pantallaVal = '';
-      const known = ['10.2', '10.9', '11', '12.9', '13', '14', '15', '16'];
-      for (const key of Object.keys(d || {})) {
-        const k = sanitize(key);
-        if (k.includes('tamano') || k.includes('tamanio') || k.includes('tamanopantalla') || k.includes('pantalla') || k.includes('screen') || k.includes('size') || k === 'tam') {
-          pantallaVal = String(d[key] ?? '');
-          break;
-        }
-      }
-      if (!pantallaVal) {
-        const candidates = Object.values(d || {}).filter((v) => typeof v === 'string') as string[];
-        const hit = candidates.map(String).find((vs) => known.find((x) => vs.includes(x)));
-        if (hit) pantallaVal = known.find((x) => String(hit).includes(x)) || '';
-      }
-      const m = String(pantallaVal).match(/\d+(?:\.\d+)?/);
-      pantallaVal = m ? m[0] : (pantallaVal || '');
-      const modelo = d?.modelo ? String(d.modelo).trim() : '';
-      const numero = d?.numero != null ? String(d.numero).trim() : '';
-      if (tipoP === 'iphone') {
-        if (numero && modelo) {
-          gamaVal = `${numero} ${modelo}`.trim();
-        } else if (numero) {
-          gamaVal = numero;
-        } else if (modelo && !gamaVal) {
-          gamaVal = modelo;
-        }
-      } else if (!gamaVal && (tipoP === 'watch' || tipoP === 'ipad')) {
-        if (modelo) gamaVal = modelo;
-      }
-      return { tipo: tipoP, gama: gamaVal, proc: procVal, pantalla: pantallaVal };
-    };
-    const getAttrs = (p: Producto): Attrs => {
-      const existing = attrsCache.get(p.id);
-      if (existing) return existing;
-      const parsed = extractAttrs(p);
-      attrsCache.set(p.id, parsed);
-      return parsed;
-    };
-    const matchesProductFilters = (p: Producto) => {
-      const attrs = getAttrs(p);
-      if (tipo && attrs.tipo !== tipo) return false;
-      if (gama && attrs.gama !== gama) return false;
-      if (procesador && attrs.proc !== procesador) return false;
-      if (pantalla && attrs.pantalla !== pantalla) return false;
+    const { matchesProductFilters } = createAttrsMatcher({
+      tipo,
+      gama,
+      procesador,
+      pantalla,
+    });
+    const { productos: universeProductos, ventas: universeVentas } =
+      await this.getAnalyticsUniverseCached();
+    let ventas = universeVentas.filter((v) => {
+      if (!v.fechaVenta) return false;
+      const fechaVenta = String(v.fechaVenta).slice(0, 10);
+      if (dFrom && fechaVenta < prevRange.from) return false;
+      if (dTo && fechaVenta > String(to)) return false;
       return true;
-    };
-
-    const ventaQB = this.ventaRepo
-      .createQueryBuilder('v')
-      .leftJoinAndSelect('v.producto', 'p')
-      .leftJoinAndSelect('p.valor', 'val')
-      .leftJoinAndSelect('p.detalle', 'det');
-    if (dFrom) ventaQB.andWhere('v.fechaVenta >= :fv', { fv: prevRange.from });
-    if (dTo) ventaQB.andWhere('v.fechaVenta <= :tv', { tv: to });
-    if (tipo && tipo !== 'watch') ventaQB.andWhere('p.tipo = :tipo', { tipo });
-    let ventas = await ventaQB.orderBy('v.fechaVenta', 'DESC').addOrderBy('v.id', 'DESC').getMany();
+    });
 
     ventas = ventas.filter((v) => {
       const prod = v.producto as any as Producto | undefined;
@@ -1557,21 +1570,16 @@ export class AnalyticsService {
       }
     }
 
-    const purchaseQB = this.prodRepo
-      .createQueryBuilder('p')
-      .leftJoinAndSelect('p.valor', 'val')
-      .leftJoinAndSelect('p.detalle', 'det');
-    if (dFrom) purchaseQB.andWhere('val.fechaCompra >= :fcFrom', { fcFrom: prevRange.from });
-    if (dTo) purchaseQB.andWhere('val.fechaCompra <= :fcTo', { fcTo: to });
-    if (tipo && tipo !== 'watch') purchaseQB.andWhere('p.tipo = :tipo', { tipo });
-
-    let compras = await purchaseQB.getMany();
-    compras = compras.filter((p) => matchesProductFilters(p));
+    const compras = universeProductos.filter(
+      (p) => matchesProductFilters(p) && (!sellerTarget || matchesProductoSeller(p, sellerTarget)),
+    );
 
     for (const p of compras) {
       const compraDate = toYmd(p.valor?.fechaCompra || '');
       if (!compraDate) continue;
-      const costoTotal = Number(p.valor?.costoTotal ?? 0) || 0;
+      const share = productoShareForSeller(p, sellerTarget);
+      if (share <= 0) continue;
+      const costoTotal = (Number(p.valor?.costoTotal ?? 0) || 0) * share;
       if (inRange(compraDate, from, to)) {
         const curr = metricsByKey.get('current')!;
         curr.purchases = (curr.purchases || 0) + costoTotal;

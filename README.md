@@ -70,6 +70,24 @@ $ mau deploy
 
 With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
 
+## Produccion y base de datos
+
+Este proyecto usa `DATABASE_URL` y `DB_SCHEMA` para decidir a que base y schema conectarse.
+Si en produccion la app apunta a una base vieja o a otro schema con los mismos datos pero columnas antiguas, el backend puede quedar "funcionando" contra el destino equivocado.
+
+Variables recomendadas para produccion:
+
+- `DATABASE_URL`: conexion real de produccion.
+- `DB_SCHEMA`: schema real de produccion. Si no defines nada usa `public`.
+- `DB_GUARD_ENABLED=true`: activa validaciones de arranque para bloquear deploys apuntando a una BD incorrecta.
+- `EXPECTED_DB_HOST` o `EXPECTED_DB_HOSTS`: host esperado, o lista separada por comas.
+- `EXPECTED_DB_NAME` o `EXPECTED_DB_NAMES`: nombre esperado de la base, o lista separada por comas.
+- `EXPECTED_DB_SCHEMA` o `EXPECTED_DB_SCHEMAS`: schema esperado, o lista separada por comas.
+- `DB_GUARD_REQUIRE_COLUMNS=true`: exige columnas minimas para evitar levantar con un esquema viejo.
+- `REQUIRED_DB_COLUMNS`: JSON opcional para redefinir columnas requeridas. Ejemplo `{"producto":["accesorios","vendedor"],"tracking":["estatus_esho"],"venta":["tipoCambioGonzalo","tipoCambioRenato"]}`.
+
+Si alguna validacion falla, el backend aborta el arranque y deja el motivo en logs con prefijo `DB_GUARD`.
+
 ## Resources
 
 Check out a few resources that may come in handy when working with NestJS:

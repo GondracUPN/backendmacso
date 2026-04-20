@@ -5,6 +5,11 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { text } from 'express';
+import {
+  assertExpectedDbTargetOrThrow,
+  assertRequiredColumnsOrThrow,
+  shouldRunDbGuard,
+} from './db/db-boot.guard';
 // (opcional) si quieres headers de seguridad extra, instala helmet y descomenta:
 // import helmet from 'helmet';
 
@@ -47,6 +52,7 @@ async function bootstrap() {
   // app.setGlobalPrefix('api');
 
   // Log de entorno y columnas de tablas clave para diagnostico en despliegues
+  let shouldBlockBoot = false;
   try {
     if (!dataSource.isInitialized) {
       await dataSource.initialize();
@@ -72,9 +78,56 @@ async function bootstrap() {
                 current_user AS "user",
                 current_setting('search_path') AS search_path`,
       );
-      console.log('[BOOT][DB_INFO]', info?.[0] || info);
+      const dbInfo = info?.[0] || info;
+      console.log('[BOOT][DB_INFO]', dbInfo);
+
+      const guardEnabled = shouldRunDbGuard(
+        nodeEnv,
+        process.env.DB_GUARD_ENABLED || cfg.get<string>('DB_GUARD_ENABLED'),
+      );
+      const requireColumns = shouldRunDbGuard(
+        nodeEnv,
+        process.env.DB_GUARD_REQUIRE_COLUMNS || cfg.get<string>('DB_GUARD_REQUIRE_COLUMNS'),
+      );
+      shouldBlockBoot = guardEnabled;
+
+      console.log('[BOOT][DB_GUARD]', {
+        enabled: guardEnabled,
+        requireColumns,
+      });
+
+      if (guardEnabled) {
+        assertExpectedDbTargetOrThrow(
+          {
+            host: parsed.host,
+            database: dbInfo?.db || parsed.db,
+            schema: dbInfo?.schema || schema,
+            user: dbInfo?.user,
+            searchPath: dbInfo?.search_path,
+          },
+          {
+            EXPECTED_DB_HOST: process.env.EXPECTED_DB_HOST || cfg.get<string>('EXPECTED_DB_HOST'),
+            EXPECTED_DB_HOSTS: process.env.EXPECTED_DB_HOSTS || cfg.get<string>('EXPECTED_DB_HOSTS'),
+            EXPECTED_DB_NAME: process.env.EXPECTED_DB_NAME || cfg.get<string>('EXPECTED_DB_NAME'),
+            EXPECTED_DB_NAMES: process.env.EXPECTED_DB_NAMES || cfg.get<string>('EXPECTED_DB_NAMES'),
+            EXPECTED_DB_SCHEMA: process.env.EXPECTED_DB_SCHEMA || cfg.get<string>('EXPECTED_DB_SCHEMA'),
+            EXPECTED_DB_SCHEMAS: process.env.EXPECTED_DB_SCHEMAS || cfg.get<string>('EXPECTED_DB_SCHEMAS'),
+          },
+        );
+
+        if (requireColumns) {
+          await assertRequiredColumnsOrThrow(
+            dataSource,
+            dbInfo?.schema || schema,
+            process.env.REQUIRED_DB_COLUMNS || cfg.get<string>('REQUIRED_DB_COLUMNS'),
+          );
+        }
+
+        console.log('[BOOT][DB_GUARD] ok');
+      }
     } catch (e) {
       console.log('[BOOT][DB_INFO] error', (e as any)?.message || e);
+      throw e;
     }
 
     
@@ -130,6 +183,7 @@ async function bootstrap() {
     }
   } catch (e) {
     console.log('[BOOT][DB_ENV] error', (e as any)?.message || e);
+    if (shouldBlockBoot) throw e;
   }
 
   const port = Number(process.env.PORT || cfg.get<string>('PORT') || 3001);
