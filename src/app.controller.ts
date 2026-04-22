@@ -229,15 +229,232 @@ const getEbayApiBase = () => {
   return env === 'SANDBOX' ? 'https://api.sandbox.ebay.com' : 'https://api.ebay.com';
 };
 
+type EbayStoreEntry = {
+  storeUrl: string;
+  storeName: string;
+  seller: string;
+};
+
+const DEFAULT_EBAY_STORE_FEED: EbayStoreEntry[] = [
+  {
+    storeUrl: 'https://www.ebay.com/str/ezpawncorp',
+    storeName: 'EZ Pawn Corp',
+    seller: 'ezpawncorpnyc',
+  },
+  {
+    storeUrl: 'https://www.ebay.com/str/irvingsuperpawn',
+    storeName: 'Irving Super Pawn',
+    seller: 'irvingsuperpawn',
+  },
+  {
+    storeUrl: 'https://www.ebay.com/str/silasdeanepawnshop',
+    storeName: 'Silas Deane Pawn Shop',
+    seller: 'silasdeanepawnshop',
+  },
+  {
+    storeUrl: 'https://www.ebay.com/str/caldwellpawn1',
+    storeName: 'Caldwell Pawn 1',
+    seller: 'pawn1_caldwell',
+  },
+];
+
+const APPLE_FAMILY_QUERY_GROUPS = {
+  ipad: [
+    { key: 'ipad-11-a16', label: 'iPad 11 A16', query: 'apple ipad 11 inch a16' },
+    { key: 'ipad-11-m1', label: 'iPad 11 M1', query: 'apple ipad 11 inch m1' },
+    { key: 'ipad-11-m2', label: 'iPad 11 M2', query: 'apple ipad 11 inch m2' },
+    { key: 'ipad-11-m3', label: 'iPad 11 M3', query: 'apple ipad 11 inch m3' },
+    { key: 'ipad-11-m4', label: 'iPad 11 M4', query: 'apple ipad 11 inch m4' },
+    { key: 'ipad-11-m5', label: 'iPad 11 M5', query: 'apple ipad 11 inch m5' },
+    { key: 'ipad-129-a16', label: 'iPad 12.9 A16', query: 'apple ipad 12.9 inch a16' },
+    { key: 'ipad-129-m1', label: 'iPad 12.9 M1', query: 'apple ipad 12.9 inch m1' },
+    { key: 'ipad-129-m2', label: 'iPad 12.9 M2', query: 'apple ipad 12.9 inch m2' },
+    { key: 'ipad-129-m3', label: 'iPad 12.9 M3', query: 'apple ipad 12.9 inch m3' },
+    { key: 'ipad-129-m4', label: 'iPad 12.9 M4', query: 'apple ipad 12.9 inch m4' },
+    { key: 'ipad-129-m5', label: 'iPad 12.9 M5', query: 'apple ipad 12.9 inch m5' },
+    { key: 'ipad-13-a16', label: 'iPad 13 A16', query: 'apple ipad 13 inch a16' },
+    { key: 'ipad-13-m1', label: 'iPad 13 M1', query: 'apple ipad 13 inch m1' },
+    { key: 'ipad-13-m2', label: 'iPad 13 M2', query: 'apple ipad 13 inch m2' },
+    { key: 'ipad-13-m3', label: 'iPad 13 M3', query: 'apple ipad 13 inch m3' },
+    { key: 'ipad-13-m4', label: 'iPad 13 M4', query: 'apple ipad 13 inch m4' },
+    { key: 'ipad-13-m5', label: 'iPad 13 M5', query: 'apple ipad 13 inch m5' },
+  ],
+  iphone: [
+    { key: 'iphone-13', label: 'iPhone 13', query: 'apple iphone 13 unlocked' },
+    { key: 'iphone-13-pro', label: 'iPhone 13 Pro', query: 'apple iphone 13 pro unlocked' },
+    { key: 'iphone-13-pro-max', label: 'iPhone 13 Pro Max', query: 'apple iphone 13 pro max unlocked' },
+    { key: 'iphone-14', label: 'iPhone 14', query: 'apple iphone 14 unlocked' },
+    { key: 'iphone-14-plus', label: 'iPhone 14 Plus', query: 'apple iphone 14 plus unlocked' },
+    { key: 'iphone-14-pro', label: 'iPhone 14 Pro', query: 'apple iphone 14 pro unlocked' },
+    { key: 'iphone-14-pro-max', label: 'iPhone 14 Pro Max', query: 'apple iphone 14 pro max unlocked' },
+    { key: 'iphone-15', label: 'iPhone 15', query: 'apple iphone 15 unlocked' },
+    { key: 'iphone-15-plus', label: 'iPhone 15 Plus', query: 'apple iphone 15 plus unlocked' },
+    { key: 'iphone-15-pro', label: 'iPhone 15 Pro', query: 'apple iphone 15 pro unlocked' },
+    { key: 'iphone-15-pro-max', label: 'iPhone 15 Pro Max', query: 'apple iphone 15 pro max unlocked' },
+    { key: 'iphone-16', label: 'iPhone 16', query: 'apple iphone 16 unlocked' },
+    { key: 'iphone-16-e', label: 'iPhone 16 E', query: 'apple iphone 16 e unlocked' },
+    { key: 'iphone-16-plus', label: 'iPhone 16 Plus', query: 'apple iphone 16 plus unlocked' },
+    { key: 'iphone-16-pro', label: 'iPhone 16 Pro', query: 'apple iphone 16 pro unlocked' },
+    { key: 'iphone-16-pro-max', label: 'iPhone 16 Pro Max', query: 'apple iphone 16 pro max unlocked' },
+    { key: 'iphone-17', label: 'iPhone 17', query: 'apple iphone 17 unlocked' },
+    { key: 'iphone-17-e', label: 'iPhone 17 E', query: 'apple iphone 17 e unlocked' },
+    { key: 'iphone-17-pro', label: 'iPhone 17 Pro', query: 'apple iphone 17 pro unlocked' },
+    { key: 'iphone-17-pro-max', label: 'iPhone 17 Pro Max', query: 'apple iphone 17 pro max unlocked' },
+  ],
+  macbook: [
+    { key: 'macbook-air-m1', label: 'MacBook Air M1', query: 'apple macbook air m1' },
+    { key: 'macbook-air-m2', label: 'MacBook Air M2', query: 'apple macbook air m2' },
+    { key: 'macbook-air-m3', label: 'MacBook Air M3', query: 'apple macbook air m3' },
+    { key: 'macbook-air-m4', label: 'MacBook Air M4', query: 'apple macbook air m4' },
+    { key: 'macbook-air-m5', label: 'MacBook Air M5', query: 'apple macbook air m5' },
+    { key: 'macbook-pro-m1', label: 'MacBook Pro M1', query: 'apple macbook pro m1' },
+    { key: 'macbook-pro-m2', label: 'MacBook Pro M2', query: 'apple macbook pro m2' },
+    { key: 'macbook-pro-m3', label: 'MacBook Pro M3', query: 'apple macbook pro m3' },
+    { key: 'macbook-pro-m4', label: 'MacBook Pro M4', query: 'apple macbook pro m4' },
+    { key: 'macbook-pro-m5', label: 'MacBook Pro M5', query: 'apple macbook pro m5' },
+  ],
+} as const;
+
 let ebayTokenCache: { token: string; expiresAt: number } | null = null;
 const TM_STORAGE_DIR = join(process.cwd(), 'storage', 'tm');
 const TM_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'ebay-template.html');
 const TM_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'ebay-template.meta.json');
 const TM_AMAZON_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'amazon-template.html');
 const TM_AMAZON_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'amazon-template.meta.json');
+const EBAY_STORE_FEED_FILE = join(process.cwd(), 'storage', 'ebay-store-feed.json');
+let ebayStoreFeedCache: EbayStoreEntry[] | null = null;
 
 const normalizeEnvToken = (val: string) =>
   val.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, '');
+
+const sanitizeEbayStoreEntry = (entry: any): EbayStoreEntry | null => {
+  const storeUrl = String(entry?.storeUrl || '').trim();
+  const storeName = String(entry?.storeName || '').trim();
+  const seller = String(entry?.seller || '').trim();
+  if (!storeUrl || !storeName || !seller) return null;
+  return { storeUrl, storeName, seller };
+};
+
+const normalizeStoreIdentity = (value: string) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const isSameEbayStoreEntry = (left?: EbayStoreEntry | null, right?: EbayStoreEntry | null) => {
+  if (!left || !right) return false;
+  return (
+    normalizeStoreIdentity(left.storeUrl) === normalizeStoreIdentity(right.storeUrl) ||
+    normalizeStoreIdentity(left.storeName) === normalizeStoreIdentity(right.storeName) ||
+    normalizeStoreIdentity(left.seller) === normalizeStoreIdentity(right.seller)
+  );
+};
+
+const saveEbayStoreFeed = async (entries: EbayStoreEntry[]) => {
+  const normalized = entries
+    .map((entry) => sanitizeEbayStoreEntry(entry))
+    .filter((entry): entry is EbayStoreEntry => !!entry);
+  await mkdir(join(process.cwd(), 'storage'), { recursive: true });
+  await writeFile(EBAY_STORE_FEED_FILE, JSON.stringify(normalized, null, 2), 'utf8');
+  ebayStoreFeedCache = normalized;
+  return normalized;
+};
+
+const loadEbayStoreFeed = async () => {
+  if (ebayStoreFeedCache) return ebayStoreFeedCache;
+  try {
+    const raw = await readFile(EBAY_STORE_FEED_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    const entries = Array.isArray(parsed)
+      ? parsed.map((entry) => sanitizeEbayStoreEntry(entry)).filter((entry): entry is EbayStoreEntry => !!entry)
+      : [];
+    if (entries.length > 0) {
+      ebayStoreFeedCache = entries;
+      return entries;
+    }
+  } catch {}
+
+  return saveEbayStoreFeed(DEFAULT_EBAY_STORE_FEED);
+};
+
+const normalizeEbayStoreUrl = (rawUrl: string) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(String(rawUrl || '').trim());
+  } catch {
+    throw new BadRequestException('URL de pawn invalida');
+  }
+  const host = (parsed.hostname || '').toLowerCase();
+  if (!host.includes('ebay.')) {
+    throw new BadRequestException('La URL debe ser de eBay');
+  }
+  const pathname = parsed.pathname.replace(/\/+$/, '');
+  if (!/^\/(str|usr)\/[^/]+$/i.test(pathname)) {
+    throw new BadRequestException('La URL debe apuntar a una tienda o perfil de eBay (/str/... o /usr/...)');
+  }
+  return `https://www.ebay.com${pathname.toLowerCase()}`;
+};
+
+const parseStoredUrlsPayload = (payload: any): string[] => {
+  if (Array.isArray(payload?.urls)) {
+    return payload.urls.map((value: any) => String(value || '').trim()).filter(Boolean);
+  }
+  if (typeof payload?.url === 'string' && payload.url.trim()) {
+    return [payload.url.trim()];
+  }
+  if (typeof payload?.text === 'string' && payload.text.trim()) {
+    return payload.text
+      .split(/[\r\n,;]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> => {
+  const storeUrl = normalizeEbayStoreUrl(rawUrl);
+  const res = await fetch(storeUrl, {
+    method: 'GET',
+    redirect: 'follow',
+    headers: {
+      'User-Agent': UA,
+      Accept: 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+  if (!res.ok) {
+    throw new BadRequestException(`No se pudo abrir la tienda (${res.status})`);
+  }
+
+  const html = await res.text().catch(() => '');
+  const finalUrl = normalizeEbayStoreUrl(res.url || storeUrl);
+  const seller =
+    decodeURIComponent(html.match(/entity_id=%7E([A-Za-z0-9_.-]+)/i)?.[1] || '') ||
+    html.match(/"entityId"\s*:\s*"~([^"]+)"/i)?.[1] ||
+    html.match(/"storeOwnerUsername"\s*:\s*"([^"]+)"/i)?.[1] ||
+    '';
+  const storeNameRaw =
+    html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)?.[1] ||
+    html.match(/<title>([^<]+)<\/title>/i)?.[1] ||
+    '';
+  const storeName = String(storeNameRaw || '')
+    .replace(/\|\s*eBay Stores?$/i, '')
+    .replace(/\|\s*eBay$/i, '')
+    .trim();
+
+  if (!seller) {
+    throw new BadRequestException('No se pudo resolver el seller real de esa tienda');
+  }
+  if (!storeName) {
+    throw new BadRequestException('No se pudo resolver el nombre de esa tienda');
+  }
+
+  return {
+    storeUrl: finalUrl,
+    storeName,
+    seller: String(seller).trim(),
+  };
+};
 
 const requestEbayToken = async (params: {
   grantType: 'refresh_token' | 'client_credentials';
@@ -350,6 +567,344 @@ const fetchEbayItem = async (legacyId: string, zip: string) => {
     throw new BadRequestException(`No se pudo obtener item (${res.status})`);
   }
   return res.json();
+};
+
+const buildEbayConditionFilter = (rawCondition?: string) => {
+  const condition = String(rawCondition || '').trim().toLowerCase();
+  if (!condition) return '';
+  if (condition === 'used') return 'conditions:{USED}';
+  if (condition === 'new') return 'conditionIds:{1000}';
+  if (condition === 'open_box') return 'conditionIds:{1500}';
+  if (condition === 'for_parts') return 'conditionIds:{7000}';
+  if (condition === 'auction_normal') return 'conditionIds:{1000|1500|2000|2010|2020|2030|2500|2750|2990|3000|3010|4000|5000|6000}';
+  if (condition === 'auction_for_parts') return 'conditionIds:{7000}';
+  return '';
+};
+
+const buildEbayBuyingOptionsFilter = (rawBuyingOptions?: string) => {
+  const buyingOptions = String(rawBuyingOptions || '').trim().toUpperCase();
+  if (!buyingOptions) return '';
+  return `buyingOptions:{${buyingOptions}}`;
+};
+
+const normalizeLookupText = (val: string) =>
+  String(val || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9.+\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const APPLE_ACCESSORY_KEYWORDS = [
+  'keyboard',
+  'magic keyboard',
+  'folio',
+  'smart folio',
+  'case',
+  'cover',
+  'pencil',
+  'charger',
+  'cable',
+  'adapter',
+  'protector',
+  'screen protector',
+  'stylus',
+  'pen',
+  'replacement',
+  'housing',
+  'digitizer',
+  'lcd',
+  'glass',
+  'bundle only',
+];
+
+const isAccessoryTitle = (title: string) => {
+  const normalized = normalizeLookupText(title);
+  return APPLE_ACCESSORY_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
+
+const isLikelyAppleDeviceTitle = (title: string, family: 'ipad' | 'iphone' | 'macbook') => {
+  const normalized = normalizeLookupText(title);
+  if (isAccessoryTitle(normalized)) return false;
+  if (family === 'ipad') return normalized.includes('ipad');
+  if (family === 'iphone') return normalized.includes('iphone');
+  return normalized.includes('macbook');
+};
+
+const matchesAppleFamilyEntry = (
+  title: string,
+  entry: { family: 'ipad' | 'iphone' | 'macbook'; key: string },
+) => {
+  const normalized = normalizeLookupText(title);
+  if (!isLikelyAppleDeviceTitle(normalized, entry.family)) return false;
+
+  if (entry.family === 'iphone') {
+    const key = String(entry.key || '').toLowerCase();
+    const numberMatch = key.match(/iphone-(13|14|15|16|17)/);
+    if (!numberMatch) return false;
+    const requiredNumber = numberMatch[1];
+    if (!normalized.includes(`iphone ${requiredNumber}`) && !normalized.includes(`iphone${requiredNumber}`)) {
+      return false;
+    }
+
+    if (key.includes('-pro-max')) {
+      return normalized.includes('pro max');
+    }
+    if (key.includes('-pro')) {
+      return normalized.includes('pro') && !normalized.includes('pro max') ? true : normalized.includes('pro');
+    }
+    if (key.includes('-plus')) {
+      return normalized.includes('plus');
+    }
+    if (key.includes('-e')) {
+      return normalized.includes(`${requiredNumber}e`) || normalized.includes(`${requiredNumber} e`);
+    }
+
+    return !normalized.includes('plus') && !normalized.includes('pro') && !normalized.includes('max');
+  }
+
+  return true;
+};
+
+const normalizeEbayBrowseItems = (params: {
+  items: any[];
+  storeEntries?: ReadonlyArray<EbayStoreEntry>;
+}) => {
+  const storeBySeller = new Map(
+    (params.storeEntries || []).map((entry) => [entry.seller.toLowerCase(), entry]),
+  );
+
+  return (Array.isArray(params.items) ? params.items : [])
+    .map((item: any) => {
+      const seller = String(item?.seller?.username || item?.seller?.userId || '').trim();
+      const storeMeta = storeBySeller.get(seller.toLowerCase()) || null;
+      return {
+        itemId: String(item?.itemId || item?.legacyItemId || ''),
+        legacyItemId: String(item?.legacyItemId || ''),
+        title: String(item?.title || '').trim(),
+        priceUSD: parsePriceValue(item?.price),
+        currentBidPriceUSD: parsePriceValue(item?.currentBidPrice),
+        currency: String(item?.price?.currency || 'USD').trim() || 'USD',
+        itemWebUrl: String(item?.itemWebUrl || '').trim(),
+        imageUrl: String(item?.image?.imageUrl || item?.thumbnailImages?.[0]?.imageUrl || '').trim(),
+        seller,
+        sellerFeedbackPercentage: parsePriceValue(item?.seller?.feedbackPercentage),
+        sellerFeedbackScore: parsePriceValue(item?.seller?.feedbackScore),
+        storeName: storeMeta?.storeName || seller,
+        storeUrl: storeMeta?.storeUrl || '',
+        itemCreationDate: String(item?.itemCreationDate || item?.itemOriginDate || '').trim(),
+        itemOriginDate: String(item?.itemOriginDate || item?.itemCreationDate || '').trim(),
+        itemEndDate: String(item?.itemEndDate || '').trim(),
+        condition: String(item?.condition || '').trim(),
+        conditionId: String(item?.conditionId || '').trim(),
+        buyingOptions: Array.isArray(item?.buyingOptions) ? item.buyingOptions : [],
+      };
+    })
+    .filter((item: any) => item.title && item.itemWebUrl)
+    .sort((a: any, b: any) => {
+      const timeA = Date.parse(a.itemOriginDate || a.itemCreationDate || '') || 0;
+      const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
+      return timeB - timeA;
+    });
+};
+
+const searchEbayItems = async (params?: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+  condition?: string;
+  buyingOptions?: string;
+  sort?: string;
+  storeEntries?: ReadonlyArray<EbayStoreEntry>;
+}) => {
+  const token = await getEbayAccessToken();
+  const base = getEbayApiBase();
+  const query = String(params?.query || 'apple').trim() || 'apple';
+  const limitRaw = Number(params?.limit || 140);
+  const offsetRaw = Number(params?.offset || 0);
+  const limit = Math.min(200, Math.max(1, Number.isFinite(limitRaw) ? limitRaw : 140));
+  const offset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0);
+  const sort = String(params?.sort || 'newlyListed').trim() || 'newlyListed';
+  const url = new URL(`${base}/buy/browse/v1/item_summary/search`);
+  url.searchParams.set('q', query);
+  const filters: string[] = [];
+  if (Array.isArray(params?.storeEntries) && params.storeEntries.length > 0) {
+    const sellerFilter = params.storeEntries.map((entry) => entry.seller).join('|');
+    filters.push(`sellers:{${sellerFilter}}`);
+  }
+  const conditionFilter = buildEbayConditionFilter(params?.condition);
+  if (conditionFilter) filters.push(conditionFilter);
+  const buyingOptionsFilter = buildEbayBuyingOptionsFilter(params?.buyingOptions);
+  if (buyingOptionsFilter) filters.push(buyingOptionsFilter);
+  if (filters.length > 0) {
+    url.searchParams.set('filter', filters.join(','));
+  }
+  url.searchParams.set('sort', sort);
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('offset', String(offset));
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+    },
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.log('[eBay] browse store feed status', { status: res.status, body: errText.slice(0, 400) });
+    throw new BadRequestException(`No se pudo obtener items eBay (${res.status})`);
+  }
+
+  const data = await res.json();
+  const items = normalizeEbayBrowseItems({
+    items: Array.isArray(data?.itemSummaries) ? data.itemSummaries : [],
+    storeEntries: params?.storeEntries,
+  });
+
+  return {
+    query,
+    sort,
+    limit,
+    offset,
+    total: Number(data?.total || items.length || 0),
+    sellers: params?.storeEntries || [],
+    items,
+  };
+};
+
+const fetchEbayStoreFeed = async (params?: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+  condition?: string;
+  buyingOptions?: string;
+}) => {
+  const storeEntries = await loadEbayStoreFeed();
+  return searchEbayItems({
+    query: params?.query,
+    limit: params?.limit,
+    offset: params?.offset,
+    condition: params?.condition,
+    buyingOptions: params?.buyingOptions,
+    storeEntries,
+  });
+};
+
+const fetchEbayAppleCollection = async (params?: {
+  limit?: number;
+  offset?: number;
+  family?: 'all' | 'ipad' | 'iphone' | 'macbook';
+  condition?: string;
+  buyingOptions?: string;
+  sort?: string;
+}) => {
+  const targetLimitRaw = Number(params?.limit || 140);
+  const targetOffsetRaw = Number(params?.offset || 0);
+  const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
+  const targetOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
+  const requestedFamily = String(params?.family || 'all').trim().toLowerCase();
+  const familyKeys = requestedFamily && requestedFamily !== 'all'
+    ? ([requestedFamily] as Array<'ipad' | 'iphone' | 'macbook'>)
+    : (['ipad', 'iphone', 'macbook'] as Array<'ipad' | 'iphone' | 'macbook'>);
+
+  const queryEntries = familyKeys.flatMap((familyKey) =>
+    APPLE_FAMILY_QUERY_GROUPS[familyKey].map((entry) => ({
+      ...entry,
+      family: familyKey,
+    })),
+  );
+
+  const desiredWindow = targetOffset + targetLimit;
+  const perQueryLimit = Math.min(
+    200,
+    Math.max(24, Math.ceil((desiredWindow / Math.max(1, queryEntries.length)) * 3)),
+  );
+
+  const results = await Promise.all(
+    queryEntries.map(async (entry) => {
+      const data = await searchEbayItems({
+        query: entry.query,
+        limit: perQueryLimit,
+        offset: 0,
+        condition: params?.condition,
+        buyingOptions: params?.buyingOptions,
+        sort: params?.sort,
+      });
+      return {
+        ...entry,
+        total: Number(data?.total || 0),
+        items: Array.isArray(data?.items) ? data.items : [],
+      };
+    }),
+  );
+
+  const seen = new Set<string>();
+  const merged = results
+    .flatMap((entry) =>
+      entry.items.map((item: any) => ({
+        ...item,
+        family: entry.family,
+        familyLabel: entry.family === 'ipad' ? 'iPad' : entry.family === 'iphone' ? 'iPhone' : 'MacBook',
+        familyEntryKey: entry.key,
+      })),
+    )
+    .filter((item: any) => matchesAppleFamilyEntry(item?.title || '', {
+      family: item?.family,
+      key: item?.familyEntryKey || '',
+    }))
+    .filter((item: any) => {
+      const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '');
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a: any, b: any) => {
+      if (params?.sort === 'endingSoonest') {
+        const timeA = Date.parse(a.itemEndDate || '') || Number.MAX_SAFE_INTEGER;
+        const timeB = Date.parse(b.itemEndDate || '') || Number.MAX_SAFE_INTEGER;
+        return timeA - timeB;
+      }
+      const timeA = Date.parse(a.itemOriginDate || a.itemCreationDate || '') || 0;
+      const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
+      return timeB - timeA;
+    })
+    .slice(targetOffset, targetOffset + targetLimit);
+
+  return {
+    query: requestedFamily === 'all' ? 'Apple collection' : `Apple ${requestedFamily}`,
+    sort: params?.sort || 'newlyListed',
+    buyingOptions: params?.buyingOptions || '',
+    condition: params?.condition || '',
+    limit: targetLimit,
+    offset: targetOffset,
+    family: requestedFamily || 'all',
+    total: results.reduce((sum, entry) => sum + Number(entry.total || 0), 0),
+    groups: familyKeys.map((familyKey) => ({
+      key: familyKey,
+      label: familyKey === 'ipad' ? 'iPad' : familyKey === 'iphone' ? 'iPhone' : 'MacBook',
+      total: results
+        .filter((entry) => entry.family === familyKey)
+        .reduce((sum, entry) => sum + Number(entry.total || 0), 0),
+    })),
+    items: merged,
+  };
+};
+
+const fetchEbayAppleAuctions = async (params?: {
+  limit?: number;
+  offset?: number;
+  family?: 'all' | 'ipad' | 'iphone' | 'macbook';
+  condition?: string;
+}) => {
+  return fetchEbayAppleCollection({
+    limit: params?.limit,
+    offset: params?.offset,
+    family: params?.family,
+    condition: params?.condition,
+    buyingOptions: 'AUCTION',
+    sort: 'endingSoonest',
+  });
 };
 
 const resolveLegacyId = async (rawUrl: string): Promise<string | null> => {
@@ -662,6 +1217,142 @@ export class AppController {
       console.log('[eBay] browse error', (err as any)?.message || err);
       throw new BadRequestException('No se pudo obtener item desde eBay');
     }
+  }
+
+  @Get('utils/ebay/store-feed')
+  async getEbayStoreFeed(
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('condition') condition?: string,
+    @Query('buyingOptions') buyingOptions?: string,
+  ) {
+    return fetchEbayStoreFeed({
+      query: q,
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+      condition,
+      buyingOptions,
+    });
+  }
+
+  @Get('utils/ebay/pawns')
+  async getSavedEbayPawns() {
+    const stores = await loadEbayStoreFeed();
+    return {
+      total: stores.length,
+      stores,
+    };
+  }
+
+  @Post('utils/ebay/pawns')
+  async addSavedEbayPawn(@Body() body: any) {
+    const urls = parseStoredUrlsPayload(body);
+    if (urls.length !== 1) {
+      throw new BadRequestException('Debes enviar una sola URL de tienda');
+    }
+
+    const existing = await loadEbayStoreFeed();
+    const resolved = await resolveEbayStoreEntry(urls[0]);
+    const duplicate = existing.find((entry) => isSameEbayStoreEntry(entry, resolved));
+    if (duplicate) {
+      return {
+        duplicate: true,
+        saved: duplicate,
+        total: existing.length,
+        stores: existing,
+      };
+    }
+
+    const stores = await saveEbayStoreFeed([...existing, resolved]);
+    return {
+      duplicate: false,
+      saved: resolved,
+      total: stores.length,
+      stores,
+    };
+  }
+
+  @Post('utils/ebay/pawns/bulk')
+  async addSavedEbayPawnsBulk(@Body() body: any) {
+    const urls = parseStoredUrlsPayload(body);
+    if (!urls.length) {
+      throw new BadRequestException('Debes enviar URLs de tiendas');
+    }
+
+    const current = await loadEbayStoreFeed();
+    const merged = [...current];
+    const added: EbayStoreEntry[] = [];
+    const skipped: string[] = [];
+
+    for (const rawUrl of urls) {
+      try {
+        const resolved = await resolveEbayStoreEntry(rawUrl);
+        const exists = merged.some((entry) => isSameEbayStoreEntry(entry, resolved));
+        if (exists) {
+          skipped.push(rawUrl);
+          continue;
+        }
+        merged.push(resolved);
+        added.push(resolved);
+      } catch (err: any) {
+        skipped.push(`${rawUrl} :: ${String(err?.message || 'error')}`);
+      }
+    }
+
+    const stores = await saveEbayStoreFeed(merged);
+    return {
+      added,
+      skipped,
+      total: stores.length,
+      stores,
+    };
+  }
+
+  @Get('utils/ebay/search')
+  async searchEbayCatalog(
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('condition') condition?: string,
+  ) {
+    return searchEbayItems({
+      query: q,
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+      condition,
+    });
+  }
+
+  @Get('utils/ebay/apple-collection')
+  async getEbayAppleCollection(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook',
+    @Query('condition') condition?: string,
+  ) {
+    return fetchEbayAppleCollection({
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+      family,
+      condition,
+      sort: 'newlyListed',
+    });
+  }
+
+  @Get('utils/ebay/apple-auctions')
+  async getEbayAppleAuctions(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook',
+    @Query('condition') condition?: string,
+  ) {
+    return fetchEbayAppleAuctions({
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+      family,
+      condition,
+    });
   }
 
   @Get('utils/ebay/image')
