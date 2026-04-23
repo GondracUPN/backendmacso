@@ -342,6 +342,7 @@ const sanitizeEbayStoreEntry = (entry: any): EbayStoreEntry | null => {
 const sanitizeStoreUrlInput = (rawUrl: string) =>
   String(rawUrl || '')
     .trim()
+    .replace(/\s+/g, '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2018\u2019]/g, "'")
@@ -377,14 +378,17 @@ const loadEbayStoreFeedSeed = async () => {
 };
 
 const normalizeEbayStoreUrl = (rawUrl: string) => {
+  const sanitizedUrl = sanitizeStoreUrlInput(rawUrl);
   let parsed: URL;
   try {
-    parsed = new URL(sanitizeStoreUrlInput(rawUrl));
+    parsed = new URL(sanitizedUrl);
   } catch {
+    console.log('[eBay][pawn-url] invalid url', { rawUrl, sanitizedUrl });
     throw new BadRequestException('URL de pawn invalida');
   }
   const host = (parsed.hostname || '').toLowerCase();
   if (!host.includes('ebay.')) {
+    console.log('[eBay][pawn-url] invalid host', { rawUrl, sanitizedUrl, host });
     throw new BadRequestException('La URL debe ser de eBay');
   }
 
@@ -416,6 +420,13 @@ const normalizeEbayStoreUrl = (rawUrl: string) => {
   }
 
   if (!/^\/(str|usr)\/[^/]+$/i.test(pathname)) {
+    console.log('[eBay][pawn-url] invalid pathname', {
+      rawUrl,
+      sanitizedUrl,
+      host,
+      pathname,
+      search: parsed.search,
+    });
     throw new BadRequestException('La URL debe apuntar a una tienda o perfil de eBay (/str/... o /usr/...)');
   }
   return `https://www.ebay.com${pathname.toLowerCase()}`;
