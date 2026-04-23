@@ -354,6 +354,36 @@ const stripTrailingStoreUrlJunk = (value: string) => String(value || '').replace
 
 const sanitizeStoreUrlInput = (rawUrl: string) => compactStoreUrlInput(normalizeStoreUrlText(rawUrl));
 
+const clipForLog = (value: any, max = 240) => {
+  const text =
+    typeof value === 'string'
+      ? value
+      : (() => {
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        })();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+};
+
+const logEbayPawnStore = (stage: string, details?: Record<string, any>) => {
+  if (details) {
+    console.log(`[eBay][pawn-store] ${stage}`, details);
+    return;
+  }
+  console.log(`[eBay][pawn-store] ${stage}`);
+};
+
+const logEbayPawnStoreError = (stage: string, details?: Record<string, any>) => {
+  if (details) {
+    console.error(`[eBay][pawn-store] ${stage}`, details);
+    return;
+  }
+  console.error(`[eBay][pawn-store] ${stage}`);
+};
+
 const extractCandidateEbayUrl = (rawUrl: string) => {
   const normalized = normalizeStoreUrlText(rawUrl);
   const directMatch = normalized.match(/https?:\/\/[^\s"'`<>]+/i)?.[0];
@@ -433,24 +463,47 @@ const dedupeEbayStoreEntries = (entries: EbayStoreEntry[]) => {
 };
 
 export const normalizeEbayStoreUrl = (rawUrl: string) => {
+  const normalizedText = normalizeStoreUrlText(rawUrl);
+  const compactInput = sanitizeStoreUrlInput(rawUrl);
   const sanitizedUrl = extractCandidateEbayUrl(rawUrl);
+  logEbayPawnStore('normalize:start', {
+    rawUrl: clipForLog(rawUrl),
+    normalizedText: clipForLog(normalizedText),
+    compactInput: clipForLog(compactInput),
+    extractedCandidate: clipForLog(sanitizedUrl),
+  });
   let parsed: URL;
   try {
     parsed = new URL(sanitizedUrl);
   } catch {
-    console.log('[eBay][pawn-url] invalid url', { rawUrl, sanitizedUrl });
+    logEbayPawnStoreError('normalize:invalid-url', {
+      rawUrl: clipForLog(rawUrl),
+      normalizedText: clipForLog(normalizedText),
+      compactInput: clipForLog(compactInput),
+      sanitizedUrl: clipForLog(sanitizedUrl),
+    });
     throw new BadRequestException('URL de pawn invalida');
   }
   const host = (parsed.hostname || '').toLowerCase();
   if (!host.includes('ebay.')) {
-    console.log('[eBay][pawn-url] invalid host', { rawUrl, sanitizedUrl, host });
+    logEbayPawnStoreError('normalize:invalid-host', {
+      rawUrl: clipForLog(rawUrl),
+      sanitizedUrl: clipForLog(sanitizedUrl),
+      host,
+    });
     throw new BadRequestException('La URL debe ser de eBay');
   }
 
   const pathname = parsed.pathname.replace(/\/+$/, '');
   const directMatch = pathname.match(/^\/(str|usr)\/([^/]+)$/i);
   if (directMatch) {
-    return `https://www.ebay.com/${directMatch[1].toLowerCase()}/${directMatch[2].toLowerCase()}`;
+    const normalizedUrl = `https://www.ebay.com/${directMatch[1].toLowerCase()}/${directMatch[2].toLowerCase()}`;
+    logEbayPawnStore('normalize:resolved-direct', {
+      rawUrl: clipForLog(rawUrl),
+      pathname,
+      normalizedUrl,
+    });
+    return normalizedUrl;
   }
 
   const sellerFromQuery =
@@ -461,30 +514,57 @@ export const normalizeEbayStoreUrl = (rawUrl: string) => {
       '',
     ).trim();
   if (sellerFromQuery) {
-    return `https://www.ebay.com/usr/${sellerFromQuery.toLowerCase()}`;
+    const normalizedUrl = `https://www.ebay.com/usr/${sellerFromQuery.toLowerCase()}`;
+    logEbayPawnStore('normalize:resolved-query-seller', {
+      rawUrl: clipForLog(rawUrl),
+      sellerFromQuery,
+      normalizedUrl,
+      search: parsed.search,
+    });
+    return normalizedUrl;
   }
 
   const smeMatch = pathname.match(/^\/sme\/([^/]+)(?:\/.*)?$/i);
   if (smeMatch?.[1]) {
-    return `https://www.ebay.com/usr/${smeMatch[1].toLowerCase()}`;
+    const normalizedUrl = `https://www.ebay.com/usr/${smeMatch[1].toLowerCase()}`;
+    logEbayPawnStore('normalize:resolved-sme', {
+      rawUrl: clipForLog(rawUrl),
+      pathname,
+      normalizedUrl,
+    });
+    return normalizedUrl;
   }
 
   const feedbackMatch = pathname.match(/^\/fdbk\/feedback_profile\/([^/]+)$/i);
   if (feedbackMatch?.[1]) {
-    return `https://www.ebay.com/usr/${feedbackMatch[1].toLowerCase()}`;
+    const normalizedUrl = `https://www.ebay.com/usr/${feedbackMatch[1].toLowerCase()}`;
+    logEbayPawnStore('normalize:resolved-feedback', {
+      rawUrl: clipForLog(rawUrl),
+      pathname,
+      normalizedUrl,
+    });
+    return normalizedUrl;
   }
 
   if (!/^\/(str|usr)\/[^/]+$/i.test(pathname)) {
-    console.log('[eBay][pawn-url] invalid pathname', {
-      rawUrl,
-      sanitizedUrl,
+    logEbayPawnStoreError('normalize:invalid-pathname', {
+      rawUrl: clipForLog(rawUrl),
+      normalizedText: clipForLog(normalizedText),
+      compactInput: clipForLog(compactInput),
+      sanitizedUrl: clipForLog(sanitizedUrl),
       host,
       pathname,
       search: parsed.search,
     });
     throw new BadRequestException('La URL debe apuntar a una tienda o perfil de eBay (/str/... o /usr/...)');
   }
-  return `https://www.ebay.com${pathname.toLowerCase()}`;
+  const normalizedUrl = `https://www.ebay.com${pathname.toLowerCase()}`;
+  logEbayPawnStore('normalize:resolved-fallback', {
+    rawUrl: clipForLog(rawUrl),
+    pathname,
+    normalizedUrl,
+  });
+  return normalizedUrl;
 };
 
 const parseStoredUrlsPayload = (payload: any): string[] => {
@@ -504,7 +584,9 @@ const parseStoredUrlsPayload = (payload: any): string[] => {
 };
 
 const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> => {
+  logEbayPawnStore('resolve:start', { rawUrl: clipForLog(rawUrl) });
   const storeUrl = normalizeEbayStoreUrl(rawUrl);
+  logEbayPawnStore('resolve:fetching', { rawUrl: clipForLog(rawUrl), storeUrl });
   const res = await fetch(storeUrl, {
     method: 'GET',
     redirect: 'follow',
@@ -514,7 +596,20 @@ const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> =>
       'Accept-Language': 'en-US,en;q=0.9',
     },
   });
+  logEbayPawnStore('resolve:fetched', {
+    requestedUrl: storeUrl,
+    responseUrl: clipForLog(res.url || storeUrl),
+    status: res.status,
+    ok: res.ok,
+    redirected: res.redirected,
+  });
   if (!res.ok) {
+    logEbayPawnStoreError('resolve:fetch-failed', {
+      rawUrl: clipForLog(rawUrl),
+      storeUrl,
+      responseUrl: clipForLog(res.url || storeUrl),
+      status: res.status,
+    });
     throw new BadRequestException(`No se pudo abrir la tienda (${res.status})`);
   }
 
@@ -534,10 +629,33 @@ const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> =>
     .replace(/\|\s*eBay$/i, '')
     .trim();
 
+  logEbayPawnStore('resolve:parsed', {
+    rawUrl: clipForLog(rawUrl),
+    requestedUrl: storeUrl,
+    finalUrl,
+    seller: clipForLog(seller),
+    storeName: clipForLog(storeName),
+    htmlLength: html.length,
+  });
+
   if (!seller) {
+    logEbayPawnStoreError('resolve:missing-seller', {
+      rawUrl: clipForLog(rawUrl),
+      requestedUrl: storeUrl,
+      finalUrl,
+      storeName: clipForLog(storeName),
+      htmlLength: html.length,
+    });
     throw new BadRequestException('No se pudo resolver el seller real de esa tienda');
   }
   if (!storeName) {
+    logEbayPawnStoreError('resolve:missing-store-name', {
+      rawUrl: clipForLog(rawUrl),
+      requestedUrl: storeUrl,
+      finalUrl,
+      seller: clipForLog(seller),
+      htmlLength: html.length,
+    });
     throw new BadRequestException('No se pudo resolver el nombre de esa tienda');
   }
 
@@ -1378,113 +1496,187 @@ export class AppController {
 
   @Post('utils/ebay/pawns')
   async addSavedEbayPawn(@Body() body: any) {
-    const urls = parseStoredUrlsPayload(body);
-    if (urls.length !== 1) {
-      throw new BadRequestException('Debes enviar una sola URL de tienda');
-    }
-
-    const existing = await this.loadEbayStoreFeedFromDb();
-    const resolved = await resolveEbayStoreEntry(urls[0]);
-    const duplicateIndex = existing.findIndex((entry) => isSameEbayStoreEntry(entry, resolved));
-    if (duplicateIndex >= 0) {
-      const duplicate = existing[duplicateIndex];
-      let saved = duplicate;
-      if ((duplicate.originalUrl || duplicate.storeUrl) === duplicate.storeUrl && resolved.originalUrl && resolved.originalUrl !== duplicate.storeUrl) {
-        const duplicateEntity = await this.ebayPawnsRepo.findOne({
-          where: [
-            { seller: duplicate.seller },
-            { storeUrl: duplicate.storeUrl },
-          ],
-          order: { id: 'ASC' },
-        });
-        if (duplicateEntity) {
-          duplicateEntity.originalUrl = resolved.originalUrl;
-          await this.ebayPawnsRepo.save(duplicateEntity);
-          saved = this.mapEbayPawnEntity(duplicateEntity);
-        }
+    logEbayPawnStore('add-single:start', {
+      body: clipForLog(body, 500),
+    });
+    try {
+      const urls = parseStoredUrlsPayload(body);
+      logEbayPawnStore('add-single:parsed-payload', {
+        urlsCount: urls.length,
+        urlsPreview: urls.map((value) => clipForLog(value)),
+      });
+      if (urls.length !== 1) {
+        throw new BadRequestException('Debes enviar una sola URL de tienda');
       }
+
+      const existing = await this.loadEbayStoreFeedFromDb();
+      logEbayPawnStore('add-single:existing-loaded', {
+        existingCount: existing.length,
+      });
+      const resolved = await resolveEbayStoreEntry(urls[0]);
+      logEbayPawnStore('add-single:resolved', {
+        rawUrl: clipForLog(urls[0]),
+        resolved,
+      });
+      const duplicateIndex = existing.findIndex((entry) => isSameEbayStoreEntry(entry, resolved));
+      if (duplicateIndex >= 0) {
+        const duplicate = existing[duplicateIndex];
+        let saved = duplicate;
+        if ((duplicate.originalUrl || duplicate.storeUrl) === duplicate.storeUrl && resolved.originalUrl && resolved.originalUrl !== duplicate.storeUrl) {
+          const duplicateEntity = await this.ebayPawnsRepo.findOne({
+            where: [
+              { seller: duplicate.seller },
+              { storeUrl: duplicate.storeUrl },
+            ],
+            order: { id: 'ASC' },
+          });
+          if (duplicateEntity) {
+            duplicateEntity.originalUrl = resolved.originalUrl;
+            await this.ebayPawnsRepo.save(duplicateEntity);
+            saved = this.mapEbayPawnEntity(duplicateEntity);
+          }
+        }
+        const stores = await this.loadEbayStoreFeedFromDb();
+        logEbayPawnStore('add-single:duplicate', {
+          rawUrl: clipForLog(urls[0]),
+          duplicateAt: duplicateIndex,
+          saved,
+          total: stores.length,
+        });
+        return {
+          duplicate: true,
+          saved,
+          total: stores.length,
+          stores,
+        };
+      }
+
+      const created = this.ebayPawnsRepo.create({
+        storeUrl: resolved.storeUrl,
+        storeName: resolved.storeName,
+        seller: resolved.seller,
+        originalUrl: resolved.originalUrl || resolved.storeUrl,
+      });
+      await this.ebayPawnsRepo.save(created);
       const stores = await this.loadEbayStoreFeedFromDb();
+      const saved = this.mapEbayPawnEntity(created);
+      logEbayPawnStore('add-single:created', {
+        rawUrl: clipForLog(urls[0]),
+        saved,
+        total: stores.length,
+      });
       return {
-        duplicate: true,
+        duplicate: false,
         saved,
         total: stores.length,
         stores,
       };
+    } catch (err: any) {
+      logEbayPawnStoreError('add-single:error', {
+        body: clipForLog(body, 500),
+        message: String(err?.message || err),
+        stack: clipForLog(err?.stack || '', 1200),
+      });
+      throw err;
     }
-
-    const created = this.ebayPawnsRepo.create({
-      storeUrl: resolved.storeUrl,
-      storeName: resolved.storeName,
-      seller: resolved.seller,
-      originalUrl: resolved.originalUrl || resolved.storeUrl,
-    });
-    await this.ebayPawnsRepo.save(created);
-    const stores = await this.loadEbayStoreFeedFromDb();
-    return {
-      duplicate: false,
-      saved: this.mapEbayPawnEntity(created),
-      total: stores.length,
-      stores,
-    };
   }
 
   @Post('utils/ebay/pawns/bulk')
   async addSavedEbayPawnsBulk(@Body() body: any) {
-    const urls = parseStoredUrlsPayload(body);
-    if (!urls.length) {
-      throw new BadRequestException('Debes enviar URLs de tiendas');
-    }
-
-    const current = await this.loadEbayStoreFeedFromDb();
-    const merged = [...current];
-    const added: EbayStoreEntry[] = [];
-    const skipped: string[] = [];
-
-    for (const rawUrl of urls) {
-      try {
-        const resolved = await resolveEbayStoreEntry(rawUrl);
-        const existingIndex = merged.findIndex((entry) => isSameEbayStoreEntry(entry, resolved));
-        if (existingIndex >= 0) {
-          const existingEntry = merged[existingIndex];
-          if ((existingEntry.originalUrl || existingEntry.storeUrl) === existingEntry.storeUrl && resolved.originalUrl && resolved.originalUrl !== existingEntry.storeUrl) {
-            const duplicateEntity = await this.ebayPawnsRepo.findOne({
-              where: [
-                { seller: existingEntry.seller },
-                { storeUrl: existingEntry.storeUrl },
-              ],
-              order: { id: 'ASC' },
-            });
-            if (duplicateEntity) {
-              duplicateEntity.originalUrl = resolved.originalUrl;
-              await this.ebayPawnsRepo.save(duplicateEntity);
-              merged[existingIndex] = this.mapEbayPawnEntity(duplicateEntity);
-            }
-          }
-          skipped.push(rawUrl);
-          continue;
-        }
-        const created = this.ebayPawnsRepo.create({
-          storeUrl: resolved.storeUrl,
-          storeName: resolved.storeName,
-          seller: resolved.seller,
-          originalUrl: resolved.originalUrl || resolved.storeUrl,
-        });
-        await this.ebayPawnsRepo.save(created);
-        const saved = this.mapEbayPawnEntity(created);
-        merged.push(saved);
-        added.push(saved);
-      } catch (err: any) {
-        skipped.push(`${rawUrl} :: ${String(err?.message || 'error')}`);
+    logEbayPawnStore('add-bulk:start', {
+      body: clipForLog(body, 500),
+    });
+    try {
+      const urls = parseStoredUrlsPayload(body);
+      logEbayPawnStore('add-bulk:parsed-payload', {
+        urlsCount: urls.length,
+        urlsPreview: urls.slice(0, 10).map((value) => clipForLog(value)),
+      });
+      if (!urls.length) {
+        throw new BadRequestException('Debes enviar URLs de tiendas');
       }
-    }
 
-    const stores = await this.loadEbayStoreFeedFromDb();
-    return {
-      added,
-      skipped,
-      total: stores.length,
-      stores,
-    };
+      const current = await this.loadEbayStoreFeedFromDb();
+      const merged = [...current];
+      const added: EbayStoreEntry[] = [];
+      const skipped: string[] = [];
+      logEbayPawnStore('add-bulk:existing-loaded', {
+        existingCount: current.length,
+      });
+
+      for (const rawUrl of urls) {
+        try {
+          logEbayPawnStore('add-bulk:item-start', { rawUrl: clipForLog(rawUrl) });
+          const resolved = await resolveEbayStoreEntry(rawUrl);
+          const existingIndex = merged.findIndex((entry) => isSameEbayStoreEntry(entry, resolved));
+          if (existingIndex >= 0) {
+            const existingEntry = merged[existingIndex];
+            if ((existingEntry.originalUrl || existingEntry.storeUrl) === existingEntry.storeUrl && resolved.originalUrl && resolved.originalUrl !== existingEntry.storeUrl) {
+              const duplicateEntity = await this.ebayPawnsRepo.findOne({
+                where: [
+                  { seller: existingEntry.seller },
+                  { storeUrl: existingEntry.storeUrl },
+                ],
+                order: { id: 'ASC' },
+              });
+              if (duplicateEntity) {
+                duplicateEntity.originalUrl = resolved.originalUrl;
+                await this.ebayPawnsRepo.save(duplicateEntity);
+                merged[existingIndex] = this.mapEbayPawnEntity(duplicateEntity);
+              }
+            }
+            skipped.push(rawUrl);
+            logEbayPawnStore('add-bulk:item-duplicate', {
+              rawUrl: clipForLog(rawUrl),
+              existingIndex,
+            });
+            continue;
+          }
+
+          const created = this.ebayPawnsRepo.create({
+            storeUrl: resolved.storeUrl,
+            storeName: resolved.storeName,
+            seller: resolved.seller,
+            originalUrl: resolved.originalUrl || resolved.storeUrl,
+          });
+          await this.ebayPawnsRepo.save(created);
+          const saved = this.mapEbayPawnEntity(created);
+          merged.push(saved);
+          added.push(saved);
+          logEbayPawnStore('add-bulk:item-created', {
+            rawUrl: clipForLog(rawUrl),
+            saved,
+          });
+        } catch (err: any) {
+          skipped.push(`${rawUrl} :: ${String(err?.message || 'error')}`);
+          logEbayPawnStoreError('add-bulk:item-error', {
+            rawUrl: clipForLog(rawUrl),
+            message: String(err?.message || err),
+            stack: clipForLog(err?.stack || '', 1200),
+          });
+        }
+      }
+
+      const stores = await this.loadEbayStoreFeedFromDb();
+      logEbayPawnStore('add-bulk:complete', {
+        addedCount: added.length,
+        skippedCount: skipped.length,
+        total: stores.length,
+      });
+      return {
+        added,
+        skipped,
+        total: stores.length,
+        stores,
+      };
+    } catch (err: any) {
+      logEbayPawnStoreError('add-bulk:error', {
+        body: clipForLog(body, 500),
+        message: String(err?.message || err),
+        stack: clipForLog(err?.stack || '', 1200),
+      });
+      throw err;
+    }
   }
 
   @Get('utils/ebay/search')
