@@ -339,31 +339,51 @@ const sanitizeEbayStoreEntry = (entry: any): EbayStoreEntry | null => {
   return { storeUrl, storeName, seller, originalUrl };
 };
 
-const sanitizeStoreUrlInput = (rawUrl: string) =>
+const normalizeStoreUrlText = (rawUrl: string) =>
   String(rawUrl || '')
-    .trim()
-    .replace(/\s+/g, '')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u200B-\u200D\uFEFF\u200E\u200F\u2060]/g, '')
+    .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2018\u2019]/g, "'")
+    .trim()
     .replace(/^["'`]+|["'`]+$/g, '');
 
+const compactStoreUrlInput = (value: string) => String(value || '').replace(/\s+/g, '');
+
+const stripTrailingStoreUrlJunk = (value: string) => String(value || '').replace(/[)\],;:!?]+$/g, '');
+
+const sanitizeStoreUrlInput = (rawUrl: string) => compactStoreUrlInput(normalizeStoreUrlText(rawUrl));
+
 const extractCandidateEbayUrl = (rawUrl: string) => {
-  const sanitized = sanitizeStoreUrlInput(rawUrl);
-  const directMatch = sanitized.match(/https?:\/\/[^\s"'`<>]+/i)?.[0];
-  if (directMatch) return directMatch;
+  const normalized = normalizeStoreUrlText(rawUrl);
+  const directMatch = normalized.match(/https?:\/\/[^\s"'`<>]+/i)?.[0];
+  if (directMatch) return stripTrailingStoreUrlJunk(sanitizeStoreUrlInput(directMatch));
 
-  const hostMatch = sanitized.match(/(?:www\.)?ebay\.[a-z.]+\/[^\s"'`<>]+/i)?.[0];
+  const hostMatch = normalized.match(/(?:www\.)?ebay\.[a-z.]+\/[^\s"'`<>]+/i)?.[0];
   if (hostMatch) {
-    return hostMatch.startsWith('http') ? hostMatch : `https://${hostMatch}`;
+    const candidate = stripTrailingStoreUrlJunk(sanitizeStoreUrlInput(hostMatch));
+    return candidate.startsWith('http') ? candidate : `https://${candidate}`;
   }
 
-  const pathMatch = sanitized.match(/^\/(?:str|usr)\/[^/]+$/i)?.[0];
+  const pathMatch =
+    normalized.match(/(?:^|[\s"'`(])((?:\/)?(?:str|usr)\/[^\s/?#"'`<>]+)/i)?.[1] ||
+    normalized.match(/^\/(?:str|usr)\/[^/]+$/i)?.[0];
   if (pathMatch) {
-    return `https://www.ebay.com${pathMatch}`;
+    const normalizedPath = stripTrailingStoreUrlJunk(sanitizeStoreUrlInput(pathMatch)).replace(/^\/?/, '/');
+    return `https://www.ebay.com${normalizedPath}`;
   }
 
-  return sanitized;
+  const sanitized = sanitizeStoreUrlInput(rawUrl);
+  const compactDirectMatch = sanitized.match(/https?:\/\/[^\s"'`<>]+/i)?.[0];
+  if (compactDirectMatch) return stripTrailingStoreUrlJunk(compactDirectMatch);
+
+  const compactHostMatch = sanitized.match(/(?:www\.)?ebay\.[a-z.]+\/[^\s"'`<>]+/i)?.[0];
+  if (compactHostMatch) {
+    const candidate = stripTrailingStoreUrlJunk(compactHostMatch);
+    return candidate.startsWith('http') ? candidate : `https://${candidate}`;
+  }
+
+  return stripTrailingStoreUrlJunk(sanitized);
 };
 
 const normalizeStoreIdentity = (value: string) =>
@@ -412,7 +432,7 @@ const dedupeEbayStoreEntries = (entries: EbayStoreEntry[]) => {
   return out;
 };
 
-const normalizeEbayStoreUrl = (rawUrl: string) => {
+export const normalizeEbayStoreUrl = (rawUrl: string) => {
   const sanitizedUrl = extractCandidateEbayUrl(rawUrl);
   let parsed: URL;
   try {
