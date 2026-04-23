@@ -14,6 +14,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { SchedulesModule } from './schedules/schedules.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { EbayPawn } from './ebay-pawn.entity';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { AppService } from './app.service';
         };
       },
     }),
+    TypeOrmModule.forFeature([EbayPawn]),
     AuthModule,
     GastosModule,
     WalletModule,

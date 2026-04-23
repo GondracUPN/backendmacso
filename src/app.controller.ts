@@ -1,10 +1,13 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Query, Req, Res } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
+import { EbayPawn } from './ebay-pawn.entity';
 import type { Request, Response } from 'express';
 import * as archiver from 'archiver';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { Repository } from 'typeorm';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -233,6 +236,7 @@ type EbayStoreEntry = {
   storeUrl: string;
   storeName: string;
   seller: string;
+  originalUrl?: string;
 };
 
 const DEFAULT_EBAY_STORE_FEED: EbayStoreEntry[] = [
@@ -322,7 +326,6 @@ const TM_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'ebay-template.meta.json');
 const TM_AMAZON_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'amazon-template.html');
 const TM_AMAZON_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'amazon-template.meta.json');
 const EBAY_STORE_FEED_FILE = join(process.cwd(), 'storage', 'ebay-store-feed.json');
-let ebayStoreFeedCache: EbayStoreEntry[] | null = null;
 
 const normalizeEnvToken = (val: string) =>
   val.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, '');
@@ -331,9 +334,18 @@ const sanitizeEbayStoreEntry = (entry: any): EbayStoreEntry | null => {
   const storeUrl = String(entry?.storeUrl || '').trim();
   const storeName = String(entry?.storeName || '').trim();
   const seller = String(entry?.seller || '').trim();
+  const originalUrl = String(entry?.originalUrl || storeUrl).trim();
   if (!storeUrl || !storeName || !seller) return null;
-  return { storeUrl, storeName, seller };
+  return { storeUrl, storeName, seller, originalUrl };
 };
+
+const sanitizeStoreUrlInput = (rawUrl: string) =>
+  String(rawUrl || '')
+    .trim()
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/^["'`]+|["'`]+$/g, '');
 
 const normalizeStoreIdentity = (value: string) =>
   String(value || '')
@@ -350,18 +362,7 @@ const isSameEbayStoreEntry = (left?: EbayStoreEntry | null, right?: EbayStoreEnt
   );
 };
 
-const saveEbayStoreFeed = async (entries: EbayStoreEntry[]) => {
-  const normalized = entries
-    .map((entry) => sanitizeEbayStoreEntry(entry))
-    .filter((entry): entry is EbayStoreEntry => !!entry);
-  await mkdir(join(process.cwd(), 'storage'), { recursive: true });
-  await writeFile(EBAY_STORE_FEED_FILE, JSON.stringify(normalized, null, 2), 'utf8');
-  ebayStoreFeedCache = normalized;
-  return normalized;
-};
-
-const loadEbayStoreFeed = async () => {
-  if (ebayStoreFeedCache) return ebayStoreFeedCache;
+const loadEbayStoreFeedSeed = async () => {
   try {
     const raw = await readFile(EBAY_STORE_FEED_FILE, 'utf8');
     const parsed = JSON.parse(raw);
@@ -369,18 +370,16 @@ const loadEbayStoreFeed = async () => {
       ? parsed.map((entry) => sanitizeEbayStoreEntry(entry)).filter((entry): entry is EbayStoreEntry => !!entry)
       : [];
     if (entries.length > 0) {
-      ebayStoreFeedCache = entries;
       return entries;
     }
   } catch {}
-
-  return saveEbayStoreFeed(DEFAULT_EBAY_STORE_FEED);
+  return DEFAULT_EBAY_STORE_FEED.map((entry) => sanitizeEbayStoreEntry(entry)).filter((entry): entry is EbayStoreEntry => !!entry);
 };
 
 const normalizeEbayStoreUrl = (rawUrl: string) => {
   let parsed: URL;
   try {
-    parsed = new URL(String(rawUrl || '').trim());
+    parsed = new URL(sanitizeStoreUrlInput(rawUrl));
   } catch {
     throw new BadRequestException('URL de pawn invalida');
   }
@@ -388,7 +387,34 @@ const normalizeEbayStoreUrl = (rawUrl: string) => {
   if (!host.includes('ebay.')) {
     throw new BadRequestException('La URL debe ser de eBay');
   }
+
   const pathname = parsed.pathname.replace(/\/+$/, '');
+  const directMatch = pathname.match(/^\/(str|usr)\/([^/]+)$/i);
+  if (directMatch) {
+    return `https://www.ebay.com/${directMatch[1].toLowerCase()}/${directMatch[2].toLowerCase()}`;
+  }
+
+  const sellerFromQuery =
+    String(
+      parsed.searchParams.get('_ssn') ||
+      parsed.searchParams.get('seller') ||
+      parsed.searchParams.get('username') ||
+      '',
+    ).trim();
+  if (sellerFromQuery) {
+    return `https://www.ebay.com/usr/${sellerFromQuery.toLowerCase()}`;
+  }
+
+  const smeMatch = pathname.match(/^\/sme\/([^/]+)(?:\/.*)?$/i);
+  if (smeMatch?.[1]) {
+    return `https://www.ebay.com/usr/${smeMatch[1].toLowerCase()}`;
+  }
+
+  const feedbackMatch = pathname.match(/^\/fdbk\/feedback_profile\/([^/]+)$/i);
+  if (feedbackMatch?.[1]) {
+    return `https://www.ebay.com/usr/${feedbackMatch[1].toLowerCase()}`;
+  }
+
   if (!/^\/(str|usr)\/[^/]+$/i.test(pathname)) {
     throw new BadRequestException('La URL debe apuntar a una tienda o perfil de eBay (/str/... o /usr/...)');
   }
@@ -453,6 +479,7 @@ const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> =>
     storeUrl: finalUrl,
     storeName,
     seller: String(seller).trim(),
+    originalUrl: sanitizeStoreUrlInput(rawUrl),
   };
 };
 
@@ -779,15 +806,15 @@ const fetchEbayStoreFeed = async (params?: {
   offset?: number;
   condition?: string;
   buyingOptions?: string;
+  storeEntries?: ReadonlyArray<EbayStoreEntry>;
 }) => {
-  const storeEntries = await loadEbayStoreFeed();
   return searchEbayItems({
     query: params?.query,
     limit: params?.limit,
     offset: params?.offset,
     condition: params?.condition,
     buyingOptions: params?.buyingOptions,
-    storeEntries,
+    storeEntries: params?.storeEntries || [],
   });
 };
 
@@ -938,7 +965,43 @@ export class AppController {
   constructor(
     private readonly appService: AppService,
     private readonly analyticsService: AnalyticsService,
+    @InjectRepository(EbayPawn)
+    private readonly ebayPawnsRepo: Repository<EbayPawn>,
   ) {}
+
+  private mapEbayPawnEntity(entity: EbayPawn): EbayStoreEntry {
+    return {
+      storeUrl: String(entity?.storeUrl || '').trim(),
+      storeName: String(entity?.storeName || '').trim(),
+      seller: String(entity?.seller || '').trim(),
+      originalUrl: String(entity?.originalUrl || entity?.storeUrl || '').trim(),
+    };
+  }
+
+  private async ensureEbayPawnSeed(): Promise<EbayStoreEntry[]> {
+    const existing = await this.ebayPawnsRepo.find({ order: { id: 'ASC' } });
+    if (existing.length > 0) {
+      return existing.map((entry) => this.mapEbayPawnEntity(entry));
+    }
+
+    const seedEntries = await loadEbayStoreFeedSeed();
+    if (!seedEntries.length) return [];
+
+    const created = seedEntries.map((entry) =>
+      this.ebayPawnsRepo.create({
+        storeUrl: entry.storeUrl,
+        storeName: entry.storeName,
+        seller: entry.seller,
+        originalUrl: entry.originalUrl || entry.storeUrl,
+      }),
+    );
+    await this.ebayPawnsRepo.save(created);
+    return created.map((entry) => this.mapEbayPawnEntity(entry));
+  }
+
+  private async loadEbayStoreFeedFromDb(): Promise<EbayStoreEntry[]> {
+    return this.ensureEbayPawnSeed();
+  }
 
   @Get()
   getHello(): string {
@@ -1227,18 +1290,20 @@ export class AppController {
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
   ) {
+    const storeEntries = await this.loadEbayStoreFeedFromDb();
     return fetchEbayStoreFeed({
       query: q,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
       condition,
       buyingOptions,
+      storeEntries,
     });
   }
 
   @Get('utils/ebay/pawns')
   async getSavedEbayPawns() {
-    const stores = await loadEbayStoreFeed();
+    const stores = await this.loadEbayStoreFeedFromDb();
     return {
       total: stores.length,
       stores,
@@ -1252,22 +1317,46 @@ export class AppController {
       throw new BadRequestException('Debes enviar una sola URL de tienda');
     }
 
-    const existing = await loadEbayStoreFeed();
+    const existing = await this.loadEbayStoreFeedFromDb();
     const resolved = await resolveEbayStoreEntry(urls[0]);
-    const duplicate = existing.find((entry) => isSameEbayStoreEntry(entry, resolved));
-    if (duplicate) {
+    const duplicateIndex = existing.findIndex((entry) => isSameEbayStoreEntry(entry, resolved));
+    if (duplicateIndex >= 0) {
+      const duplicate = existing[duplicateIndex];
+      let saved = duplicate;
+      if ((duplicate.originalUrl || duplicate.storeUrl) === duplicate.storeUrl && resolved.originalUrl && resolved.originalUrl !== duplicate.storeUrl) {
+        const duplicateEntity = await this.ebayPawnsRepo.findOne({
+          where: [
+            { seller: duplicate.seller },
+            { storeUrl: duplicate.storeUrl },
+          ],
+          order: { id: 'ASC' },
+        });
+        if (duplicateEntity) {
+          duplicateEntity.originalUrl = resolved.originalUrl;
+          await this.ebayPawnsRepo.save(duplicateEntity);
+          saved = this.mapEbayPawnEntity(duplicateEntity);
+        }
+      }
+      const stores = await this.loadEbayStoreFeedFromDb();
       return {
         duplicate: true,
-        saved: duplicate,
-        total: existing.length,
-        stores: existing,
+        saved,
+        total: stores.length,
+        stores,
       };
     }
 
-    const stores = await saveEbayStoreFeed([...existing, resolved]);
+    const created = this.ebayPawnsRepo.create({
+      storeUrl: resolved.storeUrl,
+      storeName: resolved.storeName,
+      seller: resolved.seller,
+      originalUrl: resolved.originalUrl || resolved.storeUrl,
+    });
+    await this.ebayPawnsRepo.save(created);
+    const stores = await this.loadEbayStoreFeedFromDb();
     return {
       duplicate: false,
-      saved: resolved,
+      saved: this.mapEbayPawnEntity(created),
       total: stores.length,
       stores,
     };
@@ -1280,7 +1369,7 @@ export class AppController {
       throw new BadRequestException('Debes enviar URLs de tiendas');
     }
 
-    const current = await loadEbayStoreFeed();
+    const current = await this.loadEbayStoreFeedFromDb();
     const merged = [...current];
     const added: EbayStoreEntry[] = [];
     const skipped: string[] = [];
@@ -1288,19 +1377,42 @@ export class AppController {
     for (const rawUrl of urls) {
       try {
         const resolved = await resolveEbayStoreEntry(rawUrl);
-        const exists = merged.some((entry) => isSameEbayStoreEntry(entry, resolved));
-        if (exists) {
+        const existingIndex = merged.findIndex((entry) => isSameEbayStoreEntry(entry, resolved));
+        if (existingIndex >= 0) {
+          const existingEntry = merged[existingIndex];
+          if ((existingEntry.originalUrl || existingEntry.storeUrl) === existingEntry.storeUrl && resolved.originalUrl && resolved.originalUrl !== existingEntry.storeUrl) {
+            const duplicateEntity = await this.ebayPawnsRepo.findOne({
+              where: [
+                { seller: existingEntry.seller },
+                { storeUrl: existingEntry.storeUrl },
+              ],
+              order: { id: 'ASC' },
+            });
+            if (duplicateEntity) {
+              duplicateEntity.originalUrl = resolved.originalUrl;
+              await this.ebayPawnsRepo.save(duplicateEntity);
+              merged[existingIndex] = this.mapEbayPawnEntity(duplicateEntity);
+            }
+          }
           skipped.push(rawUrl);
           continue;
         }
-        merged.push(resolved);
-        added.push(resolved);
+        const created = this.ebayPawnsRepo.create({
+          storeUrl: resolved.storeUrl,
+          storeName: resolved.storeName,
+          seller: resolved.seller,
+          originalUrl: resolved.originalUrl || resolved.storeUrl,
+        });
+        await this.ebayPawnsRepo.save(created);
+        const saved = this.mapEbayPawnEntity(created);
+        merged.push(saved);
+        added.push(saved);
       } catch (err: any) {
         skipped.push(`${rawUrl} :: ${String(err?.message || 'error')}`);
       }
     }
 
-    const stores = await saveEbayStoreFeed(merged);
+    const stores = await this.loadEbayStoreFeedFromDb();
     return {
       added,
       skipped,

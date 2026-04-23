@@ -133,6 +133,26 @@ async function bootstrap() {
     
     try {
       await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."ebay_pawns" (
+          "id" SERIAL PRIMARY KEY,
+          "store_url" varchar(255) NOT NULL,
+          "store_name" varchar(255) NOT NULL,
+          "seller" varchar(120) NOT NULL,
+          "original_url" varchar(255),
+          "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."ebay_pawns" ADD COLUMN IF NOT EXISTS "original_url" varchar(255)`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_ebay_pawns_store_url" ON "${schema}"."ebay_pawns" ("store_url")`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_ebay_pawns_seller" ON "${schema}"."ebay_pawns" ("seller")`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
       );
       await dataSource.query(
@@ -166,7 +186,7 @@ async function bootstrap() {
       console.log('[BOOT][DB_SCHEMA_FIX] error', (e as any)?.message || e);
     }
 
-    const tables = ['producto', 'producto_detalle', 'producto_valor', 'tracking'];
+    const tables = ['ebay_pawns', 'producto', 'producto_detalle', 'producto_valor', 'tracking'];
     for (const tbl of tables) {
       try {
         const cols = await dataSource.query(
