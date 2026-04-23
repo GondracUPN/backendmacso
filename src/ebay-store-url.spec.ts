@@ -16,4 +16,12 @@ describe('normalizeEbayStoreUrl', () => {
   it('accepts relative store paths', () => {
     expect(normalizeEbayStoreUrl('/usr/rcpawn_east   ')).toBe('https://www.ebay.com/usr/rcpawn_east');
   });
+
+  it('unwraps ebay captcha return urls', () => {
+    expect(
+      normalizeEbayStoreUrl(
+        'https://www.ebay.com/splashui/captcha?ap=1&ru=https%3A%2F%2Fwww.ebay.com%2Fstr%2Fvistapawn1',
+      ),
+    ).toBe('https://www.ebay.com/str/vistapawn1');
+  });
 });

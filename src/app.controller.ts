@@ -384,6 +384,47 @@ const logEbayPawnStoreError = (stage: string, details?: Record<string, any>) => 
   console.error(`[eBay][pawn-store] ${stage}`);
 };
 
+const titleCaseStoreSlug = (value: string) =>
+  String(value || '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b([a-z])/g, (_, ch: string) => ch.toUpperCase());
+
+const extractCaptchaReturnUrl = (rawUrl: string): string | null => {
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    if (!pathname.endsWith('/splashui/captcha')) return null;
+    const ru = String(parsed.searchParams.get('ru') || '').trim();
+    if (!ru) return null;
+    return decodeURIComponent(ru);
+  } catch {
+    return null;
+  }
+};
+
+const deriveEbayStoreEntryFromUrl = (storeUrl: string, originalUrl?: string): EbayStoreEntry | null => {
+  try {
+    const parsed = new URL(storeUrl);
+    const pathname = parsed.pathname.replace(/\/+$/, '');
+    const directMatch = pathname.match(/^\/(str|usr)\/([^/]+)$/i);
+    if (!directMatch?.[2]) return null;
+    const kind = directMatch[1].toLowerCase();
+    const identifier = directMatch[2].toLowerCase();
+    return {
+      storeUrl: `https://www.ebay.com/${kind}/${identifier}`,
+      storeName: titleCaseStoreSlug(identifier) || identifier,
+      seller: identifier,
+      originalUrl: sanitizeStoreUrlInput(originalUrl || storeUrl),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const isCaptchaHtml = (html: string) => /captcha|robot check|verify yourself|security measure/i.test(String(html || ''));
+
 const extractCandidateEbayUrl = (rawUrl: string) => {
   const normalized = normalizeStoreUrlText(rawUrl);
   const directMatch = normalized.match(/https?:\/\/[^\s"'`<>]+/i)?.[0];
@@ -495,6 +536,16 @@ export const normalizeEbayStoreUrl = (rawUrl: string) => {
   }
 
   const pathname = parsed.pathname.replace(/\/+$/, '');
+  const captchaReturnUrl = extractCaptchaReturnUrl(parsed.toString());
+  if (captchaReturnUrl && captchaReturnUrl !== parsed.toString()) {
+    logEbayPawnStore('normalize:resolved-captcha-return', {
+      rawUrl: clipForLog(rawUrl),
+      captchaUrl: clipForLog(parsed.toString()),
+      captchaReturnUrl: clipForLog(captchaReturnUrl),
+    });
+    return normalizeEbayStoreUrl(captchaReturnUrl);
+  }
+
   const directMatch = pathname.match(/^\/(str|usr)\/([^/]+)$/i);
   if (directMatch) {
     const normalizedUrl = `https://www.ebay.com/${directMatch[1].toLowerCase()}/${directMatch[2].toLowerCase()}`;
@@ -615,6 +666,7 @@ const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> =>
 
   const html = await res.text().catch(() => '');
   const finalUrl = normalizeEbayStoreUrl(res.url || storeUrl);
+  const fallbackEntry = deriveEbayStoreEntryFromUrl(finalUrl, rawUrl);
   const seller =
     decodeURIComponent(html.match(/entity_id=%7E([A-Za-z0-9_.-]+)/i)?.[1] || '') ||
     html.match(/"entityId"\s*:\s*"~([^"]+)"/i)?.[1] ||
@@ -636,7 +688,21 @@ const resolveEbayStoreEntry = async (rawUrl: string): Promise<EbayStoreEntry> =>
     seller: clipForLog(seller),
     storeName: clipForLog(storeName),
     htmlLength: html.length,
+    usedFallbackCandidate: Boolean(fallbackEntry),
   });
+
+  if ((!seller || !storeName) && (res.redirected || isCaptchaHtml(html)) && fallbackEntry) {
+    logEbayPawnStore('resolve:captcha-fallback', {
+      rawUrl: clipForLog(rawUrl),
+      requestedUrl: storeUrl,
+      responseUrl: clipForLog(res.url || storeUrl),
+      finalUrl,
+      redirected: res.redirected,
+      htmlLength: html.length,
+      fallbackEntry,
+    });
+    return fallbackEntry;
+  }
 
   if (!seller) {
     logEbayPawnStoreError('resolve:missing-seller', {
