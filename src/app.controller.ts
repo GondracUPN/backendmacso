@@ -348,6 +348,24 @@ const sanitizeStoreUrlInput = (rawUrl: string) =>
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/^["'`]+|["'`]+$/g, '');
 
+const extractCandidateEbayUrl = (rawUrl: string) => {
+  const sanitized = sanitizeStoreUrlInput(rawUrl);
+  const directMatch = sanitized.match(/https?:\/\/[^\s"'`<>]+/i)?.[0];
+  if (directMatch) return directMatch;
+
+  const hostMatch = sanitized.match(/(?:www\.)?ebay\.[a-z.]+\/[^\s"'`<>]+/i)?.[0];
+  if (hostMatch) {
+    return hostMatch.startsWith('http') ? hostMatch : `https://${hostMatch}`;
+  }
+
+  const pathMatch = sanitized.match(/^\/(?:str|usr)\/[^/]+$/i)?.[0];
+  if (pathMatch) {
+    return `https://www.ebay.com${pathMatch}`;
+  }
+
+  return sanitized;
+};
+
 const normalizeStoreIdentity = (value: string) =>
   String(value || '')
     .trim()
@@ -377,8 +395,25 @@ const loadEbayStoreFeedSeed = async () => {
   return DEFAULT_EBAY_STORE_FEED.map((entry) => sanitizeEbayStoreEntry(entry)).filter((entry): entry is EbayStoreEntry => !!entry);
 };
 
+const dedupeEbayStoreEntries = (entries: EbayStoreEntry[]) => {
+  const seen = new Set<string>();
+  const out: EbayStoreEntry[] = [];
+  for (const entry of entries) {
+    const normalized = sanitizeEbayStoreEntry(entry);
+    if (!normalized) continue;
+    const key =
+      normalizeStoreIdentity(normalized.seller) ||
+      normalizeStoreIdentity(normalized.storeUrl) ||
+      normalizeStoreIdentity(normalized.storeName);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+};
+
 const normalizeEbayStoreUrl = (rawUrl: string) => {
-  const sanitizedUrl = sanitizeStoreUrlInput(rawUrl);
+  const sanitizedUrl = extractCandidateEbayUrl(rawUrl);
   let parsed: URL;
   try {
     parsed = new URL(sanitizedUrl);
@@ -992,7 +1027,7 @@ export class AppController {
   private async ensureEbayPawnSeed(): Promise<EbayStoreEntry[]> {
     const existing = await this.ebayPawnsRepo.find({ order: { id: 'ASC' } });
     if (existing.length > 0) {
-      return existing.map((entry) => this.mapEbayPawnEntity(entry));
+      return dedupeEbayStoreEntries(existing.map((entry) => this.mapEbayPawnEntity(entry)));
     }
 
     const seedEntries = await loadEbayStoreFeedSeed();
@@ -1007,7 +1042,7 @@ export class AppController {
       }),
     );
     await this.ebayPawnsRepo.save(created);
-    return created.map((entry) => this.mapEbayPawnEntity(entry));
+    return dedupeEbayStoreEntries(created.map((entry) => this.mapEbayPawnEntity(entry)));
   }
 
   private async loadEbayStoreFeedFromDb(): Promise<EbayStoreEntry[]> {
