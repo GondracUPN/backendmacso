@@ -188,18 +188,11 @@ const readEnvVarFromFile = (key: string): { value: string | null; source: string
 
 let lastEshopexEnvSource: { source: string; length: number } = { source: 'none', length: 0 };
 
-const parseAccountsEnv = (): EshopexAccount[] => {
-  const fromProcess = process.env.ESHOPEX_ACCOUNTS || '';
-  const fromFile = readEnvVarFromFile('ESHOPEX_ACCOUNTS');
-  const raw = fromProcess || fromFile.value || '';
-  lastEshopexEnvSource = {
-    source: fromProcess ? 'process.env' : (fromFile.source || 'not_found'),
-    length: raw ? raw.length : 0,
-  };
-  console.log('[Eshopex] ESHOPEX_ACCOUNTS source:', lastEshopexEnvSource.source, 'len:', lastEshopexEnvSource.length);
-  if (!raw) return [];
+const parseAccountsRaw = (raw: string): EshopexAccount[] => {
+  const value = String(raw || '').trim();
+  if (!value) return [];
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(value);
     if (Array.isArray(parsed)) {
       return parsed
         .map((item) => ({
@@ -211,7 +204,8 @@ const parseAccountsEnv = (): EshopexAccount[] => {
   } catch {
     // fall back to line parsing
   }
-  const parts = raw.split(/\s*[;\n]\s*/).map((p) => p.trim()).filter(Boolean);
+
+  const parts = value.split(/\s*[;\n]\s*/).map((p) => p.trim()).filter(Boolean);
   const accounts: EshopexAccount[] = [];
   for (const part of parts) {
     const split = part.includes(',') ? part.split(',') : part.split(':');
@@ -219,6 +213,37 @@ const parseAccountsEnv = (): EshopexAccount[] => {
     const password = (split[1] || '').trim();
     if (email && password) accounts.push({ email, password });
   }
+  return accounts;
+};
+
+const parseAccountsEnv = (): EshopexAccount[] => {
+  const fromProcess = process.env.ESHOPEX_ACCOUNTS || '';
+  const fromFile = readEnvVarFromFile('ESHOPEX_ACCOUNTS');
+  const processAccounts = parseAccountsRaw(fromProcess);
+  const fileAccounts = parseAccountsRaw(fromFile.value || '');
+  const merged = new Map<string, EshopexAccount>();
+
+  for (const account of fileAccounts) {
+    const key = account.email.toLowerCase();
+    if (!key) continue;
+    merged.set(key, account);
+  }
+  for (const account of processAccounts) {
+    const key = account.email.toLowerCase();
+    if (!key) continue;
+    merged.set(key, account);
+  }
+
+  lastEshopexEnvSource = {
+    source: fromProcess && fromFile.value
+      ? `process.env+${fromFile.source || 'file'}`
+      : fromProcess
+        ? 'process.env'
+        : (fromFile.source || 'not_found'),
+    length: (fromProcess ? fromProcess.length : 0) + ((fromFile.value || '').length || 0),
+  };
+  console.log('[Eshopex] ESHOPEX_ACCOUNTS source:', lastEshopexEnvSource.source, 'len:', lastEshopexEnvSource.length);
+  const accounts = Array.from(merged.values());
   console.log('[Eshopex] Parsed accounts count:', accounts.length);
   return accounts;
 };

@@ -17,6 +17,7 @@ const CARD_TYPES = [
   'interbank',
   'bcp_amex',
   'bcp_visa',
+  'visa_qore',
   'bbva',
   'io',
   'saga',

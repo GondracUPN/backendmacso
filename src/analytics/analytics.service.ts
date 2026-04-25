@@ -1368,6 +1368,9 @@ export class AnalyticsService {
         rotationMedianDaysOverall,
         monthlies,
         sunat: {
+          gastoPeriodo: sunatGastoProductos,
+          enviosRecogidos: sunatGastoEnvio,
+          valorDecPeriodoTotal: sunatValorDecTotal,
           gastoTotal: sunatGastoTotal,
           gastoProductos: sunatGastoProductos,
           gastoEnvio: sunatGastoEnvio,

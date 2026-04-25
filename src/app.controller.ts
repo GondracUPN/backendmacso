@@ -874,12 +874,16 @@ const normalizeLookupText = (val: string) =>
     .trim();
 
 const APPLE_ACCESSORY_KEYWORDS = [
+  'sleeve',
   'keyboard',
   'magic keyboard',
   'folio',
   'smart folio',
   'case',
   'cover',
+  'bag',
+  'shell',
+  'skin',
   'pencil',
   'charger',
   'cable',
@@ -896,14 +900,58 @@ const APPLE_ACCESSORY_KEYWORDS = [
   'bundle only',
 ];
 
-const isAccessoryTitle = (title: string) => {
+const APPLE_ACCESSORY_PRIMARY_PATTERNS = [
+  /^(?:apple\s+)?(?:(?:laptop|tablet|phone|cell\s+phone|smartphone)\s+)?(?:case|sleeve|cover|folio|keyboard|magic keyboard|smart folio|screen protector|protector|pencil|charger|adapter|cable|bag|shell|skin|housing|digitizer|lcd|glass)\b/,
+  /\bcompatible with\b/,
+  /\bdesigned for\b/,
+  /\bfits?\s+(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
+  /\bfor\s+(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
+  /\breplacement\b/,
+];
+
+const APPLE_DEVICE_SIGNAL_PATTERNS = [
+  /\bm[1-5](?:\s+(?:pro|max))?\b/,
+  /\b\d+(?:gb|tb)\b/,
+  /\b\d+gb\s+ram\b/,
+  /\b(?:wifi|cellular|gps|unlocked|ssd|ram|cycles)\b/,
+  /\ba\d{4}\b/,
+  /\b[a-z0-9]{3,}ll\/a\b/,
+];
+
+const hasAppleAccessoryKeyword = (normalized: string) =>
+  APPLE_ACCESSORY_KEYWORDS.some((keyword) => normalized.includes(keyword));
+
+const hasAppleDeviceSignals = (normalized: string) =>
+  APPLE_DEVICE_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized));
+
+const isAccessoryPrimaryForFamily = (
+  normalized: string,
+  family: 'ipad' | 'iphone' | 'macbook',
+) => {
+  if (family === 'ipad') {
+    return /\bipad(?:\s+(?:pro|air|mini|\d+(?:\.\d+)?))?(?:\s+\w+){0,2}\s+(?:case|sleeve|cover|folio|keyboard|magic keyboard|smart folio|screen protector|protector|pencil)\b/.test(normalized);
+  }
+  if (family === 'iphone') {
+    return /\biphone(?:\s+\d{2})?(?:\s+(?:pro|max|plus|mini|e)){0,2}(?:\s+\w+){0,1}\s+(?:case|cover|screen protector|protector|charger|cable)\b/.test(normalized);
+  }
+  return /\bmacbook(?:\s+(?:air|pro))?(?:\s+\w+){0,2}\s+(?:case|sleeve|cover|bag|shell)\b/.test(normalized);
+};
+
+const isAccessoryTitle = (
+  title: string,
+  family?: 'ipad' | 'iphone' | 'macbook',
+) => {
   const normalized = normalizeLookupText(title);
-  return APPLE_ACCESSORY_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  if (!hasAppleAccessoryKeyword(normalized)) return false;
+  if (APPLE_ACCESSORY_PRIMARY_PATTERNS.some((pattern) => pattern.test(normalized))) return true;
+  if (family && isAccessoryPrimaryForFamily(normalized, family)) return true;
+  if (!hasAppleDeviceSignals(normalized)) return true;
+  return false;
 };
 
 const isLikelyAppleDeviceTitle = (title: string, family: 'ipad' | 'iphone' | 'macbook') => {
   const normalized = normalizeLookupText(title);
-  if (isAccessoryTitle(normalized)) return false;
+  if (isAccessoryTitle(normalized, family)) return false;
   if (family === 'ipad') return normalized.includes('ipad');
   if (family === 'iphone') return normalized.includes('iphone');
   return normalized.includes('macbook');
@@ -1751,12 +1799,14 @@ export class AppController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
     @Query('condition') condition?: string,
+    @Query('buyingOptions') buyingOptions?: string,
   ) {
     return searchEbayItems({
       query: q,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
       condition,
+      buyingOptions,
     });
   }
 
@@ -1766,12 +1816,14 @@ export class AppController {
     @Query('offset') offset?: string,
     @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook',
     @Query('condition') condition?: string,
+    @Query('buyingOptions') buyingOptions?: string,
   ) {
     return fetchEbayAppleCollection({
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
       family,
       condition,
+      buyingOptions,
       sort: 'newlyListed',
     });
   }

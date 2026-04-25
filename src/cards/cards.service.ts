@@ -29,6 +29,7 @@ export class CardsService {
       { tipo: 'interbank', label: 'Interbank' },
       { tipo: 'bcp_amex', label: 'BCP Amex' },
       { tipo: 'bcp_visa', label: 'BCP Visa' },
+      { tipo: 'visa_qore', label: 'Visa Qore' },
       { tipo: 'bbva', label: 'BBVA' },
       { tipo: 'io', label: 'IO' },
       { tipo: 'saga', label: 'Saga' },
