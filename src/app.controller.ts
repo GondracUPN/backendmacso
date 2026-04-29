@@ -232,6 +232,11 @@ const getEbayApiBase = () => {
   return env === 'SANDBOX' ? 'https://api.sandbox.ebay.com' : 'https://api.ebay.com';
 };
 
+const getEbayApiRoot = () => {
+  const env = String(process.env.EBAY_ENV || 'PROD').toUpperCase();
+  return env === 'SANDBOX' ? 'https://api.sandbox.ebay.com' : 'https://api.ebay.com';
+};
+
 type EbayStoreEntry = {
   storeUrl: string;
   storeName: string;
@@ -330,7 +335,12 @@ const PAWN_APPLE_PRODUCT_QUERIES = [
   { key: 'airtag', label: 'AirTag', query: 'airtag' },
 ] as const;
 
-let ebayTokenCache: { token: string; expiresAt: number } | null = null;
+let ebayTokenCache: { token: string; expiresAt: number; source: 'refresh_token' | 'client_credentials' | 'static' } | null = null;
+let ebayTokenRequestPromise: Promise<string> | null = null;
+let ebayRefreshTokenCooldown: { key: string; retryAfter: number; reason: string } | null = null;
+let ebayBrowseRequestQueue: Promise<void> = Promise.resolve();
+let ebayBrowseCooldownUntil = 0;
+let ebayBrowseRateLimitLoggedUntil = 0;
 const TM_STORAGE_DIR = join(process.cwd(), 'storage', 'tm');
 const TM_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'ebay-template.html');
 const TM_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'ebay-template.meta.json');
@@ -340,6 +350,141 @@ const EBAY_STORE_FEED_FILE = join(process.cwd(), 'storage', 'ebay-store-feed.jso
 
 const normalizeEnvToken = (val: string) =>
   val.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, '');
+
+const isTruthyEnvFlag = (value?: string) =>
+  ['1', 'true', 'yes', 'si', 'sí', 'on'].includes(
+    String(value || '').trim().toLowerCase(),
+  );
+
+const getRefreshTokenCooldownKey = (clientId: string, refreshToken: string) =>
+  `${clientId}:${refreshToken.length}:${refreshToken.slice(-12)}`;
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getEbayBrowseMinIntervalMs = () => {
+  const raw = Number(process.env.EBAY_BROWSE_MIN_INTERVAL_MS || 650);
+  return Math.max(0, Number.isFinite(raw) ? raw : 650);
+};
+
+class EbayTokenRequestError extends Error {
+  status: number;
+  body: string;
+  errorCode: string;
+
+  constructor(status: number, body: string) {
+    super(`No se pudo obtener token eBay (${status})`);
+    this.status = status;
+    this.body = body;
+    this.errorCode = (() => {
+      try {
+        return String(JSON.parse(body)?.error || '');
+      } catch {
+        return '';
+      }
+    })();
+  }
+}
+
+class EbayBrowseRateLimitError extends BadRequestException {
+  retryAfterMs: number;
+  resetAt?: string;
+
+  constructor(retryAfterMs: number, resetAt?: string) {
+    super(
+      resetAt
+        ? `eBay agoto el limite de Browse API. Vuelve a intentar despues de ${resetAt}.`
+        : `eBay esta limitando requests. Espera ${Math.ceil(retryAfterMs / 1000)}s e intenta de nuevo.`,
+    );
+    this.retryAfterMs = retryAfterMs;
+    this.resetAt = resetAt;
+  }
+}
+
+const runEbayBrowseRequest = async <T,>(request: () => Promise<T>): Promise<T> => {
+  let releaseQueue: () => void = () => {};
+  const previous = ebayBrowseRequestQueue;
+  ebayBrowseRequestQueue = new Promise<void>((resolve) => {
+    releaseQueue = resolve;
+  });
+
+  await previous.catch(() => undefined);
+
+  try {
+    const cooldownMs = ebayBrowseCooldownUntil - Date.now();
+    if (cooldownMs > 0) {
+      throw new EbayBrowseRateLimitError(cooldownMs);
+    }
+
+    const result = await request();
+    await wait(getEbayBrowseMinIntervalMs());
+    return result;
+  } finally {
+    releaseQueue();
+  }
+};
+
+const getEbayBrowseRateLimits = async (token: string) => {
+  const url = new URL(`${getEbayApiRoot()}/developer/analytics/v1_beta/rate_limit/`);
+  url.searchParams.set('api_name', 'browse');
+  url.searchParams.set('api_context', 'buy');
+  const res = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+};
+
+const getBrowseRetryFromRateLimits = (data: any) => {
+  const rates = summarizeEbayBrowseRateLimits(data).resources;
+  const exhausted = rates.find((rate: any) => Number.isFinite(rate.remaining) && rate.remaining <= 0 && rate.reset);
+  const resetMs = exhausted ? Date.parse(exhausted.reset) : 0;
+  if (!resetMs || resetMs <= Date.now()) return null;
+  return {
+    retryAfterMs: Math.max(60_000, resetMs - Date.now()),
+    resetAt: exhausted.reset,
+  };
+};
+
+const summarizeEbayBrowseRateLimits = (data: any) => {
+  const limits = Array.isArray(data?.rateLimits) ? data.rateLimits : [];
+  const resources = limits.flatMap((limit: any) =>
+    (Array.isArray(limit?.resources) ? limit.resources : []).flatMap((resource: any) =>
+      (Array.isArray(resource?.rates) ? resource.rates : []).map((rate: any) => {
+        const count = Number(rate?.count);
+        const limitCount = Number(rate?.limit);
+        const remaining = Number(rate?.remaining);
+        const reset = String(rate?.reset || '');
+        const usedPercent = Number.isFinite(limitCount) && limitCount > 0 && Number.isFinite(count)
+          ? Math.min(100, Math.max(0, (count / limitCount) * 100))
+          : null;
+        return {
+          apiContext: String(limit?.apiContext || ''),
+          apiName: String(limit?.apiName || ''),
+          resource: String(resource?.name || ''),
+          count: Number.isFinite(count) ? count : null,
+          limit: Number.isFinite(limitCount) ? limitCount : null,
+          remaining: Number.isFinite(remaining) ? remaining : null,
+          reset,
+          timeWindow: Number.isFinite(Number(rate?.timeWindow)) ? Number(rate.timeWindow) : null,
+          usedPercent,
+        };
+      }),
+    ),
+  );
+
+  const primary =
+    resources.find((resource: any) => /item_summary|search/i.test(resource.resource)) ||
+    resources.find((resource: any) => resource.remaining != null || resource.limit != null) ||
+    null;
+
+  return {
+    primary,
+    resources,
+  };
+};
 
 const sanitizeEbayStoreEntry = (entry: any): EbayStoreEntry | null => {
   const storeUrl = String(entry?.storeUrl || '').trim();
@@ -776,12 +921,24 @@ const requestEbayToken = async (params: {
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     console.log('[eBay] token error', { status: res.status, body: errText.slice(0, 400) });
-    throw new BadRequestException(`No se pudo obtener token eBay (${res.status})`);
+    throw new EbayTokenRequestError(res.status, errText);
   }
   return (await res.json()) as { access_token: string; expires_in: number };
 };
 
 const getEbayAccessToken = async (): Promise<string> => {
+  if (ebayTokenRequestPromise) {
+    return ebayTokenRequestPromise;
+  }
+
+  ebayTokenRequestPromise = getEbayAccessTokenFresh().finally(() => {
+    ebayTokenRequestPromise = null;
+  });
+
+  return ebayTokenRequestPromise;
+};
+
+const getEbayAccessTokenFresh = async (): Promise<string> => {
   const now = Date.now();
   if (ebayTokenCache && now < ebayTokenCache.expiresAt - 60_000) {
     return ebayTokenCache.token;
@@ -792,43 +949,96 @@ const getEbayAccessToken = async (): Promise<string> => {
   const refreshToken = normalizeEnvToken(process.env.EBAY_REFRESH_TOKEN || '');
   const scopeEnv = normalizeEnvToken(process.env.EBAY_SCOPE || '');
   const defaultScope = scopeEnv || 'https://api.ebay.com/oauth/api_scope';
+  const refreshCooldownKey = refreshToken ? getRefreshTokenCooldownKey(clientId, refreshToken) : '';
+  const refreshTokenOnCooldown =
+    refreshCooldownKey &&
+    ebayRefreshTokenCooldown?.key === refreshCooldownKey &&
+    now < ebayRefreshTokenCooldown.retryAfter;
+  const preferRefreshToken = isTruthyEnvFlag(process.env.EBAY_PREFER_REFRESH_TOKEN);
+  let lastTokenError: any = null;
 
-  if (clientId && clientSecret && refreshToken) {
+  const tryRefreshToken = async () => {
+    if (!clientId || !clientSecret || !refreshToken || refreshTokenOnCooldown) return null;
     try {
       const data = await requestEbayToken({
         grantType: 'refresh_token',
         refreshToken,
         scope: scopeEnv || undefined,
       });
+      ebayRefreshTokenCooldown = null;
       ebayTokenCache = {
         token: data.access_token,
         expiresAt: now + Number(data.expires_in || 0) * 1000,
+        source: 'refresh_token',
       };
       return ebayTokenCache.token;
     } catch (err) {
-      console.log('[eBay] refresh token failed, trying client_credentials', {
+      lastTokenError = err;
+      if ((err as any)?.errorCode === 'invalid_grant' && refreshCooldownKey) {
+        ebayRefreshTokenCooldown = {
+          key: refreshCooldownKey,
+          retryAfter: now + 6 * 60 * 60 * 1000,
+          reason: 'invalid_grant',
+        };
+      }
+      console.log('[eBay] refresh token failed, using next token strategy', {
         reason: (err as any)?.message || err,
       });
+      return null;
     }
-  }
+  };
 
-  if (clientId && clientSecret) {
-    const data = await requestEbayToken({
-      grantType: 'client_credentials',
-      scope: defaultScope,
-    });
-    ebayTokenCache = {
-      token: data.access_token,
-      expiresAt: now + Number(data.expires_in || 0) * 1000,
-    };
-    return ebayTokenCache.token;
+  const tryClientCredentials = async () => {
+    if (!clientId || !clientSecret) return null;
+    try {
+      const data = await requestEbayToken({
+        grantType: 'client_credentials',
+        scope: defaultScope,
+      });
+      ebayTokenCache = {
+        token: data.access_token,
+        expiresAt: now + Number(data.expires_in || 0) * 1000,
+        source: 'client_credentials',
+      };
+      return ebayTokenCache.token;
+    } catch (err) {
+      lastTokenError = err;
+      console.log(
+        refreshToken
+          ? '[eBay] client_credentials failed, trying refresh token'
+          : '[eBay] client_credentials failed, using next token strategy',
+        {
+          reason: (err as any)?.message || err,
+        },
+      );
+      return null;
+    }
+  };
+
+  if (preferRefreshToken) {
+    const refreshResult = await tryRefreshToken();
+    if (refreshResult) return refreshResult;
+    const clientResult = await tryClientCredentials();
+    if (clientResult) return clientResult;
+  } else {
+    const clientResult = await tryClientCredentials();
+    if (clientResult) return clientResult;
+    const refreshResult = await tryRefreshToken();
+    if (refreshResult) return refreshResult;
   }
 
   const fallback = normalizeEnvToken(process.env.EBAY_ACCESS_TOKEN || '');
   if (!fallback) {
-    throw new BadRequestException('Faltan credenciales eBay (refresh o access token)');
+    throw new BadRequestException(
+      lastTokenError?.message || 'Faltan credenciales eBay (refresh o access token)',
+    );
   }
   console.log('[eBay] access token len', { len: fallback.length, tail: fallback.slice(-6) });
+  ebayTokenCache = {
+    token: fallback,
+    expiresAt: now + 15 * 60 * 1000,
+    source: 'static',
+  };
   return fallback;
 };
 
@@ -1261,14 +1471,35 @@ const searchEbayItems = async (params?: {
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('offset', String(offset));
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-    },
-  });
+  const res = await runEbayBrowseRequest(() =>
+    fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+      },
+    }),
+  );
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
+    if (res.status === 429) {
+      const retryAfterSeconds = Number(res.headers.get('retry-after') || 0);
+      let retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? retryAfterSeconds * 1000
+        : 10 * 60_000;
+      let resetAt: string | undefined;
+      const rateLimits = await getEbayBrowseRateLimits(token).catch(() => null);
+      const browseRetry = getBrowseRetryFromRateLimits(rateLimits);
+      if (browseRetry) {
+        retryAfterMs = browseRetry.retryAfterMs;
+        resetAt = browseRetry.resetAt;
+      }
+      ebayBrowseCooldownUntil = Date.now() + retryAfterMs;
+      if (Date.now() > ebayBrowseRateLimitLoggedUntil) {
+        console.log('[eBay] browse rate limited', { status: res.status, retryAfterMs, resetAt, body: errText.slice(0, 400) });
+        ebayBrowseRateLimitLoggedUntil = Date.now() + 30_000;
+      }
+      throw new EbayBrowseRateLimitError(retryAfterMs, resetAt);
+    }
     console.log('[eBay] browse store feed status', { status: res.status, body: errText.slice(0, 400) });
     throw new BadRequestException(`No se pudo obtener items eBay (${res.status})`);
   }
@@ -1359,7 +1590,7 @@ const fetchEbayStoreFeed = async (params?: {
     });
 
   const items = merged.slice(targetOffset, targetOffset + targetLimit);
-  const hasMore = merged.length > targetOffset + targetLimit;
+  const hasMore = merged.length > targetOffset + targetLimit || !exhausted;
 
   return {
     query: queryVariants[0],
@@ -1396,25 +1627,38 @@ const fetchEbayCatalogSearch = async (params?: {
   const targetLimitRaw = Number(params?.limit || 140);
   const targetOffsetRaw = Number(params?.offset || 0);
   const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
-  const targetOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
-  const desiredCount = targetOffset + targetLimit + 1;
+  const scanOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
+  const desiredCount = targetLimit;
   const perPageLimit = 200;
-  const maxPages = 25;
+  const maxPages = Math.max(1, Math.min(6, Number(process.env.EBAY_PAWN_SCAN_MAX_PAGES || 3) || 3));
   const collected: any[] = [];
   const seen = new Set<string>();
   let sort = 'newlyListed';
   let searchedTotal = 0;
   let exhausted = false;
+  let nextOffset = scanOffset;
+  let rateLimited = false;
 
   for (let page = 0; page < maxPages; page += 1) {
-    const pageOffset = page * perPageLimit;
-    const data = await searchEbayItems({
-      query: params?.query,
-      limit: perPageLimit,
-      offset: pageOffset,
-      condition: params?.condition,
-      buyingOptions: params?.buyingOptions,
-    });
+    const pageOffset = scanOffset + page * perPageLimit;
+    nextOffset = pageOffset + perPageLimit;
+    let data: any;
+    try {
+      data = await searchEbayItems({
+        query: params?.query,
+        limit: perPageLimit,
+        offset: pageOffset,
+        condition: params?.condition,
+        buyingOptions: params?.buyingOptions,
+      });
+    } catch (err) {
+      if (err instanceof EbayBrowseRateLimitError) {
+        rateLimited = true;
+        exhausted = false;
+        break;
+      }
+      throw err;
+    }
 
     if (page === 0) {
       sort = data?.sort || 'newlyListed';
@@ -1435,17 +1679,19 @@ const fetchEbayCatalogSearch = async (params?: {
     if (collected.length >= desiredCount || exhausted) break;
   }
 
-  const items = collected.slice(targetOffset, targetOffset + targetLimit);
-  const hasMore = items.length > 0 && (collected.length > targetOffset + targetLimit || !exhausted);
+  const items = collected;
+  const hasMore = !exhausted;
 
   return {
     query: String(params?.query || 'apple').trim() || 'apple',
     sort,
     limit: targetLimit,
-    offset: targetOffset,
-    total: hasMore || !exhausted ? Math.max(searchedTotal, collected.length) : collected.length,
+    offset: scanOffset,
+    nextOffset,
+    total: hasMore ? Math.max(searchedTotal, scanOffset + collected.length) : scanOffset + collected.length,
     filteredTotal: collected.length,
     hasMore,
+    rateLimited,
     sellers: [],
     items,
   };
@@ -1477,21 +1723,27 @@ const fetchEbayAppleCollection = async (params?: {
   );
 
   if (params?.pawnOnly) {
-    const desiredCount = targetOffset + targetLimit + 1;
+    const scanOffset = targetOffset;
+    const desiredCount = targetLimit;
     const perQueryLimit = 200;
-    const maxPages = 12;
+    const maxPages = Math.max(1, Math.min(4, Number(process.env.EBAY_PAWN_SCAN_MAX_PAGES || 2) || 2));
     const pawnQueryEntries = requestedFamily === 'all'
-      ? PAWN_APPLE_PRODUCT_QUERIES.map((entry) => ({ ...entry, family: 'all' as const }))
+      ? [{ key: 'apple', label: 'Apple', query: 'apple', family: 'all' as const }]
       : queryEntries;
     const collected: any[] = [];
     const seen = new Set<string>();
     const totalsByFamily = new Map<string, number>();
     let exhausted = false;
+    let nextOffset = scanOffset;
+    let searchedTotal = 0;
+    let rateLimited = false;
 
     for (let page = 0; page < maxPages; page += 1) {
-      const pageOffset = page * perQueryLimit;
-      const results = await Promise.all(
-        pawnQueryEntries.map(async (entry) => {
+      const pageOffset = scanOffset + page * perQueryLimit;
+      nextOffset = pageOffset + perQueryLimit;
+      const results: Array<(typeof pawnQueryEntries)[number] & { total: number; items: any[] }> = [];
+      for (const entry of pawnQueryEntries) {
+        try {
           const data = await searchEbayItems({
             query: entry.query,
             limit: perQueryLimit,
@@ -1500,15 +1752,25 @@ const fetchEbayAppleCollection = async (params?: {
             buyingOptions: params?.buyingOptions,
             sort: params?.sort,
           });
-          return {
+          results.push({
             ...entry,
             total: Number(data?.total || 0),
             items: Array.isArray(data?.items) ? data.items : [],
-          };
-        }),
-      );
+          });
+        } catch (err) {
+          if (err instanceof EbayBrowseRateLimitError) {
+            rateLimited = true;
+            exhausted = false;
+            break;
+          }
+          throw err;
+        }
+      }
+
+      if (!results.length) break;
 
       for (const entry of results) {
+        searchedTotal += Number(entry.total || 0);
         totalsByFamily.set(
           entry.family,
           Math.max(totalsByFamily.get(entry.family) || 0, Number(entry.total || 0)),
@@ -1536,13 +1798,13 @@ const fetchEbayAppleCollection = async (params?: {
         }
       }
 
-      exhausted = results.every((result) => {
+      exhausted = rateLimited ? false : results.every((result) => {
         const total = Number(result?.total || 0);
         const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
         return itemCount < perQueryLimit || pageOffset + perQueryLimit >= total;
       });
 
-      if (collected.length >= desiredCount || exhausted) break;
+      if (collected.length >= desiredCount || exhausted || rateLimited) break;
     }
 
     const filteredMerged = collected.sort((a: any, b: any) => {
@@ -1550,8 +1812,8 @@ const fetchEbayAppleCollection = async (params?: {
       const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
       return timeB - timeA;
     });
-    const merged = filteredMerged.slice(targetOffset, targetOffset + targetLimit);
-    const hasMore = merged.length > 0 && (filteredMerged.length > targetOffset + targetLimit || !exhausted);
+    const merged = filteredMerged;
+    const hasMore = !exhausted;
 
     return {
       query: requestedFamily === 'all' ? 'Apple pawn collection' : `Apple ${requestedFamily} pawn`,
@@ -1559,11 +1821,13 @@ const fetchEbayAppleCollection = async (params?: {
       buyingOptions: params?.buyingOptions || '',
       condition: params?.condition || '',
       limit: targetLimit,
-      offset: targetOffset,
+      offset: scanOffset,
+      nextOffset,
       family: requestedFamily || 'all',
-      total: filteredMerged.length,
+      total: hasMore ? Math.max(searchedTotal, scanOffset + filteredMerged.length) : scanOffset + filteredMerged.length,
       filteredTotal: filteredMerged.length,
       hasMore,
+      rateLimited,
       groups: familyKeys.map((familyKey) => ({
         key: familyKey,
         label: familyKey === 'ipad' ? 'iPad' : familyKey === 'iphone' ? 'iPhone' : 'MacBook',
@@ -2047,6 +2311,25 @@ export class AppController {
     return {
       total: stores.length,
       stores,
+    };
+  }
+
+  @Get('utils/ebay/rate-limits')
+  async getEbayRateLimits() {
+    const token = await getEbayAccessToken();
+    const data = await getEbayBrowseRateLimits(token);
+    if (!data) {
+      throw new BadRequestException('No se pudo consultar limites de eBay');
+    }
+    const browseRetry = getBrowseRetryFromRateLimits(data);
+    const summary = summarizeEbayBrowseRateLimits(data);
+    return {
+      ok: true,
+      browseExhausted: Boolean(browseRetry),
+      retryAfterMs: browseRetry?.retryAfterMs || 0,
+      resetAt: browseRetry?.resetAt || '',
+      summary,
+      data,
     };
   }
 
