@@ -319,6 +319,17 @@ const APPLE_FAMILY_QUERY_GROUPS = {
   ],
 } as const;
 
+const PAWN_APPLE_PRODUCT_QUERIES = [
+  { key: 'apple', label: 'Apple', query: 'apple' },
+  { key: 'iphone', label: 'iPhone', query: 'iphone' },
+  { key: 'ipad', label: 'iPad', query: 'ipad' },
+  { key: 'macbook', label: 'MacBook', query: 'macbook' },
+  { key: 'apple-watch', label: 'Apple Watch', query: 'apple watch' },
+  { key: 'imac', label: 'iMac', query: 'imac' },
+  { key: 'airpods', label: 'AirPods', query: 'airpods' },
+  { key: 'airtag', label: 'AirTag', query: 'airtag' },
+] as const;
+
 let ebayTokenCache: { token: string; expiresAt: number } | null = null;
 const TM_STORAGE_DIR = join(process.cwd(), 'storage', 'tm');
 const TM_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'ebay-template.html');
@@ -873,6 +884,184 @@ const normalizeLookupText = (val: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const EBAY_QUERY_KNOWN_TERMS = [
+  'apple',
+  'iphone',
+  'ipad',
+  'macbook',
+  'watch',
+  'airpods',
+  'airpod',
+  'imac',
+  'mac',
+  'mini',
+  'pro',
+  'max',
+  'plus',
+  'air',
+  'ultra',
+];
+
+const editDistanceWithin = (left: string, right: string, maxDistance: number) => {
+  if (left === right) return true;
+  if (Math.abs(left.length - right.length) > maxDistance) return false;
+
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i];
+    let rowMin = current[0];
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      const value = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      );
+      current[j] = value;
+      rowMin = Math.min(rowMin, value);
+    }
+    if (rowMin > maxDistance) return false;
+    previous = current;
+  }
+
+  return previous[right.length] <= maxDistance;
+};
+
+const correctEbayQueryToken = (token: string) => {
+  const normalized = String(token || '').trim().toLowerCase();
+  if (!normalized || normalized.length < 3 || /^\d+$/.test(normalized)) return normalized;
+  if (EBAY_QUERY_KNOWN_TERMS.includes(normalized)) return normalized;
+
+  const partial = EBAY_QUERY_KNOWN_TERMS.find((term) =>
+    normalized.length >= 3 &&
+    term.includes(normalized) &&
+    term.length - normalized.length <= 2,
+  );
+  if (partial) return partial;
+
+  const maxDistance = normalized.length >= 5 ? 2 : 1;
+  const fuzzy = EBAY_QUERY_KNOWN_TERMS.find((term) =>
+    Math.abs(term.length - normalized.length) <= maxDistance &&
+    editDistanceWithin(normalized, term, maxDistance),
+  );
+  return fuzzy || normalized;
+};
+
+const splitJoinedEbayQueryToken = (token: string) => {
+  const normalized = normalizeLookupText(token);
+  const modelMatch = normalized.match(/^(iphone|ipad)(\d{1,2})(promax|pro|max|plus|mini|e)?$/);
+  if (modelMatch) {
+    const suffix = modelMatch[3] === 'promax' ? ['pro', 'max'] : modelMatch[3] ? [modelMatch[3]] : [];
+    return [modelMatch[1], modelMatch[2], ...suffix];
+  }
+
+  const macbookMatch = normalized.match(/^(macbook)(air|pro)$/);
+  if (macbookMatch) return [macbookMatch[1], macbookMatch[2]];
+
+  return [normalized].filter(Boolean);
+};
+
+const buildSpacedEbayQueryText = (rawQuery?: string) =>
+  normalizeLookupText(String(rawQuery || '').trim())
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((token) => splitJoinedEbayQueryToken(token))
+    .join(' ')
+    .trim();
+
+const buildLenientEbayQueryVariants = (rawQuery?: string) => {
+  const original = String(rawQuery || 'apple').trim() || 'apple';
+  const normalized = normalizeLookupText(original);
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  const spaced = buildSpacedEbayQueryText(original);
+  const corrected = tokens.map((token) => correctEbayQueryToken(token)).join(' ').trim();
+  const correctedSpaced = buildSpacedEbayQueryText(corrected);
+  const hasAppleProductTerm = /\b(?:iphone|ipad|macbook|watch|airpods?|imac|mac)\b/.test(corrected);
+  const variants = [
+    original,
+    spaced,
+    corrected,
+    correctedSpaced,
+    hasAppleProductTerm && !/\bapple\b/.test(corrected) ? `apple ${corrected}` : '',
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(variants));
+};
+
+const normalizeCompactLookupText = (val: string) =>
+  normalizeLookupText(val).replace(/[\s.+-]+/g, '');
+
+const matchesPawnSellerName = (item: any) => {
+  const sellerText = [
+    item?.storeName,
+    item?.seller,
+    item?.seller?.username,
+    item?.seller?.userId,
+  ].join(' ');
+  return normalizeCompactLookupText(sellerText).includes('pawn');
+};
+
+const matchesAppleProductTitle = (item: any) => {
+  const titleText = normalizeLookupText(item?.title || '');
+  const titleCompact = normalizeCompactLookupText(item?.title || '');
+
+  if (titleCompact.includes('apple')) return true;
+  if (/\bmac\s*books?\b/.test(titleText) || titleCompact.includes('macbook')) return true;
+  if (/\bi\s*phones?\b/.test(titleText) || titleCompact.includes('iphone')) return true;
+  if (/\bi\s*pads?\b/.test(titleText) || titleCompact.includes('ipad')) return true;
+  if (/\bi\s*macs?\b/.test(titleText) || titleCompact.includes('imac')) return true;
+  if (/\bair\s*pods?\b/.test(titleText) || titleCompact.includes('airpod')) return true;
+  if (/\bair\s*tags?\b/.test(titleText) || titleCompact.includes('airtag')) return true;
+  if (/\bapple\s*watches?\b/.test(titleText) || titleCompact.includes('applewatch')) return true;
+
+  return false;
+};
+
+const isTruthyQueryFlag = (value?: string) =>
+  ['1', 'true', 'yes', 'si', 'sí', 'on'].includes(
+    normalizeLookupText(String(value || '')),
+  );
+
+const getTitleKeywordTokenGroups = (rawQuery?: string) => {
+  const normalized = normalizeLookupText(String(rawQuery || 'apple').trim() || 'apple');
+  const groups: string[][] = [];
+  const seen = new Set<string>();
+  const addGroup = (tokens: string[]) => {
+    const cleaned = tokens.map((token) => normalizeLookupText(token)).filter(Boolean);
+    const key = cleaned.join(' ');
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    groups.push(cleaned);
+  };
+
+  const rawTokens = normalized.split(/\s+/).filter(Boolean);
+  addGroup(rawTokens);
+
+  const spacedTokens = buildSpacedEbayQueryText(normalized).split(/\s+/).filter(Boolean);
+  addGroup(spacedTokens);
+  addGroup(spacedTokens.map((token) => correctEbayQueryToken(token)));
+
+  return groups;
+};
+
+const titleIncludesKeywordToken = (titleText: string, titleCompact: string, token: string) => {
+  if (titleText.includes(token)) return true;
+  const compactToken = normalizeCompactLookupText(token);
+  return Boolean(compactToken && titleCompact.includes(compactToken));
+};
+
+const matchesTitleKeywordQuery = (title: string, rawQuery?: string) => {
+  const titleText = normalizeLookupText(title);
+  const titleCompact = normalizeCompactLookupText(title);
+  const tokenGroups = getTitleKeywordTokenGroups(rawQuery);
+  if (!tokenGroups.length) return true;
+  return tokenGroups.some((tokens) =>
+    tokens.every((token) => titleIncludesKeywordToken(titleText, titleCompact, token)),
+  );
+};
+
 const APPLE_ACCESSORY_KEYWORDS = [
   'sleeve',
   'keyboard',
@@ -902,10 +1091,12 @@ const APPLE_ACCESSORY_KEYWORDS = [
 
 const APPLE_ACCESSORY_PRIMARY_PATTERNS = [
   /^(?:apple\s+)?(?:(?:laptop|tablet|phone|cell\s+phone|smartphone)\s+)?(?:case|sleeve|cover|folio|keyboard|magic keyboard|smart folio|screen protector|protector|pencil|charger|adapter|cable|bag|shell|skin|housing|digitizer|lcd|glass)\b/,
+  /\b(?:laptop|tablet|phone|cell\s+phone|smartphone)\s+(?:case|sleeve|cover|folio|keyboard|screen protector|protector|bag|shell)\b/,
+  /\b(?:case|sleeve|cover|folio|keyboard|screen protector|protector|bag|shell)\b.{0,80}\bfor\s+(?:new\s+)?(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
   /\bcompatible with\b/,
   /\bdesigned for\b/,
-  /\bfits?\s+(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
-  /\bfor\s+(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
+  /\bfits?\s+(?:new\s+)?(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
+  /\bfor\s+(?:new\s+)?(?:the\s+)?(?:apple\s+)?(?:macbook|ipad|iphone|watch)\b/,
   /\breplacement\b/,
 ];
 
@@ -1003,6 +1194,7 @@ const normalizeEbayBrowseItems = (params: {
   return (Array.isArray(params.items) ? params.items : [])
     .map((item: any) => {
       const seller = String(item?.seller?.username || item?.seller?.userId || '').trim();
+      const sellerStoreName = String(item?.seller?.storeName || item?.seller?.storefront?.storeName || '').trim();
       const storeMeta = storeBySeller.get(seller.toLowerCase()) || null;
       return {
         itemId: String(item?.itemId || item?.legacyItemId || ''),
@@ -1016,7 +1208,7 @@ const normalizeEbayBrowseItems = (params: {
         seller,
         sellerFeedbackPercentage: parsePriceValue(item?.seller?.feedbackPercentage),
         sellerFeedbackScore: parsePriceValue(item?.seller?.feedbackScore),
-        storeName: storeMeta?.storeName || seller,
+        storeName: storeMeta?.storeName || sellerStoreName || seller,
         storeUrl: storeMeta?.storeUrl || '',
         itemCreationDate: String(item?.itemCreationDate || item?.itemOriginDate || '').trim(),
         itemOriginDate: String(item?.itemOriginDate || item?.itemCreationDate || '').trim(),
@@ -1106,14 +1298,157 @@ const fetchEbayStoreFeed = async (params?: {
   buyingOptions?: string;
   storeEntries?: ReadonlyArray<EbayStoreEntry>;
 }) => {
-  return searchEbayItems({
-    query: params?.query,
-    limit: params?.limit,
-    offset: params?.offset,
-    condition: params?.condition,
-    buyingOptions: params?.buyingOptions,
-    storeEntries: params?.storeEntries || [],
-  });
+  const targetLimitRaw = Number(params?.limit || 140);
+  const targetOffsetRaw = Number(params?.offset || 0);
+  const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
+  const targetOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
+  const queryVariants = buildLenientEbayQueryVariants(params?.query);
+  const desiredCount = targetOffset + targetLimit + 1;
+  const perQueryLimit = 200;
+  const maxPages = 10;
+
+  const collected: any[] = [];
+  const seen = new Set<string>();
+  let sort = 'newlyListed';
+  let searchedTotal = 0;
+  let exhausted = false;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const pageOffset = page * perQueryLimit;
+    const results = await Promise.all(
+      queryVariants.map((query) =>
+        searchEbayItems({
+          query,
+          limit: perQueryLimit,
+          offset: pageOffset,
+          condition: params?.condition,
+          buyingOptions: params?.buyingOptions,
+          storeEntries: params?.storeEntries || [],
+        }),
+      ),
+    );
+
+    if (page === 0) {
+      sort = results[0]?.sort || 'newlyListed';
+      searchedTotal = results.reduce((sum, result) => sum + Number(result?.total || 0), 0);
+    }
+
+    const pageItems = results.flatMap((result) => (Array.isArray(result?.items) ? result.items : []));
+    for (const item of pageItems) {
+      if (!matchesTitleKeywordQuery(item?.title || '', params?.query)) continue;
+      const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      collected.push(item);
+    }
+
+    exhausted = results.every((result) => {
+      const total = Number(result?.total || 0);
+      const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
+      return itemCount < perQueryLimit || pageOffset + perQueryLimit >= total;
+    });
+
+    if (collected.length >= desiredCount || exhausted) break;
+  }
+
+  const merged = collected
+    .sort((a: any, b: any) => {
+      const timeA = Date.parse(a.itemOriginDate || a.itemCreationDate || '') || 0;
+      const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
+      return timeB - timeA;
+    });
+
+  const items = merged.slice(targetOffset, targetOffset + targetLimit);
+  const hasMore = merged.length > targetOffset + targetLimit;
+
+  return {
+    query: queryVariants[0],
+    queryVariants,
+    sort,
+    limit: targetLimit,
+    offset: targetOffset,
+    total: hasMore || !exhausted ? Math.max(searchedTotal, merged.length) : merged.length,
+    filteredTotal: merged.length,
+    hasMore,
+    sellers: params?.storeEntries || [],
+    items,
+  };
+};
+
+const fetchEbayCatalogSearch = async (params?: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+  condition?: string;
+  buyingOptions?: string;
+  pawnOnly?: boolean;
+}) => {
+  if (!params?.pawnOnly) {
+    return searchEbayItems({
+      query: params?.query,
+      limit: params?.limit,
+      offset: params?.offset,
+      condition: params?.condition,
+      buyingOptions: params?.buyingOptions,
+    });
+  }
+
+  const targetLimitRaw = Number(params?.limit || 140);
+  const targetOffsetRaw = Number(params?.offset || 0);
+  const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
+  const targetOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
+  const desiredCount = targetOffset + targetLimit + 1;
+  const perPageLimit = 200;
+  const maxPages = 25;
+  const collected: any[] = [];
+  const seen = new Set<string>();
+  let sort = 'newlyListed';
+  let searchedTotal = 0;
+  let exhausted = false;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const pageOffset = page * perPageLimit;
+    const data = await searchEbayItems({
+      query: params?.query,
+      limit: perPageLimit,
+      offset: pageOffset,
+      condition: params?.condition,
+      buyingOptions: params?.buyingOptions,
+    });
+
+    if (page === 0) {
+      sort = data?.sort || 'newlyListed';
+      searchedTotal = Number(data?.total || 0);
+    }
+
+    const pageItems = Array.isArray(data?.items) ? data.items : [];
+    for (const item of pageItems) {
+      if (!matchesPawnSellerName(item)) continue;
+      if (!matchesAppleProductTitle(item)) continue;
+      const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      collected.push(item);
+    }
+
+    exhausted = pageItems.length < perPageLimit || pageOffset + perPageLimit >= Number(data?.total || 0);
+    if (collected.length >= desiredCount || exhausted) break;
+  }
+
+  const items = collected.slice(targetOffset, targetOffset + targetLimit);
+  const hasMore = items.length > 0 && (collected.length > targetOffset + targetLimit || !exhausted);
+
+  return {
+    query: String(params?.query || 'apple').trim() || 'apple',
+    sort,
+    limit: targetLimit,
+    offset: targetOffset,
+    total: hasMore || !exhausted ? Math.max(searchedTotal, collected.length) : collected.length,
+    filteredTotal: collected.length,
+    hasMore,
+    sellers: [],
+    items,
+  };
 };
 
 const fetchEbayAppleCollection = async (params?: {
@@ -1123,6 +1458,7 @@ const fetchEbayAppleCollection = async (params?: {
   condition?: string;
   buyingOptions?: string;
   sort?: string;
+  pawnOnly?: boolean;
 }) => {
   const targetLimitRaw = Number(params?.limit || 140);
   const targetOffsetRaw = Number(params?.offset || 0);
@@ -1139,6 +1475,103 @@ const fetchEbayAppleCollection = async (params?: {
       family: familyKey,
     })),
   );
+
+  if (params?.pawnOnly) {
+    const desiredCount = targetOffset + targetLimit + 1;
+    const perQueryLimit = 200;
+    const maxPages = 12;
+    const pawnQueryEntries = requestedFamily === 'all'
+      ? PAWN_APPLE_PRODUCT_QUERIES.map((entry) => ({ ...entry, family: 'all' as const }))
+      : queryEntries;
+    const collected: any[] = [];
+    const seen = new Set<string>();
+    const totalsByFamily = new Map<string, number>();
+    let exhausted = false;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const pageOffset = page * perQueryLimit;
+      const results = await Promise.all(
+        pawnQueryEntries.map(async (entry) => {
+          const data = await searchEbayItems({
+            query: entry.query,
+            limit: perQueryLimit,
+            offset: pageOffset,
+            condition: params?.condition,
+            buyingOptions: params?.buyingOptions,
+            sort: params?.sort,
+          });
+          return {
+            ...entry,
+            total: Number(data?.total || 0),
+            items: Array.isArray(data?.items) ? data.items : [],
+          };
+        }),
+      );
+
+      for (const entry of results) {
+        totalsByFamily.set(
+          entry.family,
+          Math.max(totalsByFamily.get(entry.family) || 0, Number(entry.total || 0)),
+        );
+
+        for (const item of entry.items) {
+          const family = entry.family === 'all' ? '' : entry.family;
+          const enriched = {
+            ...item,
+            family,
+            familyLabel: family === 'ipad' ? 'iPad' : family === 'iphone' ? 'iPhone' : family === 'macbook' ? 'MacBook' : 'Apple',
+            familyEntryKey: entry.key,
+          };
+          if (family && !matchesAppleFamilyEntry(enriched?.title || '', {
+            family,
+            key: enriched?.familyEntryKey || '',
+          })) continue;
+          if (!matchesPawnSellerName(enriched)) continue;
+          if (!matchesAppleProductTitle(enriched)) continue;
+
+          const key = String(enriched?.itemId || enriched?.legacyItemId || enriched?.itemWebUrl || '').trim();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          collected.push(enriched);
+        }
+      }
+
+      exhausted = results.every((result) => {
+        const total = Number(result?.total || 0);
+        const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
+        return itemCount < perQueryLimit || pageOffset + perQueryLimit >= total;
+      });
+
+      if (collected.length >= desiredCount || exhausted) break;
+    }
+
+    const filteredMerged = collected.sort((a: any, b: any) => {
+      const timeA = Date.parse(a.itemOriginDate || a.itemCreationDate || '') || 0;
+      const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
+      return timeB - timeA;
+    });
+    const merged = filteredMerged.slice(targetOffset, targetOffset + targetLimit);
+    const hasMore = merged.length > 0 && (filteredMerged.length > targetOffset + targetLimit || !exhausted);
+
+    return {
+      query: requestedFamily === 'all' ? 'Apple pawn collection' : `Apple ${requestedFamily} pawn`,
+      sort: params?.sort || 'newlyListed',
+      buyingOptions: params?.buyingOptions || '',
+      condition: params?.condition || '',
+      limit: targetLimit,
+      offset: targetOffset,
+      family: requestedFamily || 'all',
+      total: filteredMerged.length,
+      filteredTotal: filteredMerged.length,
+      hasMore,
+      groups: familyKeys.map((familyKey) => ({
+        key: familyKey,
+        label: familyKey === 'ipad' ? 'iPad' : familyKey === 'iphone' ? 'iPhone' : 'MacBook',
+        total: totalsByFamily.get(familyKey) || 0,
+      })),
+      items: merged,
+    };
+  }
 
   const desiredWindow = targetOffset + targetLimit;
   const perQueryLimit = Math.min(
@@ -1165,7 +1598,7 @@ const fetchEbayAppleCollection = async (params?: {
   );
 
   const seen = new Set<string>();
-  const merged = results
+  const filteredMerged = results
     .flatMap((entry) =>
       entry.items.map((item: any) => ({
         ...item,
@@ -1178,6 +1611,8 @@ const fetchEbayAppleCollection = async (params?: {
       family: item?.family,
       key: item?.familyEntryKey || '',
     }))
+    .filter((item: any) => !params?.pawnOnly || matchesPawnSellerName(item))
+    .filter((item: any) => !params?.pawnOnly || matchesAppleProductTitle(item))
     .filter((item: any) => {
       const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '');
       if (!key || seen.has(key)) return false;
@@ -1193,8 +1628,13 @@ const fetchEbayAppleCollection = async (params?: {
       const timeA = Date.parse(a.itemOriginDate || a.itemCreationDate || '') || 0;
       const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
       return timeB - timeA;
-    })
-    .slice(targetOffset, targetOffset + targetLimit);
+    });
+
+  const merged = filteredMerged.slice(targetOffset, targetOffset + targetLimit);
+  const rawTotal = results.reduce((sum, entry) => sum + Number(entry.total || 0), 0);
+  const hasMore = params?.pawnOnly
+    ? filteredMerged.length > targetOffset + targetLimit
+    : targetOffset + targetLimit < rawTotal;
 
   return {
     query: requestedFamily === 'all' ? 'Apple collection' : `Apple ${requestedFamily}`,
@@ -1204,7 +1644,9 @@ const fetchEbayAppleCollection = async (params?: {
     limit: targetLimit,
     offset: targetOffset,
     family: requestedFamily || 'all',
-    total: results.reduce((sum, entry) => sum + Number(entry.total || 0), 0),
+    total: params?.pawnOnly ? filteredMerged.length : rawTotal,
+    filteredTotal: filteredMerged.length,
+    hasMore,
     groups: familyKeys.map((familyKey) => ({
       key: familyKey,
       label: familyKey === 'ipad' ? 'iPad' : familyKey === 'iphone' ? 'iPhone' : 'MacBook',
@@ -1800,13 +2242,15 @@ export class AppController {
     @Query('offset') offset?: string,
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
+    @Query('pawnOnly') pawnOnly?: string,
   ) {
-    return searchEbayItems({
+    return fetchEbayCatalogSearch({
       query: q,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
       condition,
       buyingOptions,
+      pawnOnly: isTruthyQueryFlag(pawnOnly),
     });
   }
 
@@ -1817,6 +2261,7 @@ export class AppController {
     @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook',
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
+    @Query('pawnOnly') pawnOnly?: string,
   ) {
     return fetchEbayAppleCollection({
       limit: limit ? Number(limit) : undefined,
@@ -1824,6 +2269,7 @@ export class AppController {
       family,
       condition,
       buyingOptions,
+      pawnOnly: isTruthyQueryFlag(pawnOnly),
       sort: 'newlyListed',
     });
   }
