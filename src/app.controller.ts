@@ -341,6 +341,12 @@ let ebayRefreshTokenCooldown: { key: string; retryAfter: number; reason: string 
 let ebayBrowseRequestQueue: Promise<void> = Promise.resolve();
 let ebayBrowseCooldownUntil = 0;
 let ebayBrowseRateLimitLoggedUntil = 0;
+let ebaySearchCachePruneUntil = 0;
+
+const ebaySearchCache = new Map<string, {
+  expiresAt: number;
+  data: any;
+}>();
 const TM_STORAGE_DIR = join(process.cwd(), 'storage', 'tm');
 const TM_TEMPLATE_FILE = join(TM_STORAGE_DIR, 'ebay-template.html');
 const TM_TEMPLATE_META_FILE = join(TM_STORAGE_DIR, 'ebay-template.meta.json');
@@ -1471,6 +1477,10 @@ const searchEbayItems = async (params?: {
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('offset', String(offset));
 
+  const cacheKey = url.toString();
+  const cached = getCachedEbaySearch(cacheKey);
+  if (cached) return cached;
+
   const res = await runEbayBrowseRequest(() =>
     fetch(url.toString(), {
       headers: {
@@ -1510,7 +1520,7 @@ const searchEbayItems = async (params?: {
     storeEntries: params?.storeEntries,
   });
 
-  return {
+  const result = {
     query,
     sort,
     limit,
@@ -1519,6 +1529,8 @@ const searchEbayItems = async (params?: {
     sellers: params?.storeEntries || [],
     items,
   };
+  setCachedEbaySearch(cacheKey, result);
+  return result;
 };
 
 const fetchEbayStoreFeed = async (params?: {
@@ -1604,6 +1616,48 @@ const fetchEbayStoreFeed = async (params?: {
     sellers: params?.storeEntries || [],
     items,
   };
+};
+
+const getEbaySearchCacheTtlMs = () => {
+  const raw = Number(process.env.EBAY_SEARCH_CACHE_TTL_MS || 10 * 60_000);
+  if (!Number.isFinite(raw)) return 10 * 60_000;
+  return Math.max(0, Math.min(raw, 60 * 60_000));
+};
+
+const cloneEbaySearchData = (data: any) => ({
+  ...data,
+  sellers: Array.isArray(data?.sellers) ? data.sellers.map((seller: any) => ({ ...seller })) : [],
+  items: Array.isArray(data?.items) ? data.items.map((item: any) => ({ ...item })) : [],
+});
+
+const getCachedEbaySearch = (key: string) => {
+  const entry = ebaySearchCache.get(key);
+  if (!entry) return null;
+  if (Date.now() >= entry.expiresAt) {
+    ebaySearchCache.delete(key);
+    return null;
+  }
+  return cloneEbaySearchData(entry.data);
+};
+
+const setCachedEbaySearch = (key: string, data: any) => {
+  const ttlMs = getEbaySearchCacheTtlMs();
+  if (ttlMs <= 0) return;
+  const now = Date.now();
+  if (now >= ebaySearchCachePruneUntil) {
+    for (const [cacheKey, entry] of ebaySearchCache.entries()) {
+      if (now >= entry.expiresAt) ebaySearchCache.delete(cacheKey);
+    }
+    ebaySearchCachePruneUntil = now + 60_000;
+  }
+  if (ebaySearchCache.size >= 250) {
+    const oldestKey = ebaySearchCache.keys().next().value;
+    if (oldestKey) ebaySearchCache.delete(oldestKey);
+  }
+  ebaySearchCache.set(key, {
+    expiresAt: now + ttlMs,
+    data: cloneEbaySearchData(data),
+  });
 };
 
 const fetchEbayCatalogSearch = async (params?: {
