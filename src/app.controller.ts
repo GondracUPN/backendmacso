@@ -335,6 +335,43 @@ const PAWN_APPLE_PRODUCT_QUERIES = [
   { key: 'airtag', label: 'AirTag', query: 'airtag' },
 ] as const;
 
+const MACBOOK_AUCTION_QUERY_GROUPS = [
+  { key: 'macbook-air-m1', label: 'MacBook Air M1', query: 'apple macbook air m1' },
+  { key: 'macbook-air-m2', label: 'MacBook Air M2', query: 'apple macbook air m2' },
+  { key: 'macbook-air-m3', label: 'MacBook Air M3', query: 'apple macbook air m3' },
+  { key: 'macbook-air-m4', label: 'MacBook Air M4', query: 'apple macbook air m4' },
+  { key: 'macbook-air-m5', label: 'MacBook Air M5', query: 'apple macbook air m5' },
+  { key: 'macbook-pro-m1', label: 'MacBook Pro M1', query: 'apple macbook pro m1' },
+  { key: 'macbook-pro-m1-pro', label: 'MacBook Pro M1 Pro', query: 'apple macbook m1 pro' },
+  { key: 'macbook-pro-m1-max', label: 'MacBook Pro M1 Max', query: 'apple macbook m1 max' },
+  { key: 'macbook-pro-m2', label: 'MacBook Pro M2', query: 'apple macbook pro m2' },
+  { key: 'macbook-pro-m2-pro', label: 'MacBook Pro M2 Pro', query: 'apple macbook m2 pro' },
+  { key: 'macbook-pro-m2-max', label: 'MacBook Pro M2 Max', query: 'apple macbook m2 max' },
+  { key: 'macbook-pro-m3', label: 'MacBook Pro M3', query: 'apple macbook pro m3' },
+  { key: 'macbook-pro-m3-pro', label: 'MacBook Pro M3 Pro', query: 'apple macbook m3 pro' },
+  { key: 'macbook-pro-m3-max', label: 'MacBook Pro M3 Max', query: 'apple macbook m3 max' },
+  { key: 'macbook-pro-m4', label: 'MacBook Pro M4', query: 'apple macbook pro m4' },
+  { key: 'macbook-pro-m4-pro', label: 'MacBook Pro M4 Pro', query: 'apple macbook m4 pro' },
+  { key: 'macbook-pro-m4-max', label: 'MacBook Pro M4 Max', query: 'apple macbook m4 max' },
+  { key: 'macbook-pro-m5', label: 'MacBook Pro M5', query: 'apple macbook pro m5' },
+  { key: 'macbook-pro-m5-pro', label: 'MacBook Pro M5 Pro', query: 'apple macbook m5 pro' },
+  { key: 'macbook-pro-m5-max', label: 'MacBook Pro M5 Max', query: 'apple macbook m5 max' },
+  { key: 'macbook-neo-a18-pro', label: 'MacBook Neo A18 Pro', query: 'apple macbook neo a18 pro' },
+  { key: 'macbook-model-a2336', label: 'MacBook A2336', query: 'apple macbook a2336' },
+  { key: 'macbook-model-a2337', label: 'MacBook A2337', query: 'apple macbook a2337' },
+  { key: 'macbook-model-a2338', label: 'MacBook A2338', query: 'apple macbook a2338' },
+  { key: 'macbook-model-a2442', label: 'MacBook A2442', query: 'apple macbook a2442' },
+  { key: 'macbook-model-a2485', label: 'MacBook A2485', query: 'apple macbook a2485' },
+  { key: 'macbook-model-a2681', label: 'MacBook A2681', query: 'apple macbook a2681' },
+  { key: 'macbook-model-a2779', label: 'MacBook A2779', query: 'apple macbook a2779' },
+  { key: 'macbook-model-a2918', label: 'MacBook A2918', query: 'apple macbook a2918' },
+  { key: 'macbook-model-a2941', label: 'MacBook A2941', query: 'apple macbook a2941' },
+  { key: 'macbook-model-a2991', label: 'MacBook A2991', query: 'apple macbook a2991' },
+  { key: 'macbook-model-a2992', label: 'MacBook A2992', query: 'apple macbook a2992' },
+  { key: 'macbook-model-a3113', label: 'MacBook A3113', query: 'apple macbook a3113' },
+  { key: 'macbook-order-ll-a', label: 'MacBook LL/A', query: 'apple macbook ll/a' },
+] as const;
+
 let ebayTokenCache: { token: string; expiresAt: number; source: 'refresh_token' | 'client_credentials' | 'static' } | null = null;
 let ebayTokenRequestPromise: Promise<string> | null = null;
 let ebayRefreshTokenCooldown: { key: string; retryAfter: number; reason: string } | null = null;
@@ -1240,6 +1277,12 @@ const isTruthyQueryFlag = (value?: string) =>
     normalizeLookupText(String(value || '')),
   );
 
+const getPawnScanMaxPages = (fallback: number) => {
+  const raw = Number(process.env.EBAY_PAWN_SCAN_MAX_PAGES || fallback);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(1, Math.min(20, raw));
+};
+
 const getTitleKeywordTokenGroups = (rawQuery?: string) => {
   const normalized = normalizeLookupText(String(rawQuery || 'apple').trim() || 'apple');
   const groups: string[][] = [];
@@ -1356,12 +1399,33 @@ const isAccessoryTitle = (
   return false;
 };
 
+const MACBOOK_CHIP_PATTERN = /\b(?:m[1-5](?:\s+(?:pro|max))?|a18\s*pro)\b/;
+const MACBOOK_MODEL_NUMBER_PATTERN = /\ba(?:2336|2337|2338|2442|2485|2681|2779|2918|2941|2991|2992|3113|3185)\b/;
+const MACBOOK_ORDER_CODE_PATTERN = /\b[a-z0-9]{3,6}ll\/a\b/;
+const MACBOOK_INTEL_PATTERN = /\b(?:intel|core\s+i[3579]|i[3579][-\s]?\d{3,5})\b/;
+
+const hasTargetMacBookSignal = (normalized: string) => {
+  const compact = normalizeCompactLookupText(normalized);
+  if (normalized.includes('macbook neo') || /\bneo\b/.test(normalized) && /\ba18\s*pro\b/.test(normalized)) return true;
+  if (MACBOOK_CHIP_PATTERN.test(normalized)) return true;
+  if (MACBOOK_MODEL_NUMBER_PATTERN.test(normalized)) return true;
+  if (MACBOOK_ORDER_CODE_PATTERN.test(normalized) && !MACBOOK_INTEL_PATTERN.test(normalized)) return true;
+  if (compact.includes('fk1e3lla') && !MACBOOK_INTEL_PATTERN.test(normalized)) return true;
+  return false;
+};
+
 const isLikelyAppleDeviceTitle = (title: string, family: 'ipad' | 'iphone' | 'macbook') => {
   const normalized = normalizeLookupText(title);
   if (isAccessoryTitle(normalized, family)) return false;
   if (family === 'ipad') return normalized.includes('ipad');
   if (family === 'iphone') return normalized.includes('iphone');
-  return normalized.includes('macbook');
+  if (!hasTargetMacBookSignal(normalized)) return false;
+  return normalized.includes('macbook') ||
+    /\bmac\s*book\b/.test(normalized) ||
+    normalized.includes('mac laptop') ||
+    normalized.includes('apple laptop') ||
+    MACBOOK_MODEL_NUMBER_PATTERN.test(normalized) ||
+    MACBOOK_ORDER_CODE_PATTERN.test(normalized);
 };
 
 const matchesAppleFamilyEntry = (
@@ -1457,7 +1521,8 @@ const searchEbayItems = async (params?: {
   const limitRaw = Number(params?.limit || 140);
   const offsetRaw = Number(params?.offset || 0);
   const limit = Math.min(200, Math.max(1, Number.isFinite(limitRaw) ? limitRaw : 140));
-  const offset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0);
+  const requestedOffset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0);
+  const offset = requestedOffset - (requestedOffset % limit);
   const sort = String(params?.sort || 'newlyListed').trim() || 'newlyListed';
   const url = new URL(`${base}/buy/browse/v1/item_summary/search`);
   url.searchParams.set('q', query);
@@ -1684,7 +1749,7 @@ const fetchEbayCatalogSearch = async (params?: {
   const scanOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
   const desiredCount = targetLimit;
   const perPageLimit = 200;
-  const maxPages = Math.max(1, Math.min(6, Number(process.env.EBAY_PAWN_SCAN_MAX_PAGES || 3) || 3));
+  const maxPages = getPawnScanMaxPages(12);
   const collected: any[] = [];
   const seen = new Set<string>();
   let sort = 'newlyListed';
@@ -1770,7 +1835,7 @@ const fetchEbayAppleCollection = async (params?: {
     : (['ipad', 'iphone', 'macbook'] as Array<'ipad' | 'iphone' | 'macbook'>);
 
   const queryEntries = familyKeys.flatMap((familyKey) =>
-    APPLE_FAMILY_QUERY_GROUPS[familyKey].map((entry) => ({
+    (familyKey === 'macbook' ? MACBOOK_AUCTION_QUERY_GROUPS : APPLE_FAMILY_QUERY_GROUPS[familyKey]).map((entry) => ({
       ...entry,
       family: familyKey,
     })),
@@ -1780,9 +1845,13 @@ const fetchEbayAppleCollection = async (params?: {
     const scanOffset = targetOffset;
     const desiredCount = targetLimit;
     const perQueryLimit = 200;
-    const maxPages = Math.max(1, Math.min(4, Number(process.env.EBAY_PAWN_SCAN_MAX_PAGES || 2) || 2));
+    const maxPages = getPawnScanMaxPages(10);
     const pawnQueryEntries = requestedFamily === 'all'
-      ? [{ key: 'apple', label: 'Apple', query: 'apple', family: 'all' as const }]
+      ? [
+          { key: 'ipad', label: 'iPad', query: 'ipad', family: 'all' as const },
+          { key: 'iphone', label: 'iPhone', query: 'iphone unlocked', family: 'all' as const },
+          { key: 'macbook', label: 'MacBook', query: 'macbook', family: 'all' as const },
+        ]
       : queryEntries;
     const collected: any[] = [];
     const seen = new Set<string>();
