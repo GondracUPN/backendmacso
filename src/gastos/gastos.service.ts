@@ -20,6 +20,7 @@ function normConcept(con?: string) {
     'cash back': 'cashback',
     devolucion: 'cashback',
     devolución: 'cashback',
+    bolsa: 'inversion',
     ingreso: 'ingreso',
     ingresos: 'ingreso',
     'pago tarjeta': 'pago_tarjeta',
@@ -65,7 +66,7 @@ export class GastosService {
     const moneda: 'PEN' | 'USD' = dto.moneda === 'USD' ? 'USD' : 'PEN';
 
     // Validación de conceptos permitidos por método
-    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback']);
+    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'inversion']);
     const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback']);
     if ((metodoPago === 'debito' && !allowedDeb.has(concepto)) || (metodoPago === 'credito' && !allowedCred.has(concepto))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
@@ -112,11 +113,11 @@ export class GastosService {
         })(),
       pagoObjetivo:
 
-        metodoPago === 'debito' && concepto === 'pago_tarjeta' && (dto.pagoObjetivo === 'USD' || dto.pagoObjetivo === 'PEN')
+        metodoPago === 'debito' && (concepto === 'pago_tarjeta' || concepto === 'inversion') && (dto.pagoObjetivo === 'USD' || dto.pagoObjetivo === 'PEN')
           ? (dto.pagoObjetivo as any)
           : null,
       montoUsdAplicado:
-        metodoPago === 'debito' && concepto === 'pago_tarjeta' && dto.pagoObjetivo === 'USD'
+        metodoPago === 'debito' && (concepto === 'pago_tarjeta' || concepto === 'inversion') && dto.pagoObjetivo === 'USD'
           ? (Number(
               dto.montoUsdAplicado != null
                 ? dto.montoUsdAplicado
