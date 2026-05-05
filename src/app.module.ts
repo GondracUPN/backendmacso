@@ -23,7 +23,11 @@ import { EbayPawn } from './ebay-pawn.entity';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: [join(__dirname, '..', '.env'), join(process.cwd(), '.env')],
+      envFilePath: [
+        join(process.cwd(), '.env'),
+        join(__dirname, '..', '.env'),
+        join(__dirname, '..', '..', '.env'),
+      ],
     }),
 
     TypeOrmModule.forRootAsync({

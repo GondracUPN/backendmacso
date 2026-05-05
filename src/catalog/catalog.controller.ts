@@ -19,6 +19,11 @@ export class CatalogController {
     return this.svc.listExpenseConcepts();
   }
 
+  @Get()
+  all() {
+    return this.svc.listAll();
+  }
+
   @Roles('admin')
   @Post('product-options')
   createProductOption(@Body() dto: any) {

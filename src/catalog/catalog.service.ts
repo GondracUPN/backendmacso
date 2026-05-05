@@ -36,6 +36,14 @@ export class CatalogService {
     });
   }
 
+  async listAll() {
+    const [productOptions, expenseConcepts] = await Promise.all([
+      this.listProductOptions(),
+      this.listExpenseConcepts(),
+    ]);
+    return { productOptions, expenseConcepts };
+  }
+
   async createProductOption(dto: any) {
     const productType = String(dto?.productType || '').trim().toLowerCase();
     const family = String(dto?.family || '').trim();
