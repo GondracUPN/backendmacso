@@ -6,6 +6,7 @@ import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
 import { Role } from '../auth/entities/user.entity';
 import { ScheduledCharge } from '../schedules/scheduled-charge.entity';
+import { CatalogService } from '../catalog/catalog.service';
 
 function normConcept(con?: string) {
   const raw = String(con || '').trim().toLowerCase();
@@ -48,7 +49,16 @@ export class GastosService {
   constructor(
     @InjectRepository(Gasto) private readonly repo: Repository<Gasto>,
     @InjectRepository(ScheduledCharge) private readonly schedulesRepo: Repository<ScheduledCharge>,
+    private readonly catalogService: CatalogService,
   ) {}
+
+  private async isConceptAllowed(concepto: string, metodoPago: 'debito' | 'credito') {
+    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'bolsa']);
+    const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback']);
+    if (metodoPago === 'debito' && allowedDeb.has(concepto)) return true;
+    if (metodoPago === 'credito' && allowedCred.has(concepto)) return true;
+    return this.catalogService.isExpenseConceptAllowed(concepto, metodoPago);
+  }
 
   private addMonth(dateStr: string): string {
     const d = new Date(dateStr + 'T00:00:00');
@@ -65,10 +75,7 @@ export class GastosService {
     // Si es crédito, forzamos USD (los consumos de tarjeta se guardan en USD)
     const moneda: 'PEN' | 'USD' = dto.moneda === 'USD' ? 'USD' : 'PEN';
 
-    // Validación de conceptos permitidos por método
-    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'bolsa']);
-    const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback']);
-    if ((metodoPago === 'debito' && !allowedDeb.has(concepto)) || (metodoPago === 'credito' && !allowedCred.has(concepto))) {
+    if (!(await this.isConceptAllowed(concepto, metodoPago))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
     }
 
@@ -233,9 +240,7 @@ export class GastosService {
     }
 
     if (dto.concepto !== undefined || dto.metodoPago !== undefined) {
-      const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'bolsa']);
-      const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback']);
-      if ((g.metodoPago === 'debito' && !allowedDeb.has(g.concepto)) || (g.metodoPago === 'credito' && !allowedCred.has(g.concepto))) {
+      if (!(await this.isConceptAllowed(g.concepto, g.metodoPago))) {
         throw new BadRequestException(`Concepto no permitido para ${g.metodoPago}`);
       }
     }

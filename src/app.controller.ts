@@ -1256,6 +1256,12 @@ const matchesPawnSellerName = (item: any) => {
   return normalizeCompactLookupText(sellerText).includes('pawn');
 };
 
+const matchesPawnInventoryCode = (item: any) =>
+  /\((?=[A-Za-z0-9]{9}\))(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{9}\)/.test(String(item?.title || ''));
+
+const matchesPawnSource = (item: any) =>
+  matchesPawnSellerName(item) || matchesPawnInventoryCode(item);
+
 const matchesAppleProductTitle = (item: any) => {
   const titleText = normalizeLookupText(item?.title || '');
   const titleCompact = normalizeCompactLookupText(item?.title || '');
@@ -1786,7 +1792,7 @@ const fetchEbayCatalogSearch = async (params?: {
 
     const pageItems = Array.isArray(data?.items) ? data.items : [];
     for (const item of pageItems) {
-      if (!matchesPawnSellerName(item)) continue;
+      if (!matchesPawnSource(item)) continue;
       if (!matchesAppleProductTitle(item)) continue;
       const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
       if (!key || seen.has(key)) continue;
@@ -1911,7 +1917,7 @@ const fetchEbayAppleCollection = async (params?: {
             family,
             key: enriched?.familyEntryKey || '',
           })) continue;
-          if (!matchesPawnSellerName(enriched)) continue;
+          if (!matchesPawnSource(enriched)) continue;
           if (!matchesAppleProductTitle(enriched)) continue;
 
           const key = String(enriched?.itemId || enriched?.legacyItemId || enriched?.itemWebUrl || '').trim();
@@ -1998,7 +2004,7 @@ const fetchEbayAppleCollection = async (params?: {
       family: item?.family,
       key: item?.familyEntryKey || '',
     }))
-    .filter((item: any) => !params?.pawnOnly || matchesPawnSellerName(item))
+    .filter((item: any) => !params?.pawnOnly || matchesPawnSource(item))
     .filter((item: any) => !params?.pawnOnly || matchesAppleProductTitle(item))
     .filter((item: any) => {
       const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '');

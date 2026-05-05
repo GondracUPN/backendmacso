@@ -12,6 +12,9 @@ import { WalletModule } from './wallet/wallet.module';
 import { CardsModule } from './cards/cards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { SchedulesModule } from './schedules/schedules.module';
+import { OcrModule } from './ocr/ocr.module';
+import { SickwModule } from './sickw/sickw.module';
+import { CatalogModule } from './catalog/catalog.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { EbayPawn } from './ebay-pawn.entity';
@@ -63,6 +66,9 @@ import { EbayPawn } from './ebay-pawn.entity';
     TrackingModule,
     AnalyticsModule,
     SchedulesModule,
+    OcrModule,
+    SickwModule,
+    CatalogModule,
   ],
   controllers: [AppController],
   providers: [AppService],

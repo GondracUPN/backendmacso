@@ -4,7 +4,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
-import { text } from 'express';
+import { json, text } from 'express';
 import {
   assertExpectedDbTargetOrThrow,
   assertRequiredColumnsOrThrow,
@@ -15,11 +15,12 @@ import {
 
 async function bootstrap() {
   // cors: false aquí para configurarlo explícitamente después
-  const app = await NestFactory.create(AppModule, { cors: false });
+  const app = await NestFactory.create(AppModule, { cors: false, bodyParser: false });
 
   const cfg = app.get(ConfigService);
   const dataSource = app.get(DataSource);
   app.use('/tm/amazon-template', text({ type: 'text/plain', limit: '3mb' }));
+  app.use(json({ limit: '14mb' }));
 
   // Seguridad básica (opcional)
   // app.use(helmet());
@@ -151,6 +152,25 @@ async function bootstrap() {
       );
       await dataSource.query(
         `CREATE INDEX IF NOT EXISTS "idx_ebay_pawns_seller" ON "${schema}"."ebay_pawns" ("seller")`,
+      );
+      await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."app_catalog_items" (
+          "id" SERIAL PRIMARY KEY,
+          "kind" varchar(40) NOT NULL,
+          "productType" varchar(40),
+          "family" varchar(80),
+          "value" varchar(140) NOT NULL,
+          "label" varchar(140) NOT NULL,
+          "appliesDebit" boolean NOT NULL DEFAULT false,
+          "appliesCredit" boolean NOT NULL DEFAULT false,
+          "metadata" jsonb,
+          "active" boolean NOT NULL DEFAULT true,
+          "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_app_catalog_kind_active" ON "${schema}"."app_catalog_items" ("kind", "active")`,
       );
       await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
