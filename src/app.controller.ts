@@ -335,6 +335,19 @@ const PAWN_APPLE_PRODUCT_QUERIES = [
   { key: 'airtag', label: 'AirTag', query: 'airtag' },
 ] as const;
 
+const EXTENDED_APPLE_ALL_QUERY_GROUPS = [
+  { key: 'airpods', label: 'AirPods', query: 'apple airpods', family: 'airpods' },
+  { key: 'apple-watch', label: 'Apple Watch', query: 'apple watch', family: 'apple-watch' },
+  { key: 'imac', label: 'iMac', query: 'apple imac', family: 'imac' },
+  { key: 'mac-mini', label: 'Mac mini', query: 'apple mac mini', family: 'mac-mini' },
+  { key: 'apple-pencil', label: 'Apple Pencil', query: 'apple pencil', family: 'accessories' },
+  { key: 'magic-keyboard', label: 'Magic Keyboard', query: 'apple magic keyboard', family: 'accessories' },
+  { key: 'magic-mouse', label: 'Magic Mouse', query: 'apple magic mouse', family: 'accessories' },
+  { key: 'magic-trackpad', label: 'Magic Trackpad', query: 'apple magic trackpad', family: 'accessories' },
+  { key: 'magsafe-charger', label: 'MagSafe Charger', query: 'apple magsafe charger', family: 'accessories' },
+  { key: 'apple-accessories', label: 'Accesorios Apple', query: 'apple accessories', family: 'accessories' },
+] as const;
+
 const MACBOOK_AUCTION_QUERY_GROUPS = [
   { key: 'macbook-air-m1', label: 'MacBook Air M1', query: 'apple macbook air m1' },
   { key: 'macbook-air-m2', label: 'MacBook Air M2', query: 'apple macbook air m2' },
@@ -1434,12 +1447,45 @@ const isLikelyAppleDeviceTitle = (title: string, family: 'ipad' | 'iphone' | 'ma
     MACBOOK_ORDER_CODE_PATTERN.test(normalized);
 };
 
+const getAppleCollectionFamilyLabel = (family: string) => {
+  const labels: Record<string, string> = {
+    ipad: 'iPad',
+    iphone: 'iPhone',
+    macbook: 'MacBook',
+    airpods: 'AirPods',
+    'apple-watch': 'Apple Watch',
+    imac: 'iMac',
+    'mac-mini': 'Mac mini',
+    accessories: 'Accesorios',
+  };
+  return labels[family] || family;
+};
+
+const isLikelyExtendedAppleTitle = (title: string, family: string) => {
+  const normalized = normalizeLookupText(title);
+  if (family === 'airpods') return /\bair\s*pods?\b|\bairpods?\b/.test(normalized);
+  if (family === 'apple-watch') return /\bapple\s+watch\b|\biwatch\b/.test(normalized);
+  if (family === 'imac') return /\bi\s*mac\b|\bimac\b/.test(normalized);
+  if (family === 'mac-mini') return /\bmac\s*mini\b|\bmacmini\b/.test(normalized);
+  if (family === 'accessories') {
+    const appleSignal = /\bapple\b|\bmacbook\b|\bipad\b|\biphone\b|\bwatch\b|\bmagsafe\b|\bmagic\s+(?:keyboard|mouse|trackpad)\b|\bapple\s+pencil\b/.test(normalized);
+    const accessorySignal = hasAppleAccessoryKeyword(normalized) ||
+      /\b(?:magic keyboard|magic mouse|magic trackpad|apple pencil|magsafe|charger|cable|adapter|case|cover|folio|sleeve|band|strap)\b/.test(normalized);
+    return appleSignal && accessorySignal;
+  }
+  return false;
+};
+
 const matchesAppleFamilyEntry = (
   title: string,
-  entry: { family: 'ipad' | 'iphone' | 'macbook'; key: string },
+  entry: { family: string; key: string },
 ) => {
   const normalized = normalizeLookupText(title);
-  if (!isLikelyAppleDeviceTitle(normalized, entry.family)) return false;
+  if (entry.family === 'ipad' || entry.family === 'iphone' || entry.family === 'macbook') {
+    if (!isLikelyAppleDeviceTitle(normalized, entry.family)) return false;
+  } else {
+    return isLikelyExtendedAppleTitle(normalized, entry.family);
+  }
 
   if (entry.family === 'iphone') {
     const key = String(entry.key || '').toLowerCase();
@@ -1836,16 +1882,30 @@ const fetchEbayAppleCollection = async (params?: {
   const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
   const targetOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
   const requestedFamily = String(params?.family || 'all').trim().toLowerCase();
+  const includeExtendedAll = requestedFamily === 'all' && params?.sort !== 'endingSoonest';
   const familyKeys = requestedFamily && requestedFamily !== 'all'
-    ? ([requestedFamily] as Array<'ipad' | 'iphone' | 'macbook'>)
-    : (['ipad', 'iphone', 'macbook'] as Array<'ipad' | 'iphone' | 'macbook'>);
+    ? [requestedFamily]
+    : [
+        'ipad',
+        'iphone',
+        'macbook',
+        ...(includeExtendedAll ? ['airpods', 'apple-watch', 'imac', 'mac-mini', 'accessories'] : []),
+      ];
 
-  const queryEntries = familyKeys.flatMap((familyKey) =>
-    (familyKey === 'macbook' ? MACBOOK_AUCTION_QUERY_GROUPS : APPLE_FAMILY_QUERY_GROUPS[familyKey]).map((entry) => ({
-      ...entry,
-      family: familyKey,
-    })),
-  );
+  const queryEntries = [
+    ...(requestedFamily && requestedFamily !== 'all'
+      ? ((requestedFamily === 'macbook' ? MACBOOK_AUCTION_QUERY_GROUPS : APPLE_FAMILY_QUERY_GROUPS[requestedFamily]).map((entry) => ({
+          ...entry,
+          family: requestedFamily,
+        })))
+      : (['ipad', 'iphone', 'macbook'] as const).flatMap((familyKey) =>
+          (familyKey === 'macbook' ? MACBOOK_AUCTION_QUERY_GROUPS : APPLE_FAMILY_QUERY_GROUPS[familyKey]).map((entry) => ({
+            ...entry,
+            family: familyKey,
+          })),
+        )),
+    ...(includeExtendedAll ? EXTENDED_APPLE_ALL_QUERY_GROUPS : []),
+  ];
 
   if (params?.pawnOnly) {
     const scanOffset = targetOffset;
@@ -1857,6 +1917,11 @@ const fetchEbayAppleCollection = async (params?: {
           { key: 'ipad', label: 'iPad', query: 'ipad', family: 'all' as const },
           { key: 'iphone', label: 'iPhone', query: 'iphone unlocked', family: 'all' as const },
           { key: 'macbook', label: 'MacBook', query: 'macbook', family: 'all' as const },
+          { key: 'airpods', label: 'AirPods', query: 'airpods', family: 'all' as const },
+          { key: 'apple-watch', label: 'Apple Watch', query: 'apple watch', family: 'all' as const },
+          { key: 'imac', label: 'iMac', query: 'imac', family: 'all' as const },
+          { key: 'mac-mini', label: 'Mac mini', query: 'mac mini', family: 'all' as const },
+          { key: 'accessories', label: 'Accesorios Apple', query: 'apple accessories', family: 'all' as const },
         ]
       : queryEntries;
     const collected: any[] = [];
@@ -1959,7 +2024,7 @@ const fetchEbayAppleCollection = async (params?: {
       rateLimited,
       groups: familyKeys.map((familyKey) => ({
         key: familyKey,
-        label: familyKey === 'ipad' ? 'iPad' : familyKey === 'iphone' ? 'iPhone' : 'MacBook',
+        label: getAppleCollectionFamilyLabel(familyKey),
         total: totalsByFamily.get(familyKey) || 0,
       })),
       items: merged,
@@ -1996,7 +2061,7 @@ const fetchEbayAppleCollection = async (params?: {
       entry.items.map((item: any) => ({
         ...item,
         family: entry.family,
-        familyLabel: entry.family === 'ipad' ? 'iPad' : entry.family === 'iphone' ? 'iPhone' : 'MacBook',
+        familyLabel: getAppleCollectionFamilyLabel(entry.family),
         familyEntryKey: entry.key,
       })),
     )
@@ -2042,7 +2107,7 @@ const fetchEbayAppleCollection = async (params?: {
     hasMore,
     groups: familyKeys.map((familyKey) => ({
       key: familyKey,
-      label: familyKey === 'ipad' ? 'iPad' : familyKey === 'iphone' ? 'iPhone' : 'MacBook',
+      label: getAppleCollectionFamilyLabel(familyKey),
       total: results
         .filter((entry) => entry.family === familyKey)
         .reduce((sum, entry) => sum + Number(entry.total || 0), 0),
