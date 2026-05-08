@@ -19,19 +19,21 @@ import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 export class VentaController {
   constructor(private readonly svc: VentaService) {}
 
-  // GET /ventas?from=YYYY-MM-DD&to=YYYY-MM-DD&unassigned=true&productoId=123
+  // GET /ventas?from=YYYY-MM-DD&to=YYYY-MM-DD&unassigned=true&productoId=123&vendedor=gonzalo
   @Get()
   list(
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('unassigned') unassigned?: string,
     @Query('productoId') productoId?: string,
+    @Query('vendedor') vendedor?: string,
   ) {
     return this.svc.findAll({
       from,
       to,
       unassigned: unassigned === 'true',
       productoId: productoId ? Number(productoId) : undefined,
+      vendedor,
     });
   }
 

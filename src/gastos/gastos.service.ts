@@ -2,8 +2,10 @@
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Gasto } from './entities/gasto.entity';
+import { GastoBudget } from './entities/gasto-budget.entity';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
+import { UpsertGastoBudgetDto } from './dto/upsert-gasto-budget.dto';
 import { Role } from '../auth/entities/user.entity';
 import { ScheduledCharge } from '../schedules/scheduled-charge.entity';
 import { CatalogService } from '../catalog/catalog.service';
@@ -48,6 +50,7 @@ function normConcept(con?: string) {
 export class GastosService {
   constructor(
     @InjectRepository(Gasto) private readonly repo: Repository<Gasto>,
+    @InjectRepository(GastoBudget) private readonly budgetsRepo: Repository<GastoBudget>,
     @InjectRepository(ScheduledCharge) private readonly schedulesRepo: Repository<ScheduledCharge>,
     private readonly catalogService: CatalogService,
   ) {}
@@ -198,6 +201,54 @@ export class GastosService {
 
   findAllByUser(userId: number) {
     return this.repo.find({ where: { userId }, order: { fecha: 'DESC', id: 'DESC' } });
+  }
+
+  private normalizeBudgetMonth(month?: string) {
+    const value = String(month || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(value)) {
+      throw new BadRequestException('Mes invalido. Usa formato YYYY-MM.');
+    }
+    return value;
+  }
+
+  private resolveBudgetUserId(userId: number, role: Role, targetUserId?: number) {
+    if (role === 'admin' && targetUserId && Number.isFinite(targetUserId) && targetUserId > 0) {
+      return targetUserId;
+    }
+    return userId;
+  }
+
+  async getBudget(userId: number, role: Role, month: string, targetUserId?: number) {
+    const budgetMonth = this.normalizeBudgetMonth(month);
+    const budgetUserId = this.resolveBudgetUserId(userId, role, targetUserId);
+    const row = await this.budgetsRepo.findOne({ where: { userId: budgetUserId, month: budgetMonth } });
+    return {
+      userId: budgetUserId,
+      month: budgetMonth,
+      amount: Number(row?.amount || 0),
+    };
+  }
+
+  async upsertBudget(userId: number, role: Role, dto: UpsertGastoBudgetDto, targetUserId?: number) {
+    const budgetMonth = this.normalizeBudgetMonth(dto.month);
+    const budgetUserId = this.resolveBudgetUserId(userId, role, targetUserId ?? dto.userId);
+    const amount = Math.max(0, Number(dto.amount) || 0);
+    let row = await this.budgetsRepo.findOne({ where: { userId: budgetUserId, month: budgetMonth } });
+    if (!row) {
+      row = this.budgetsRepo.create({
+        userId: budgetUserId,
+        month: budgetMonth,
+        amount: amount.toFixed(2),
+      });
+    } else {
+      row.amount = amount.toFixed(2);
+    }
+    const saved = await this.budgetsRepo.save(row);
+    return {
+      userId: saved.userId,
+      month: saved.month,
+      amount: Number(saved.amount || 0),
+    };
   }
 
   /** Admin */

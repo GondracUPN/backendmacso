@@ -46,6 +46,7 @@ export type ListVentasParams = {
   to?: string; // 'YYYY-MM-DD'
   unassigned?: boolean; // ventas cuyo producto no tiene vendedor
   productoId?: number; // opcional
+  vendedor?: string; // Gonzalo | Renato, incluye ventas compartidas
 };
 
 @Injectable()
@@ -80,6 +81,13 @@ export class VentaService {
     }
     if (params.unassigned) {
       qb.andWhere("(p.vendedor IS NULL OR p.vendedor = '')");
+    }
+    const vendedor = normalizeSeller(params.vendedor);
+    if (vendedor) {
+      qb.andWhere(
+        "(LOWER(COALESCE(v.vendedor, p.vendedor, '')) = :vendedor OR LOWER(COALESCE(v.vendedor, p.vendedor, '')) = 'ambos')",
+        { vendedor },
+      );
     }
 
     return qb

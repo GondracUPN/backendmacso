@@ -14,6 +14,7 @@ import {
 import { GastosService } from './gastos.service';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
+import { UpsertGastoBudgetDto } from './dto/upsert-gasto-budget.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -39,6 +40,24 @@ export class GastosController {
   findAll(@Query('userId') userId?: string) {
     if (userId) return this.svc.findAllByUser(Number(userId));
     return this.svc.findAll();
+  }
+
+  @Get('budget')
+  getBudget(
+    @CurrentUser() user: JwtUserPayload,
+    @Query('month') month: string,
+    @Query('userId') userId?: string,
+  ) {
+    return this.svc.getBudget(user.userId, user.role, month, userId ? Number(userId) : undefined);
+  }
+
+  @Post('budget')
+  upsertBudget(
+    @CurrentUser() user: JwtUserPayload,
+    @Body() dto: UpsertGastoBudgetDto,
+    @Query('userId') userId?: string,
+  ) {
+    return this.svc.upsertBudget(user.userId, user.role, dto, userId ? Number(userId) : undefined);
   }
 
   // Obtener un gasto por id (propio o admin)
