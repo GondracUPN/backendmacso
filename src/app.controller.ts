@@ -290,6 +290,7 @@ const APPLE_FAMILY_QUERY_GROUPS = {
   ],
   iphone: [
     { key: 'iphone-13', label: 'iPhone 13', query: 'apple iphone 13 unlocked' },
+    { key: 'iphone-13-mini', label: 'iPhone 13 Mini', query: 'apple iphone 13 mini unlocked' },
     { key: 'iphone-13-pro', label: 'iPhone 13 Pro', query: 'apple iphone 13 pro unlocked' },
     { key: 'iphone-13-pro-max', label: 'iPhone 13 Pro Max', query: 'apple iphone 13 pro max unlocked' },
     { key: 'iphone-14', label: 'iPhone 14', query: 'apple iphone 14 unlocked' },
@@ -357,18 +358,23 @@ const MACBOOK_AUCTION_QUERY_GROUPS = [
   { key: 'macbook-pro-m1', label: 'MacBook Pro M1', query: 'apple macbook pro m1' },
   { key: 'macbook-pro-m1-pro', label: 'MacBook Pro M1 Pro', query: 'apple macbook m1 pro' },
   { key: 'macbook-pro-m1-max', label: 'MacBook Pro M1 Max', query: 'apple macbook m1 max' },
+  { key: 'macbook-pro-m1-ultra', label: 'MacBook Pro M1 Ultra', query: 'apple macbook m1 ultra' },
   { key: 'macbook-pro-m2', label: 'MacBook Pro M2', query: 'apple macbook pro m2' },
   { key: 'macbook-pro-m2-pro', label: 'MacBook Pro M2 Pro', query: 'apple macbook m2 pro' },
   { key: 'macbook-pro-m2-max', label: 'MacBook Pro M2 Max', query: 'apple macbook m2 max' },
+  { key: 'macbook-pro-m2-ultra', label: 'MacBook Pro M2 Ultra', query: 'apple macbook m2 ultra' },
   { key: 'macbook-pro-m3', label: 'MacBook Pro M3', query: 'apple macbook pro m3' },
   { key: 'macbook-pro-m3-pro', label: 'MacBook Pro M3 Pro', query: 'apple macbook m3 pro' },
   { key: 'macbook-pro-m3-max', label: 'MacBook Pro M3 Max', query: 'apple macbook m3 max' },
+  { key: 'macbook-pro-m3-ultra', label: 'MacBook Pro M3 Ultra', query: 'apple macbook m3 ultra' },
   { key: 'macbook-pro-m4', label: 'MacBook Pro M4', query: 'apple macbook pro m4' },
   { key: 'macbook-pro-m4-pro', label: 'MacBook Pro M4 Pro', query: 'apple macbook m4 pro' },
   { key: 'macbook-pro-m4-max', label: 'MacBook Pro M4 Max', query: 'apple macbook m4 max' },
+  { key: 'macbook-pro-m4-ultra', label: 'MacBook Pro M4 Ultra', query: 'apple macbook m4 ultra' },
   { key: 'macbook-pro-m5', label: 'MacBook Pro M5', query: 'apple macbook pro m5' },
   { key: 'macbook-pro-m5-pro', label: 'MacBook Pro M5 Pro', query: 'apple macbook m5 pro' },
   { key: 'macbook-pro-m5-max', label: 'MacBook Pro M5 Max', query: 'apple macbook m5 max' },
+  { key: 'macbook-pro-m5-ultra', label: 'MacBook Pro M5 Ultra', query: 'apple macbook m5 ultra' },
   { key: 'macbook-neo-a18-pro', label: 'MacBook Neo A18 Pro', query: 'apple macbook neo a18 pro' },
   { key: 'macbook-model-a2336', label: 'MacBook A2336', query: 'apple macbook a2336' },
   { key: 'macbook-model-a2337', label: 'MacBook A2337', query: 'apple macbook a2337' },
@@ -383,6 +389,15 @@ const MACBOOK_AUCTION_QUERY_GROUPS = [
   { key: 'macbook-model-a2992', label: 'MacBook A2992', query: 'apple macbook a2992' },
   { key: 'macbook-model-a3113', label: 'MacBook A3113', query: 'apple macbook a3113' },
   { key: 'macbook-order-ll-a', label: 'MacBook LL/A', query: 'apple macbook ll/a' },
+] as const;
+
+const DESKTOP_AUCTION_QUERY_GROUPS = [
+  { key: 'imac-m1', label: 'iMac M1', query: 'apple imac m1', family: 'imac' },
+  { key: 'imac-m3', label: 'iMac M3', query: 'apple imac m3', family: 'imac' },
+  { key: 'imac-m4', label: 'iMac M4', query: 'apple imac m4', family: 'imac' },
+  { key: 'mac-mini-m1', label: 'Mac mini M1', query: 'apple mac mini m1', family: 'mac-mini' },
+  { key: 'mac-mini-m2', label: 'Mac mini M2', query: 'apple mac mini m2', family: 'mac-mini' },
+  { key: 'mac-mini-m4', label: 'Mac mini M4', query: 'apple mac mini m4', family: 'mac-mini' },
 ] as const;
 
 let ebayTokenCache: { token: string; expiresAt: number; source: 'refresh_token' | 'client_credentials' | 'static' } | null = null;
@@ -1412,7 +1427,7 @@ const isAccessoryTitle = (
   return false;
 };
 
-const MACBOOK_CHIP_PATTERN = /\b(?:m[1-5](?:\s+(?:pro|max))?|a18\s*pro)\b/;
+const MACBOOK_CHIP_PATTERN = /\b(?:m[1-5](?:\s+(?:pro|max|ultra))?|a18\s*pro)\b/;
 const MACBOOK_MODEL_NUMBER_PATTERN = /\ba(?:2336|2337|2338|2442|2485|2681|2779|2918|2941|2991|2992|3113|3185)\b/;
 const MACBOOK_ORDER_CODE_PATTERN = /\b[a-z0-9]{3,6}ll\/a\b/;
 const MACBOOK_INTEL_PATTERN = /\b(?:intel|core\s+i[3579]|i[3579][-\s]?\d{3,5})\b/;
@@ -1455,12 +1470,23 @@ const getAppleCollectionFamilyLabel = (family: string) => {
   return labels[family] || family;
 };
 
-const isLikelyExtendedAppleTitle = (title: string, family: string) => {
+const getRequiredChipFromEntryKey = (key: string) => {
+  const match = String(key || '').toLowerCase().match(/\bm[1-5]\b/);
+  return match ? match[0] : '';
+};
+
+const titleHasRequiredAppleChip = (normalized: string, key: string) => {
+  const requiredChip = getRequiredChipFromEntryKey(key);
+  if (!requiredChip) return true;
+  return new RegExp(`\\b${requiredChip}\\b`).test(normalized);
+};
+
+const isLikelyExtendedAppleTitle = (title: string, family: string, key = '') => {
   const normalized = normalizeLookupText(title);
   if (family === 'airpods') return /\bair\s*pods?\b|\bairpods?\b/.test(normalized);
   if (family === 'apple-watch') return /\bapple\s+watch\b|\biwatch\b/.test(normalized);
-  if (family === 'imac') return /\bi\s*mac\b|\bimac\b/.test(normalized);
-  if (family === 'mac-mini') return /\bmac\s*mini\b|\bmacmini\b/.test(normalized);
+  if (family === 'imac') return (/\bi\s*mac\b|\bimac\b/.test(normalized)) && titleHasRequiredAppleChip(normalized, key);
+  if (family === 'mac-mini') return (/\bmac\s*mini\b|\bmacmini\b/.test(normalized)) && titleHasRequiredAppleChip(normalized, key);
   if (family === 'accessories') {
     const appleSignal = /\bapple\b|\bmacbook\b|\bipad\b|\biphone\b|\bwatch\b|\bmagsafe\b|\bmagic\s+(?:keyboard|mouse|trackpad)\b|\bapple\s+pencil\b/.test(normalized);
     const accessorySignal = hasAppleAccessoryKeyword(normalized) ||
@@ -1478,7 +1504,7 @@ const matchesAppleFamilyEntry = (
   if (entry.family === 'ipad' || entry.family === 'iphone' || entry.family === 'macbook') {
     if (!isLikelyAppleDeviceTitle(normalized, entry.family)) return false;
   } else {
-    return isLikelyExtendedAppleTitle(normalized, entry.family);
+    return isLikelyExtendedAppleTitle(normalized, entry.family, entry.key);
   }
 
   if (entry.family === 'iphone') {
@@ -1506,6 +1532,14 @@ const matchesAppleFamilyEntry = (
     return !normalized.includes('plus') && !normalized.includes('pro') && !normalized.includes('max');
   }
 
+  return true;
+};
+
+const isTrustedEbaySeller = (item: any) => {
+  const feedbackPercentage = parsePriceValue(item?.sellerFeedbackPercentage ?? item?.seller?.feedbackPercentage);
+  const feedbackScore = parsePriceValue(item?.sellerFeedbackScore ?? item?.seller?.feedbackScore);
+  if (feedbackPercentage === 0) return false;
+  if (feedbackScore === 0) return false;
   return true;
 };
 
@@ -1545,6 +1579,7 @@ const normalizeEbayBrowseItems = (params: {
       };
     })
     .filter((item: any) => item.title && item.itemWebUrl)
+    .filter((item: any) => isTrustedEbaySeller(item))
     .sort((a: any, b: any) => {
       const timeA = Date.parse(a.itemOriginDate || a.itemCreationDate || '') || 0;
       const timeB = Date.parse(b.itemOriginDate || b.itemCreationDate || '') || 0;
@@ -1892,7 +1927,9 @@ const fetchEbayAppleCollection = async (params?: {
   const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
   const targetOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
   const requestedFamily = String(params?.family || 'all').trim().toLowerCase();
-  const includeExtendedAll = requestedFamily === 'all' && params?.sort !== 'endingSoonest';
+  const isAuctionSort = params?.sort === 'endingSoonest';
+  const includeExtendedAll = requestedFamily === 'all' && !isAuctionSort;
+  const includeDesktopAuctionAll = requestedFamily === 'all' && isAuctionSort;
   const familyKeys = requestedFamily && requestedFamily !== 'all'
     ? [requestedFamily]
     : [
@@ -1900,6 +1937,7 @@ const fetchEbayAppleCollection = async (params?: {
         'iphone',
         'macbook',
         ...(includeExtendedAll ? ['airpods', 'apple-watch', 'imac', 'mac-mini', 'accessories'] : []),
+        ...(includeDesktopAuctionAll ? ['imac', 'mac-mini'] : []),
       ];
 
   const queryEntries = [
@@ -1915,6 +1953,7 @@ const fetchEbayAppleCollection = async (params?: {
           })),
         )),
     ...(includeExtendedAll ? EXTENDED_APPLE_ALL_QUERY_GROUPS : []),
+    ...(includeDesktopAuctionAll ? DESKTOP_AUCTION_QUERY_GROUPS : []),
   ];
 
   if (params?.pawnOnly) {
