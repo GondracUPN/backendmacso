@@ -154,6 +154,59 @@ async function bootstrap() {
         `CREATE INDEX IF NOT EXISTS "idx_ebay_pawns_seller" ON "${schema}"."ebay_pawns" ("seller")`,
       );
       await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."ebay_search_items" (
+          "id" SERIAL PRIMARY KEY,
+          "search_key" varchar(80) NOT NULL,
+          "item_key" varchar(255) NOT NULL,
+          "query" varchar(500) NOT NULL,
+          "condition" varchar(40),
+          "buying_options" varchar(80),
+          "sort" varchar(40) NOT NULL,
+          "pawn_only" boolean NOT NULL DEFAULT false,
+          "ebay_offset" integer,
+          "listed_at" TIMESTAMPTZ,
+          "item" jsonb NOT NULL,
+          "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_ebay_search_items_key_item" ON "${schema}"."ebay_search_items" ("search_key", "item_key")`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_ebay_search_items_key_listed" ON "${schema}"."ebay_search_items" ("search_key", "listed_at" DESC)`,
+      );
+      await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."ebay_search_state" (
+          "id" SERIAL PRIMARY KEY,
+          "search_key" varchar(80) NOT NULL,
+          "next_ebay_offset" integer NOT NULL DEFAULT 0,
+          "last_cache_total" integer NOT NULL DEFAULT 0,
+          "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_ebay_search_state_key" ON "${schema}"."ebay_search_state" ("search_key")`,
+      );
+      await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."ebay_viewed_items" (
+          "id" SERIAL PRIMARY KEY,
+          "item_key" varchar(255) NOT NULL,
+          "item_url" varchar(1000),
+          "title" varchar(500),
+          "viewed_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_ebay_viewed_items_key" ON "${schema}"."ebay_viewed_items" ("item_key")`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_ebay_viewed_items_viewed_at" ON "${schema}"."ebay_viewed_items" ("viewed_at" DESC)`,
+      );
+      await dataSource.query(
         `CREATE TABLE IF NOT EXISTS "${schema}"."app_catalog_items" (
           "id" SERIAL PRIMARY KEY,
           "kind" varchar(40) NOT NULL,
@@ -221,7 +274,7 @@ async function bootstrap() {
       console.log('[BOOT][DB_SCHEMA_FIX] error', (e as any)?.message || e);
     }
 
-    const tables = ['ebay_pawns', 'producto', 'producto_detalle', 'producto_valor', 'tracking'];
+    const tables = ['ebay_pawns', 'ebay_search_items', 'ebay_search_state', 'ebay_viewed_items', 'producto', 'producto_detalle', 'producto_valor', 'tracking'];
     for (const tbl of tables) {
       try {
         const cols = await dataSource.query(

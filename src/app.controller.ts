@@ -3,11 +3,15 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import { EbayPawn } from './ebay-pawn.entity';
+import { EbaySearchItem } from './ebay-search-item.entity';
+import { EbaySearchState } from './ebay-search-state.entity';
+import { EbayViewedItem } from './ebay-viewed-item.entity';
 import type { Request, Response } from 'express';
 import * as archiver from 'archiver';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -1275,7 +1279,8 @@ const matchesPawnSellerName = (item: any) => {
     item?.seller?.username,
     item?.seller?.userId,
   ].join(' ');
-  return normalizeCompactLookupText(sellerText).includes('pawn');
+  const normalized = normalizeCompactLookupText(sellerText);
+  return normalized.includes('pawn') || normalized.includes('paymore');
 };
 
 const matchesPawnInventoryCode = (item: any) =>
@@ -1309,6 +1314,160 @@ const getPawnScanMaxPages = (fallback: number) => {
   const raw = Number(process.env.EBAY_PAWN_SCAN_MAX_PAGES || fallback);
   if (!Number.isFinite(raw)) return fallback;
   return Math.max(1, Math.min(20, raw));
+};
+
+const getEbayCacheItemKey = (item: any) =>
+  String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
+
+const normalizeEbayViewedKey = (value: any) =>
+  String(value || '').trim().slice(0, 255);
+
+const getEbayCacheListedAt = (item: any) => {
+  const raw = String(item?.itemOriginDate || item?.itemCreationDate || item?.itemEndDate || '').trim();
+  if (!raw) return null;
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? new Date(ts) : null;
+};
+
+const buildEbaySearchCacheKey = (params?: {
+  query?: string;
+  condition?: string;
+  buyingOptions?: string;
+  sort?: string;
+  pawnOnly?: boolean;
+}) => {
+  const payload = {
+    query: normalizeLookupText(String(params?.query || 'apple').trim() || 'apple'),
+    condition: normalizeLookupText(String(params?.condition || '')),
+    buyingOptions: normalizeLookupText(String(params?.buyingOptions || '')),
+    sort: normalizeLookupText(String(params?.sort || 'newlyListed')),
+    pawnOnly: Boolean(params?.pawnOnly),
+    sourceRule: params?.pawnOnly ? 'pawn-or-paymore-v2' : 'default',
+  };
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+};
+
+const loadCachedEbaySearchItems = async (
+  repo: Repository<EbaySearchItem> | undefined,
+  params: {
+    searchKey: string;
+    skip: number;
+    take: number;
+  },
+) => {
+  if (!repo) return { items: [], total: 0, hasMore: false };
+  const skip = Math.max(0, Number(params.skip) || 0);
+  const take = Math.min(200, Math.max(1, Number(params.take) || 140));
+  const [rows, total] = await repo.findAndCount({
+    where: { searchKey: params.searchKey },
+    order: { listedAt: 'DESC', updatedAt: 'DESC', id: 'DESC' },
+    skip,
+    take,
+  });
+  return {
+    items: rows.map((row) => row.item).filter(Boolean),
+    total,
+    hasMore: skip + rows.length < total,
+  };
+};
+
+const loadExistingEbayCacheItemKeys = async (
+  repo: Repository<EbaySearchItem> | undefined,
+  searchKey: string,
+  keys: string[],
+) => {
+  if (!repo || keys.length === 0) return new Set<string>();
+  const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+  if (uniqueKeys.length === 0) return new Set<string>();
+  const rows = await repo.find({
+    select: { itemKey: true } as any,
+    where: { searchKey, itemKey: In(uniqueKeys) },
+  });
+  return new Set(rows.map((row) => row.itemKey));
+};
+
+const saveEbaySearchItemsToCache = async (
+  repo: Repository<EbaySearchItem> | undefined,
+  params: {
+    searchKey: string;
+    query?: string;
+    condition?: string;
+    buyingOptions?: string;
+    sort?: string;
+    pawnOnly?: boolean;
+    ebayOffset?: number;
+    items: any[];
+  },
+) => {
+  if (!repo || !Array.isArray(params.items) || params.items.length === 0) {
+    return { duplicateDetected: false, saved: 0, newKeys: [] as string[] };
+  }
+
+  const keys = Array.from(new Set(params.items.map(getEbayCacheItemKey).filter(Boolean)));
+  if (keys.length === 0) return { duplicateDetected: false, saved: 0, newKeys: [] as string[] };
+
+  const existing = await repo.find({
+    select: { itemKey: true } as any,
+    where: { searchKey: params.searchKey, itemKey: In(keys) },
+  });
+  const existingKeys = new Set(existing.map((row) => row.itemKey));
+  const now = new Date();
+  const rows = params.items
+    .map((item) => {
+      const itemKey = getEbayCacheItemKey(item);
+      if (!itemKey) return null;
+      return repo.create({
+        searchKey: params.searchKey,
+        itemKey,
+        query: String(params.query || 'apple').trim() || 'apple',
+        condition: String(params.condition || '').trim() || null,
+        buyingOptions: String(params.buyingOptions || '').trim() || null,
+        sort: String(params.sort || 'newlyListed').trim() || 'newlyListed',
+        pawnOnly: Boolean(params.pawnOnly),
+        ebayOffset: Number.isFinite(Number(params.ebayOffset)) ? Number(params.ebayOffset) : null,
+        listedAt: getEbayCacheListedAt(item),
+        item,
+        updatedAt: now,
+      });
+    })
+    .filter((row): row is EbaySearchItem => Boolean(row));
+
+  await repo.upsert(rows, {
+    conflictPaths: ['searchKey', 'itemKey'],
+    skipUpdateIfNoValuesChanged: true,
+  });
+
+  return {
+    duplicateDetected: keys.some((key) => existingKeys.has(key)),
+    saved: rows.length,
+    newKeys: keys.filter((key) => !existingKeys.has(key)),
+  };
+};
+
+const loadEbaySearchState = async (
+  repo: Repository<EbaySearchState> | undefined,
+  searchKey: string,
+) => {
+  if (!repo) return null;
+  return repo.findOne({ where: { searchKey } });
+};
+
+const saveEbaySearchState = async (
+  repo: Repository<EbaySearchState> | undefined,
+  params: { searchKey: string; nextEbayOffset: number; lastCacheTotal?: number },
+) => {
+  if (!repo) return null;
+  const current = await repo.findOne({ where: { searchKey: params.searchKey } });
+  const nextEbayOffset = Math.max(
+    Number(current?.nextEbayOffset || 0),
+    Math.max(0, Number(params.nextEbayOffset || 0)),
+  );
+  const row = current || repo.create({ searchKey: params.searchKey });
+  row.nextEbayOffset = nextEbayOffset;
+  if (Number.isFinite(Number(params.lastCacheTotal))) {
+    row.lastCacheTotal = Math.max(Number(row.lastCacheTotal || 0), Number(params.lastCacheTotal || 0));
+  }
+  return repo.save(row);
 };
 
 const getTitleKeywordTokenGroups = (rawQuery?: string) => {
@@ -1684,8 +1843,9 @@ const searchEbayItems = async (params?: {
   }
 
   const data = await res.json();
+  const rawItems = Array.isArray(data?.itemSummaries) ? data.itemSummaries : [];
   const items = normalizeEbayBrowseItems({
-    items: Array.isArray(data?.itemSummaries) ? data.itemSummaries : [],
+    items: rawItems,
     storeEntries: params?.storeEntries,
   });
 
@@ -1695,6 +1855,9 @@ const searchEbayItems = async (params?: {
     limit,
     offset,
     total: Number(data?.total || items.length || 0),
+    nextOffset: offset + limit,
+    hasMore: offset + limit < Number(data?.total || items.length || 0),
+    rawCount: rawItems.length,
     sellers: params?.storeEntries || [],
     items,
   };
@@ -1755,8 +1918,8 @@ const fetchEbayStoreFeed = async (params?: {
 
     exhausted = results.every((result) => {
       const total = Number(result?.total || 0);
-      const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
-      return itemCount < perQueryLimit || pageOffset + perQueryLimit >= total;
+      const rawCount = Number(result?.rawCount ?? (Array.isArray(result?.items) ? result.items.length : 0));
+      return rawCount < perQueryLimit || pageOffset + perQueryLimit >= total;
     });
 
     if (collected.length >= desiredCount || exhausted) break;
@@ -1790,13 +1953,50 @@ const fetchEbayCatalogSearch = async (params?: {
   query?: string;
   limit?: number;
   offset?: number;
+  cacheOffset?: number;
+  preferCache?: boolean;
   condition?: string;
   buyingOptions?: string;
   sort?: string;
   pawnOnly?: boolean;
+  cacheRepo?: Repository<EbaySearchItem>;
+  stateRepo?: Repository<EbaySearchState>;
 }) => {
+  const cacheRepo = params?.cacheRepo;
+  const stateRepo = params?.stateRepo;
+  const searchKey = buildEbaySearchCacheKey(params);
+  const cacheTake = Math.min(200, Math.max(1, Number(params?.limit || 140)));
+  const cacheOffset = Math.max(0, Number(params?.cacheOffset || 0));
+  const searchState = await loadEbaySearchState(stateRepo, searchKey);
+  const stateNextEbayOffset = Math.max(0, Number(searchState?.nextEbayOffset || 0));
+
+  if (params?.preferCache && cacheRepo) {
+    const cached = await loadCachedEbaySearchItems(cacheRepo, {
+      searchKey,
+      skip: cacheOffset,
+      take: cacheTake,
+    });
+    if (cached.items.length > 0) {
+      return {
+        query: String(params?.query || 'apple').trim() || 'apple',
+        sort: params?.sort || 'newlyListed',
+        limit: cacheTake,
+        offset: Math.max(0, Number(params?.offset || 0)),
+        nextOffset: Math.max(Math.max(0, Number(params?.offset || 0)), stateNextEbayOffset),
+        cacheOffset,
+        nextCacheOffset: cacheOffset + cached.items.length,
+        nextPreferCache: cached.hasMore,
+        cacheTotal: cached.total,
+        fromCache: true,
+        hasMore: true,
+        sellers: [],
+        items: cached.items,
+      };
+    }
+  }
+
   if (!params?.pawnOnly) {
-    return searchEbayItems({
+    const data = await searchEbayItems({
       query: params?.query,
       limit: params?.limit,
       offset: params?.offset,
@@ -1804,15 +2004,39 @@ const fetchEbayCatalogSearch = async (params?: {
       buyingOptions: params?.buyingOptions,
       sort: params?.sort,
     });
+    const saved = await saveEbaySearchItemsToCache(cacheRepo, {
+      searchKey,
+      query: params?.query,
+      condition: params?.condition,
+      buyingOptions: params?.buyingOptions,
+      sort: params?.sort,
+      pawnOnly: false,
+      ebayOffset: params?.offset,
+      items: data.items,
+    });
+    const shouldReadCacheNext = saved.duplicateDetected && cacheOffset === 0;
+    return {
+      ...data,
+      cacheOffset,
+      nextCacheOffset: shouldReadCacheNext ? data.items.length : cacheOffset,
+      nextPreferCache: shouldReadCacheNext,
+      cacheSaved: saved.saved,
+      duplicateDetected: saved.duplicateDetected,
+    };
   }
 
   const targetLimitRaw = Number(params?.limit || 140);
   const targetOffsetRaw = Number(params?.offset || 0);
   const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
-  const scanOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
+  const requestedOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
+  const scanOffset = requestedOffset === 0 ? 0 : Math.max(requestedOffset, stateNextEbayOffset);
   const desiredCount = targetLimit;
   const perPageLimit = 200;
-  const maxPages = getPawnScanMaxPages(12);
+  const shouldSkipCachedDuringScan = Boolean(cacheRepo && cacheOffset > 0);
+  const minPages = 10;
+  const maxPages = shouldSkipCachedDuringScan
+    ? Math.max(minPages, getPawnScanMaxPages(20))
+    : Math.max(minPages, getPawnScanMaxPages(10));
   const collected: any[] = [];
   const seen = new Set<string>();
   let sort = 'newlyListed';
@@ -1880,23 +2104,55 @@ const fetchEbayCatalogSearch = async (params?: {
     }
 
     const pageItems = Array.isArray(data?.items) ? data.items : [];
+    const rawCount = Number(data?.rawCount ?? pageItems.length);
+    const pageCandidates: any[] = [];
+    const pageCandidateKeys: string[] = [];
     for (const item of pageItems) {
       if (!matchesPawnSource(item)) continue;
       if (!matchesAppleProductTitle(item)) continue;
       const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      collected.push(item);
+      pageCandidates.push(item);
+      pageCandidateKeys.push(key);
+    }
+
+    if (shouldSkipCachedDuringScan && pageCandidates.length > 0) {
+      const cachedKeys = await loadExistingEbayCacheItemKeys(cacheRepo, searchKey, pageCandidateKeys);
+      collected.push(...pageCandidates.filter((item) => !cachedKeys.has(getEbayCacheItemKey(item))));
+    } else {
+      collected.push(...pageCandidates);
     }
 
     exhausted = requestedSort === 'oldestListed'
       ? pageOffset === 0
-      : pageItems.length < perPageLimit || pageOffset + perPageLimit >= Number(data?.total || 0);
-    if (collected.length >= desiredCount || exhausted) break;
+      : rawCount < perPageLimit || pageOffset + perPageLimit >= Number(data?.total || 0);
+    const scannedPages = page + 1;
+    if ((scannedPages >= minPages && collected.length >= desiredCount) || exhausted) break;
   }
 
   const items = sortEbayByListedDate(collected, requestedSort);
   const hasMore = !exhausted;
+  const saved = await saveEbaySearchItemsToCache(cacheRepo, {
+    searchKey,
+    query: params?.query,
+    condition: params?.condition,
+    buyingOptions: params?.buyingOptions,
+    sort: requestedSort,
+    pawnOnly: true,
+    ebayOffset: scanOffset,
+    items,
+  });
+  await saveEbaySearchState(stateRepo, {
+    searchKey,
+    nextEbayOffset: nextOffset,
+    lastCacheTotal: cacheOffset + items.length,
+  });
+  const nextPreferCache = saved.duplicateDetected && cacheOffset === 0;
+  const newKeySet = new Set(saved.newKeys || []);
+  const returnItems = shouldSkipCachedDuringScan
+    ? items.filter((item) => newKeySet.has(getEbayCacheItemKey(item)))
+    : items;
 
   return {
     query: String(params?.query || 'apple').trim() || 'apple',
@@ -1904,12 +2160,17 @@ const fetchEbayCatalogSearch = async (params?: {
     limit: targetLimit,
     offset: scanOffset,
     nextOffset,
-    total: hasMore ? Math.max(searchedTotal, scanOffset + collected.length) : scanOffset + collected.length,
-    filteredTotal: collected.length,
+    cacheOffset,
+    nextCacheOffset: nextPreferCache ? items.length : cacheOffset,
+    nextPreferCache,
+    cacheSaved: saved.saved,
+    duplicateDetected: saved.duplicateDetected,
+    total: hasMore ? Math.max(searchedTotal, scanOffset + returnItems.length) : scanOffset + returnItems.length,
+    filteredTotal: returnItems.length,
     hasMore,
     rateLimited,
     sellers: [],
-    items,
+    items: returnItems,
   };
 };
 
@@ -2016,7 +2277,7 @@ const fetchEbayAppleCollection = async (params?: {
     for (let page = 0; !rateLimited && page < maxPages; page += 1) {
       const cursor = scanOffset + page * perQueryLimit;
       nextOffset = cursor + perQueryLimit;
-      const results: Array<(typeof pawnQueryEntries)[number] & { total: number; items: any[] }> = [];
+      const results: Array<(typeof pawnQueryEntries)[number] & { total: number; rawCount: number; items: any[] }> = [];
       for (const entry of pawnQueryEntries) {
         const pageOffset = requestedSort === 'oldestListed'
           ? getEbayNewestSortedOffsetFromOldestCursor(
@@ -2038,6 +2299,7 @@ const fetchEbayAppleCollection = async (params?: {
           results.push({
             ...entry,
             total: Number(data?.total || 0),
+            rawCount: Number(data?.rawCount || 0),
             items: Array.isArray(data?.items) ? data.items : [],
           });
         } catch (err) {
@@ -2096,8 +2358,8 @@ const fetchEbayAppleCollection = async (params?: {
           )
         : results.every((result) => {
             const total = Number(result?.total || 0);
-            const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
-            return itemCount < perQueryLimit || cursor + perQueryLimit >= total;
+            const rawCount = Number(result?.rawCount ?? (Array.isArray(result?.items) ? result.items.length : 0));
+            return rawCount < perQueryLimit || cursor + perQueryLimit >= total;
           });
 
       if (collected.length >= desiredCount || exhausted || rateLimited) break;
@@ -2263,6 +2525,12 @@ export class AppController {
     private readonly analyticsService: AnalyticsService,
     @InjectRepository(EbayPawn)
     private readonly ebayPawnsRepo: Repository<EbayPawn>,
+    @InjectRepository(EbaySearchItem)
+    private readonly ebaySearchItemsRepo: Repository<EbaySearchItem>,
+    @InjectRepository(EbaySearchState)
+    private readonly ebaySearchStateRepo: Repository<EbaySearchState>,
+    @InjectRepository(EbayViewedItem)
+    private readonly ebayViewedItemsRepo: Repository<EbayViewedItem>,
   ) {}
 
   private mapEbayPawnEntity(entity: EbayPawn): EbayStoreEntry {
@@ -2625,6 +2893,55 @@ export class AppController {
     };
   }
 
+  @Get('utils/ebay/viewed')
+  async getViewedEbayItems() {
+    const rows = await this.ebayViewedItemsRepo.find({
+      order: { viewedAt: 'DESC', id: 'DESC' },
+      take: 5000,
+    });
+    return {
+      total: rows.length,
+      items: rows.map((row) => ({
+        itemKey: row.itemKey,
+        itemUrl: row.itemUrl,
+        title: row.title,
+        viewedAt: row.viewedAt,
+      })),
+    };
+  }
+
+  @Post('utils/ebay/viewed')
+  async markViewedEbayItem(@Body() body: any) {
+    const rawKeys = Array.isArray(body?.keys)
+      ? body.keys
+      : [body?.itemKey, body?.legacyItemId, body?.itemId, body?.itemUrl];
+    const keys = Array.from(new Set(rawKeys.map(normalizeEbayViewedKey).filter(Boolean))) as string[];
+    if (!keys.length) {
+      throw new BadRequestException('Debes enviar itemKey o keys');
+    }
+
+    const viewedAt = new Date();
+    const itemUrl = String(body?.itemUrl || '').trim().slice(0, 1000) || null;
+    const title = String(body?.title || '').trim().slice(0, 500) || null;
+    const rows = keys.map((itemKey) => this.ebayViewedItemsRepo.create({
+      itemKey,
+      itemUrl,
+      title,
+      viewedAt,
+    }));
+
+    await this.ebayViewedItemsRepo.upsert(rows, {
+      conflictPaths: ['itemKey'],
+      skipUpdateIfNoValuesChanged: true,
+    });
+
+    return {
+      ok: true,
+      viewedAt,
+      keys,
+    };
+  }
+
   @Post('utils/ebay/pawns')
   async addSavedEbayPawn(@Body() body: any) {
     logEbayPawnStore('add-single:start', {
@@ -2815,6 +3132,8 @@ export class AppController {
     @Query('q') q?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('cacheOffset') cacheOffset?: string,
+    @Query('preferCache') preferCache?: string,
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
     @Query('sort') sort?: string,
@@ -2824,10 +3143,14 @@ export class AppController {
       query: q,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
+      cacheOffset: cacheOffset ? Number(cacheOffset) : undefined,
+      preferCache: isTruthyQueryFlag(preferCache),
       condition,
       buyingOptions,
       sort,
       pawnOnly: isTruthyQueryFlag(pawnOnly),
+      cacheRepo: this.ebaySearchItemsRepo,
+      stateRepo: this.ebaySearchStateRepo,
     });
   }
 

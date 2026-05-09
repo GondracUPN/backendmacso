@@ -4,6 +4,9 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import { EbayPawn } from './ebay-pawn.entity';
+import { EbaySearchItem } from './ebay-search-item.entity';
+import { EbaySearchState } from './ebay-search-state.entity';
+import { EbayViewedItem } from './ebay-viewed-item.entity';
 
 describe('AppController', () => {
   let appController: AppController;
@@ -26,6 +29,31 @@ describe('AppController', () => {
             find: jest.fn(),
             findOne: jest.fn(),
             save: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(EbaySearchItem),
+          useValue: {
+            create: jest.fn((value) => value),
+            find: jest.fn(),
+            findAndCount: jest.fn(),
+            upsert: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(EbaySearchState),
+          useValue: {
+            create: jest.fn((value) => value),
+            findOne: jest.fn(),
+            save: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(EbayViewedItem),
+          useValue: {
+            create: jest.fn((value) => value),
+            find: jest.fn(),
+            upsert: jest.fn(),
           },
         },
       ],

@@ -18,6 +18,9 @@ import { CatalogModule } from './catalog/catalog.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { EbayPawn } from './ebay-pawn.entity';
+import { EbaySearchItem } from './ebay-search-item.entity';
+import { EbaySearchState } from './ebay-search-state.entity';
+import { EbayViewedItem } from './ebay-viewed-item.entity';
 
 @Module({
   imports: [
@@ -60,7 +63,7 @@ import { EbayPawn } from './ebay-pawn.entity';
         };
       },
     }),
-    TypeOrmModule.forFeature([EbayPawn]),
+    TypeOrmModule.forFeature([EbayPawn, EbaySearchItem, EbaySearchState, EbayViewedItem]),
     AuthModule,
     GastosModule,
     WalletModule,
