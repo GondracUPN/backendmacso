@@ -1139,7 +1139,8 @@ const fetchEbayItem = async (legacyId: string, zip: string) => {
 const buildEbayConditionFilter = (rawCondition?: string) => {
   const condition = String(rawCondition || '').trim().toLowerCase();
   if (!condition) return '';
-  if (condition === 'used') return 'conditions:{USED}';
+  if (condition === 'used') return 'conditionIds:{3000}';
+  if (condition === 'full') return 'conditionIds:{1000|1500|3000}';
   if (condition === 'new') return 'conditionIds:{1000}';
   if (condition === 'open_box') return 'conditionIds:{1500}';
   if (condition === 'for_parts') return 'conditionIds:{7000}';
@@ -2124,9 +2125,10 @@ const fetchEbayCatalogSearch = async (params?: {
       collected.push(...pageCandidates);
     }
 
+    const total = Number(data?.total || 0);
     exhausted = requestedSort === 'oldestListed'
       ? pageOffset === 0
-      : rawCount < perPageLimit || pageOffset + perPageLimit >= Number(data?.total || 0);
+      : total <= 0 || pageOffset + rawCount >= total;
     const scannedPages = page + 1;
     if ((scannedPages >= minPages && collected.length >= desiredCount) || exhausted) break;
   }
@@ -2148,7 +2150,7 @@ const fetchEbayCatalogSearch = async (params?: {
     nextEbayOffset: nextOffset,
     lastCacheTotal: cacheOffset + items.length,
   });
-  const nextPreferCache = saved.duplicateDetected && cacheOffset === 0;
+  const nextPreferCache = Boolean(cacheRepo && cacheOffset === 0 && items.length > 0);
   const newKeySet = new Set(saved.newKeys || []);
   const returnItems = shouldSkipCachedDuringScan
     ? items.filter((item) => newKeySet.has(getEbayCacheItemKey(item)))
