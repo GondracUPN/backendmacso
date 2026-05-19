@@ -1404,7 +1404,13 @@ const saveEbaySearchItemsToCache = async (
     return { duplicateDetected: false, saved: 0, newKeys: [] as string[] };
   }
 
-  const keys = Array.from(new Set(params.items.map(getEbayCacheItemKey).filter(Boolean)));
+  const uniqueItemsByKey = new Map<string, any>();
+  for (const item of params.items) {
+    const itemKey = getEbayCacheItemKey(item);
+    if (!itemKey || uniqueItemsByKey.has(itemKey)) continue;
+    uniqueItemsByKey.set(itemKey, item);
+  }
+  const keys = Array.from(uniqueItemsByKey.keys());
   if (keys.length === 0) return { duplicateDetected: false, saved: 0, newKeys: [] as string[] };
 
   const existing = await repo.find({
@@ -1412,11 +1418,13 @@ const saveEbaySearchItemsToCache = async (
     where: { searchKey: params.searchKey, itemKey: In(keys) },
   });
   const existingKeys = new Set(existing.map((row) => row.itemKey));
+  const newKeys = keys.filter((key) => !existingKeys.has(key));
+  const keysToPersist = params.pawnOnly ? newKeys : keys;
   const now = new Date();
-  const rows = params.items
-    .map((item) => {
-      const itemKey = getEbayCacheItemKey(item);
-      if (!itemKey) return null;
+  const rows = keysToPersist
+    .map((itemKey) => {
+      const item = uniqueItemsByKey.get(itemKey);
+      if (!item) return null;
       return repo.create({
         searchKey: params.searchKey,
         itemKey,
@@ -1433,15 +1441,17 @@ const saveEbaySearchItemsToCache = async (
     })
     .filter((row): row is EbaySearchItem => Boolean(row));
 
-  await repo.upsert(rows, {
-    conflictPaths: ['searchKey', 'itemKey'],
-    skipUpdateIfNoValuesChanged: true,
-  });
+  if (rows.length > 0) {
+    await repo.upsert(rows, {
+      conflictPaths: ['searchKey', 'itemKey'],
+      skipUpdateIfNoValuesChanged: true,
+    });
+  }
 
   return {
-    duplicateDetected: keys.some((key) => existingKeys.has(key)),
+    duplicateDetected: existingKeys.size > 0,
     saved: rows.length,
-    newKeys: keys.filter((key) => !existingKeys.has(key)),
+    newKeys,
   };
 };
 
@@ -1968,9 +1978,6 @@ const fetchEbayCatalogSearch = async (params?: {
   const searchKey = buildEbaySearchCacheKey(params);
   const cacheTake = Math.min(200, Math.max(1, Number(params?.limit || 140)));
   const cacheOffset = Math.max(0, Number(params?.cacheOffset || 0));
-  const searchState = await loadEbaySearchState(stateRepo, searchKey);
-  const stateNextEbayOffset = Math.max(0, Number(searchState?.nextEbayOffset || 0));
-
   if (params?.preferCache && cacheRepo) {
     const cached = await loadCachedEbaySearchItems(cacheRepo, {
       searchKey,
@@ -1983,7 +1990,7 @@ const fetchEbayCatalogSearch = async (params?: {
         sort: params?.sort || 'newlyListed',
         limit: cacheTake,
         offset: Math.max(0, Number(params?.offset || 0)),
-        nextOffset: Math.max(Math.max(0, Number(params?.offset || 0)), stateNextEbayOffset),
+        nextOffset: Math.max(0, Number(params?.offset || 0)),
         cacheOffset,
         nextCacheOffset: cacheOffset + cached.items.length,
         nextPreferCache: cached.hasMore,
@@ -2030,11 +2037,11 @@ const fetchEbayCatalogSearch = async (params?: {
   const targetOffsetRaw = Number(params?.offset || 0);
   const targetLimit = Math.min(200, Math.max(1, Number.isFinite(targetLimitRaw) ? targetLimitRaw : 140));
   const requestedOffset = Math.max(0, Number.isFinite(targetOffsetRaw) ? targetOffsetRaw : 0);
-  const scanOffset = requestedOffset === 0 ? 0 : Math.max(requestedOffset, stateNextEbayOffset);
+  const scanOffset = requestedOffset;
   const desiredCount = targetLimit;
   const perPageLimit = 200;
-  const shouldSkipCachedDuringScan = Boolean(cacheRepo && cacheOffset > 0);
-  const minPages = 10;
+  const shouldSkipCachedDuringScan = Boolean(cacheRepo && params?.preferCache && cacheOffset > 0);
+  const minPages = shouldSkipCachedDuringScan ? 10 : 1;
   const maxPages = shouldSkipCachedDuringScan
     ? Math.max(minPages, getPawnScanMaxPages(20))
     : Math.max(minPages, getPawnScanMaxPages(10));
@@ -2150,11 +2157,12 @@ const fetchEbayCatalogSearch = async (params?: {
     nextEbayOffset: nextOffset,
     lastCacheTotal: cacheOffset + items.length,
   });
-  const nextPreferCache = Boolean(cacheRepo && cacheOffset === 0 && items.length > 0);
   const newKeySet = new Set(saved.newKeys || []);
   const returnItems = shouldSkipCachedDuringScan
     ? items.filter((item) => newKeySet.has(getEbayCacheItemKey(item)))
     : items;
+  const nextCacheOffset = cacheOffset + returnItems.length;
+  const nextPreferCache = Boolean(cacheRepo && cacheOffset > 0 && saved.duplicateDetected);
 
   return {
     query: String(params?.query || 'apple').trim() || 'apple',
@@ -2163,7 +2171,7 @@ const fetchEbayCatalogSearch = async (params?: {
     offset: scanOffset,
     nextOffset,
     cacheOffset,
-    nextCacheOffset: nextPreferCache ? items.length : cacheOffset,
+    nextCacheOffset,
     nextPreferCache,
     cacheSaved: saved.saved,
     duplicateDetected: saved.duplicateDetected,

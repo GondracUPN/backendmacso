@@ -765,6 +765,7 @@ export class AnalyticsService {
       tipo: p.tipo,
       display: productDisplayClean(p),
       fechaCompra: p.valor?.fechaCompra,
+      precioUSD: +(Number(p.valor?.valorProducto ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
       costoTotal: +(Number(p.valor?.costoTotal ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
       participacion: productoShareById.get(p.id) ?? 1,
     }));

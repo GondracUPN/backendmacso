@@ -5,8 +5,17 @@ import { Card } from './card.entity';
 import { Gasto } from '../gastos/entities/gasto.entity';
 import { Role } from '../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
+import { CatalogService } from '../catalog/catalog.service';
 
-const CREDIT_CONCEPTS = ['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback'];
+const normalizeConcept = (value: string) =>
+  String(value || '').trim().toLowerCase().replace(/\s+/g, '_');
+
+const normalizeCategory = (value: unknown) => {
+  const category = String(value || '').trim().toLowerCase();
+  return ['life', 'income', 'investment', 'shipping', 'debt', 'card_payment', 'other'].includes(category)
+    ? category
+    : 'life';
+};
 
 @Injectable()
 export class CardsService {
@@ -14,6 +23,7 @@ export class CardsService {
     @InjectRepository(Card) private readonly repo: Repository<Card>,
     @InjectRepository(Gasto) private readonly gastosRepo: Repository<Gasto>,
     private readonly cfg: ConfigService,
+    private readonly catalogService: CatalogService,
   ) {}
 
   findMine(userId: number) {
@@ -107,16 +117,25 @@ export class CardsService {
       .where('g.userId = :uid', { uid: userId })
       .andWhere(
         `(
-          (g.metodoPago = 'credito' AND g.tarjeta IS NOT NULL AND (LOWER(g.concepto) IN (:...cons) OR LOWER(g.concepto) = 'ingreso'))
+          (g.metodoPago = 'credito' AND g.tarjeta IS NOT NULL)
           OR
           (g.metodoPago = 'debito' AND LOWER(g.concepto) = 'pago_tarjeta' AND g.tarjetaPago IS NOT NULL)
         )`,
-        { cons: CREDIT_CONCEPTS },
+        {},
       )
       .orderBy('g.fecha', 'ASC')
       .getMany();
 
     const USD_PEN_RATE = 3.7;
+    const conceptCategories = new Map<string, string>();
+    try {
+      const concepts = await this.catalogService.listExpenseConcepts();
+      for (const concept of concepts || []) {
+        conceptCategories.set(normalizeConcept(concept.value), normalizeCategory(concept.metadata?.category));
+      }
+    } catch {
+      // Si falla el catalogo, se mantiene el comportamiento base por concepto.
+    }
 
     const usedPen = new Map<string, number>();
     const usedUsd = new Map<string, number>();
@@ -124,12 +143,13 @@ export class CardsService {
     const addUsd = (k: string, v: number) => usedUsd.set(k, (usedUsd.get(k) || 0) + v);
 
     for (const g of gastos) {
-      const c = String(g.concepto || '').toLowerCase();
+      const c = normalizeConcept(g.concepto || '');
+      const category = conceptCategories.get(c);
       if (g.metodoPago === 'credito') {
-        if (CREDIT_CONCEPTS.includes(c)) {
+        if (c !== 'ingreso' && category !== 'income') {
           if (g.moneda === 'USD') addUsd(g.tarjeta!, Number(g.monto || 0));
           else addPen(g.tarjeta!, Number(g.monto || 0));
-        } else if (c === 'ingreso') {
+        } else {
           if (g.moneda === 'USD') addUsd(g.tarjeta!, -Number(g.monto || 0));
           else addPen(g.tarjeta!, -Number(g.monto || 0));
         }

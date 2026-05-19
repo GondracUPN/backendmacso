@@ -18,6 +18,13 @@ const splitValues = (value: unknown) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const normalizeExpenseCategory = (value: unknown) => {
+  const category = String(value || '').trim().toLowerCase();
+  return ['life', 'income', 'investment', 'shipping', 'debt', 'card_payment', 'other'].includes(category)
+    ? category
+    : 'life';
+};
+
 @Injectable()
 export class CatalogService {
   constructor(@InjectRepository(CatalogItem) private readonly repo: Repository<CatalogItem>) {}
@@ -91,6 +98,7 @@ export class CatalogService {
       active: true,
       metadata: {
         defaultCurrency: dto?.defaultCurrency === 'USD' ? 'USD' : 'PEN',
+        category: normalizeExpenseCategory(dto?.category),
       },
     });
     return this.repo.save(item);
