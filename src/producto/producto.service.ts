@@ -770,8 +770,26 @@ export class ProductoService {
     return [tipo, gama, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
   }
 
+  private buildCatalogDetalle(d: any) {
+    return {
+      id: d?.id ?? null,
+      esim: d?.esim ?? d?.sim ?? null,
+      gama: d?.gama ?? null,
+      procesador: d?.procesador ?? null,
+      generacion: d?.generacion ?? null,
+      numero: d?.numero ?? null,
+      modelo: d?.modelo ?? null,
+      tamano: d?.tamano ?? d?.tamanio ?? d?.['tama\u00f1o'] ?? null,
+      almacenamiento: d?.almacenamiento ?? null,
+      ram: d?.ram ?? null,
+      conexion: d?.conexion ?? null,
+      descripcionOtro: d?.descripcionOtro ?? null,
+    };
+  }
+
   private buildPayload(p: any) {
     const price = p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
+    const d: any = p.detalle || {};
     // Ãºltimo tracking (si existe)
     const trk = Array.isArray(p.tracking) ? [...p.tracking] : [];
     trk.sort((a, b) => {
@@ -794,7 +812,7 @@ export class ProductoService {
         tipo: p.tipo ?? null,
         estado: p.estado ?? null,
         accesorios: p.accesorios ?? null,
-        detalle: p.detalle ?? null,
+        detalle: this.buildCatalogDetalle(d),
         valor: p.valor ?? null,
         tracking_last: last,
       },
@@ -961,18 +979,7 @@ export class ProductoService {
               tipo: p.tipo ?? null,
               estado: p.estado ?? null,
               accesorios: p.accesorios ?? null,
-              detalle: {
-                id: d?.id ?? null,
-                gama: d?.gama ?? null,
-                procesador: d?.procesador ?? null,
-                generacion: d?.generacion ?? null,
-                modelo: d?.modelo ?? null,
-                tamano: (d as any)?.tamano ?? null,
-                almacenamiento: d?.almacenamiento ?? null,
-                ram: d?.ram ?? null,
-                conexion: d?.conexion ?? null,
-                descripcionOtro: d?.descripcionOtro ?? null,
-              },
+              detalle: this.buildCatalogDetalle(d),
               valor: { costoTotal: p?.valor?.costoTotal ?? null },
             },
           };

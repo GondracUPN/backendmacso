@@ -20,6 +20,7 @@ export class CreateProductoDetalleDto {
   @IsOptional() @IsString() almacenamiento?: string;
   @IsOptional() @IsString() ram?: string;
   @IsOptional() @IsString() conexion?: string;
+  @IsOptional() @IsString() esim?: string;
   @IsOptional() @IsString() descripcionOtro?: string;
 }
 

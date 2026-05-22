@@ -35,5 +35,8 @@ export class ProductoDetalle {
   conexion: string;
 
   @Column({ nullable: true })
+  esim: string;
+
+  @Column({ nullable: true })
   descripcionOtro: string;
 }
