@@ -395,6 +395,19 @@ const MACBOOK_AUCTION_QUERY_GROUPS = [
   { key: 'macbook-order-ll-a', label: 'MacBook LL/A', query: 'apple macbook ll/a' },
 ] as const;
 
+const WATCH_ULTRA_AUCTION_QUERY_GROUPS = [
+  { key: 'apple-watch-ultra', label: 'Apple Watch Ultra', query: 'apple watch ultra' },
+  { key: 'apple-watch-ultra-3', label: 'Apple Watch Ultra 3', query: 'apple watch ultra 3' },
+  { key: 'apple-watch-ultra-2', label: 'Apple Watch Ultra 2', query: 'apple watch ultra 2' },
+  { key: 'apple-watch-ultra-model-a2622', label: 'Apple Watch Ultra A2622', query: 'apple watch a2622' },
+  { key: 'apple-watch-ultra-model-a2684', label: 'Apple Watch Ultra A2684', query: 'apple watch a2684' },
+  { key: 'apple-watch-ultra-model-a2859', label: 'Apple Watch Ultra A2859', query: 'apple watch a2859' },
+  { key: 'apple-watch-ultra-model-a2986', label: 'Apple Watch Ultra 2 A2986', query: 'apple watch a2986' },
+  { key: 'apple-watch-ultra-model-a2987', label: 'Apple Watch Ultra 2 A2987', query: 'apple watch a2987' },
+  { key: 'apple-watch-ultra-model-a3281', label: 'Apple Watch Ultra 3 A3281', query: 'apple watch a3281' },
+  { key: 'apple-watch-ultra-model-a3282', label: 'Apple Watch Ultra 3 A3282', query: 'apple watch a3282' },
+] as const;
+
 const DESKTOP_AUCTION_QUERY_GROUPS = [
   { key: 'imac-m1', label: 'iMac M1', query: 'apple imac m1', family: 'imac' },
   { key: 'imac-m3', label: 'iMac M3', query: 'apple imac m3', family: 'imac' },
@@ -1557,6 +1570,8 @@ const APPLE_ACCESSORY_PRIMARY_PATTERNS = [
   /\breplacement\b/,
 ];
 
+const APPLE_WATCH_ULTRA_MODEL_NUMBER_PATTERN = /\ba(?:2622|2684|2859|2986|2987|3281|3282)\b/;
+
 const APPLE_DEVICE_SIGNAL_PATTERNS = [
   /\bm[1-5](?:\s+(?:pro|max))?\b/,
   /\b\d+(?:gb|tb)\b/,
@@ -1633,6 +1648,7 @@ const getAppleCollectionFamilyLabel = (family: string) => {
     macbook: 'MacBook',
     airpods: 'AirPods',
     'apple-watch': 'Apple Watch',
+    'apple-watch-ultra': 'Apple Watch Ultra',
     imac: 'iMac',
     'mac-mini': 'Mac mini',
     accessories: 'Accesorios',
@@ -1651,10 +1667,20 @@ const titleHasRequiredAppleChip = (normalized: string, key: string) => {
   return new RegExp(`\\b${requiredChip}\\b`).test(normalized);
 };
 
+const isWatchUltraAccessoryTitle = (normalized: string) =>
+  /^apple\s+watch\s+ultra(?:\s+\d)?\s+(?:band|strap|loop)\b/.test(normalized) ||
+  /\b(?:band|strap|loop)\b.{0,80}\bfor\s+(?:apple\s+)?watch\s+ultra\b/.test(normalized);
+
 const isLikelyExtendedAppleTitle = (title: string, family: string, key = '') => {
   const normalized = normalizeLookupText(title);
   if (family === 'airpods') return /\bair\s*pods?\b|\bairpods?\b/.test(normalized);
   if (family === 'apple-watch') return /\bapple\s+watch\b|\biwatch\b/.test(normalized);
+  if (family === 'apple-watch-ultra') {
+    if (isAccessoryTitle(normalized)) return false;
+    if (isWatchUltraAccessoryTitle(normalized)) return false;
+    return APPLE_WATCH_ULTRA_MODEL_NUMBER_PATTERN.test(normalized) ||
+      ((/\bapple\s+watch\b|\biwatch\b/.test(normalized)) && /\bultra\b/.test(normalized));
+  }
   if (family === 'imac') return (/\bi\s*mac\b|\bimac\b/.test(normalized)) && titleHasRequiredAppleChip(normalized, key);
   if (family === 'mac-mini') return (/\bmac\s*mini\b|\bmacmini\b/.test(normalized)) && titleHasRequiredAppleChip(normalized, key);
   if (family === 'accessories') {
@@ -2187,7 +2213,7 @@ const fetchEbayCatalogSearch = async (params?: {
 const fetchEbayAppleCollection = async (params?: {
   limit?: number;
   offset?: number;
-  family?: 'all' | 'ipad' | 'iphone' | 'macbook';
+  family?: 'all' | 'ipad' | 'iphone' | 'macbook' | 'apple-watch-ultra';
   condition?: string;
   buyingOptions?: string;
   sort?: string;
@@ -2201,6 +2227,7 @@ const fetchEbayAppleCollection = async (params?: {
   const isAuctionSort = params?.sort === 'endingSoonest';
   const includeExtendedAll = requestedFamily === 'all' && !isAuctionSort;
   const includeDesktopAuctionAll = requestedFamily === 'all' && isAuctionSort;
+  const includeWatchUltraAuctionAll = requestedFamily === 'all' && isAuctionSort;
   const familyKeys = requestedFamily && requestedFamily !== 'all'
     ? [requestedFamily]
     : [
@@ -2209,22 +2236,32 @@ const fetchEbayAppleCollection = async (params?: {
         'macbook',
         ...(includeExtendedAll ? ['airpods', 'apple-watch', 'imac', 'mac-mini', 'accessories'] : []),
         ...(includeDesktopAuctionAll ? ['imac', 'mac-mini'] : []),
+        ...(includeWatchUltraAuctionAll ? ['apple-watch-ultra'] : []),
       ];
+  const getAuctionQueryGroupsForFamily = (familyKey: string) => {
+    if (familyKey === 'macbook') return MACBOOK_AUCTION_QUERY_GROUPS;
+    if (familyKey === 'apple-watch-ultra') return WATCH_ULTRA_AUCTION_QUERY_GROUPS;
+    return APPLE_FAMILY_QUERY_GROUPS[familyKey as keyof typeof APPLE_FAMILY_QUERY_GROUPS] || [];
+  };
 
   const queryEntries = [
     ...(requestedFamily && requestedFamily !== 'all'
-      ? ((requestedFamily === 'macbook' ? MACBOOK_AUCTION_QUERY_GROUPS : APPLE_FAMILY_QUERY_GROUPS[requestedFamily]).map((entry) => ({
+      ? (getAuctionQueryGroupsForFamily(requestedFamily).map((entry) => ({
           ...entry,
           family: requestedFamily,
         })))
       : (['ipad', 'iphone', 'macbook'] as const).flatMap((familyKey) =>
-          (familyKey === 'macbook' ? MACBOOK_AUCTION_QUERY_GROUPS : APPLE_FAMILY_QUERY_GROUPS[familyKey]).map((entry) => ({
+          getAuctionQueryGroupsForFamily(familyKey).map((entry) => ({
             ...entry,
             family: familyKey,
           })),
         )),
     ...(includeExtendedAll ? EXTENDED_APPLE_ALL_QUERY_GROUPS : []),
     ...(includeDesktopAuctionAll ? DESKTOP_AUCTION_QUERY_GROUPS : []),
+    ...(includeWatchUltraAuctionAll ? WATCH_ULTRA_AUCTION_QUERY_GROUPS.map((entry) => ({
+      ...entry,
+      family: 'apple-watch-ultra',
+    })) : []),
   ];
 
   if (params?.pawnOnly) {
@@ -2489,7 +2526,7 @@ const fetchEbayAppleCollection = async (params?: {
 const fetchEbayAppleAuctions = async (params?: {
   limit?: number;
   offset?: number;
-  family?: 'all' | 'ipad' | 'iphone' | 'macbook';
+  family?: 'all' | 'ipad' | 'iphone' | 'macbook' | 'apple-watch-ultra';
   condition?: string;
 }) => {
   return fetchEbayAppleCollection({
@@ -3168,7 +3205,7 @@ export class AppController {
   async getEbayAppleCollection(
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
-    @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook',
+    @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook' | 'apple-watch-ultra',
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
     @Query('sort') sort?: string,
@@ -3189,7 +3226,7 @@ export class AppController {
   async getEbayAppleAuctions(
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
-    @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook',
+    @Query('family') family?: 'all' | 'ipad' | 'iphone' | 'macbook' | 'apple-watch-ultra',
     @Query('condition') condition?: string,
   ) {
     return fetchEbayAppleAuctions({

@@ -876,7 +876,7 @@ export class AnalyticsService {
         const ingresos = +(arr.reduce((s, x) => s + Number(x.precioVenta), 0)).toFixed(2);
         const ganancia = +(arr.reduce((s, x) => s + Number(x.ganancia), 0)).toFixed(2);
         const margenPromedio = mean(arr.map((x) => Number(x.porcentajeGanancia))) ?? 0;
-        return { month, ingresos, ganancia, margenPromedio: +(margenPromedio?.toFixed(3) || 0) };
+        return { month, ventas: arr.length, ingresos, ganancia, margenPromedio: +(margenPromedio?.toFixed(3) || 0) };
       });
 
     // Logistics: compra -> recepción (per product), recepción -> recogido (per product), recogido -> venta (per sale)
