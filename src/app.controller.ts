@@ -1401,11 +1401,38 @@ const matchesPawnSellerName = (item: any) => {
   return normalized.includes('pawn') || normalized.includes('paymore');
 };
 
+const matchesKnownPawnStore = (item: any, storeEntries?: ReadonlyArray<EbayStoreEntry>) => {
+  if (!Array.isArray(storeEntries) || storeEntries.length === 0) return false;
+  const itemSellers = [
+    item?.seller,
+    item?.seller?.username,
+    item?.seller?.userId,
+  ].map((value) => normalizeCompactLookupText(String(value || ''))).filter(Boolean);
+  const itemText = normalizeCompactLookupText([
+    item?.storeName,
+    item?.storeUrl,
+    item?.itemWebUrl,
+  ].join(' '));
+
+  return storeEntries.some((entry) => {
+    const seller = normalizeCompactLookupText(entry.seller);
+    const storeName = normalizeCompactLookupText(entry.storeName);
+    const storeUrl = normalizeCompactLookupText(entry.storeUrl);
+    const originalUrl = normalizeCompactLookupText(entry.originalUrl || '');
+    if (seller && itemSellers.includes(seller)) return true;
+    return Boolean(
+      (storeName && itemText.includes(storeName)) ||
+      (storeUrl && itemText.includes(storeUrl)) ||
+      (originalUrl && itemText.includes(originalUrl)),
+    );
+  });
+};
+
 const matchesPawnInventoryCode = (item: any) =>
   /\((?=[A-Za-z0-9]{9}\))(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{9}\)/.test(String(item?.title || ''));
 
-const matchesPawnSource = (item: any) =>
-  matchesPawnSellerName(item) || matchesPawnInventoryCode(item);
+const matchesPawnSource = (item: any, storeEntries?: ReadonlyArray<EbayStoreEntry>) =>
+  matchesKnownPawnStore(item, storeEntries) || matchesPawnSellerName(item) || matchesPawnInventoryCode(item);
 
 const TRUSTED_STORE_SYSTEM_PATTERNS = [
   /\bpowered\s+by\s+bravo\s+store\s+systems\b/i,
@@ -1522,6 +1549,7 @@ const matchesPreferredStoreSource = async (item: any) => {
 const collectPreferredStoreItems = async (params: {
   items: any[];
   seen: Set<string>;
+  storeEntries?: ReadonlyArray<EbayStoreEntry>;
 }) => {
   const accepted: any[] = [];
   const trustedCandidates: Array<{ item: any; key: string }> = [];
@@ -1529,7 +1557,7 @@ const collectPreferredStoreItems = async (params: {
   for (const item of Array.isArray(params.items) ? params.items : []) {
     const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
     if (!key || params.seen.has(key)) continue;
-    if (matchesPawnSource(item)) {
+    if (matchesPawnSource(item, params.storeEntries)) {
       params.seen.add(key);
       accepted.push(item);
       continue;
@@ -1589,6 +1617,12 @@ const getPawnScanMaxPages = (fallback: number) => {
   return Math.max(1, Math.min(20, raw));
 };
 
+const normalizeMinSellerReviews = (value?: number | string | null) => {
+  const raw = Number(value || 0);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.floor(raw);
+};
+
 const getTrustedStoreBackfillMaxChecks = () => {
   const raw = Number(process.env.EBAY_TRUSTED_STORE_BACKFILL_MAX_CHECKS || 24);
   return Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 24));
@@ -1618,14 +1652,17 @@ const buildEbaySearchCacheKey = (params?: {
   buyingOptions?: string;
   sort?: string;
   pawnOnly?: boolean;
+  minSellerReviews?: number;
 }) => {
+  const minSellerReviews = normalizeMinSellerReviews(params?.minSellerReviews);
   const payload = {
     query: normalizeLookupText(String(params?.query || 'apple').trim() || 'apple'),
     condition: normalizeLookupText(String(params?.condition || '')),
     buyingOptions: normalizeLookupText(String(params?.buyingOptions || '')),
     sort: normalizeLookupText(String(params?.sort || 'newlyListed')),
     pawnOnly: Boolean(params?.pawnOnly),
-    sourceRule: params?.pawnOnly ? 'pawn-paymore-trusted-store-system-v3' : 'default',
+    minSellerReviews,
+    sourceRule: params?.pawnOnly ? 'pawn-or-high-reviews-system-v6' : 'default',
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 };
@@ -2159,6 +2196,16 @@ const isTrustedEbaySeller = (item: any) => {
   return true;
 };
 
+const getSellerFeedbackScore = (item: any) =>
+  parsePriceValue(item?.sellerFeedbackScore ?? item?.seller?.feedbackScore);
+
+const matchesMinSellerReviews = (item: any, minSellerReviews?: number) => {
+  const minReviews = normalizeMinSellerReviews(minSellerReviews);
+  if (minReviews <= 0) return true;
+  const feedbackScore = getSellerFeedbackScore(item);
+  return feedbackScore !== null && Number.isFinite(feedbackScore) && feedbackScore >= minReviews;
+};
+
 const normalizeEbayBrowseItems = (params: {
   items: any[];
   storeEntries?: ReadonlyArray<EbayStoreEntry>;
@@ -2416,12 +2463,15 @@ const fetchEbayCatalogSearch = async (params?: {
   buyingOptions?: string;
   sort?: string;
   pawnOnly?: boolean;
+  minSellerReviews?: number;
   cacheRepo?: Repository<EbaySearchItem>;
   stateRepo?: Repository<EbaySearchState>;
+  storeEntries?: ReadonlyArray<EbayStoreEntry>;
 }) => {
   const cacheRepo = params?.cacheRepo;
   const stateRepo = params?.stateRepo;
   const searchKey = buildEbaySearchCacheKey(params);
+  const minSellerReviews = normalizeMinSellerReviews(params?.minSellerReviews);
   const cacheTake = Math.min(200, Math.max(1, Number(params?.limit || 140)));
   const cacheOffset = Math.max(0, Number(params?.cacheOffset || 0));
   if (params?.preferCache && cacheRepo) {
@@ -2449,7 +2499,7 @@ const fetchEbayCatalogSearch = async (params?: {
     }
   }
 
-  if (!params?.pawnOnly) {
+  if (!params?.pawnOnly && minSellerReviews <= 0) {
     const data = await searchEbayItems({
       query: params?.query,
       limit: params?.limit,
@@ -2488,9 +2538,10 @@ const fetchEbayCatalogSearch = async (params?: {
   const perPageLimit = 200;
   const shouldSkipCachedDuringScan = Boolean(cacheRepo && params?.preferCache && cacheOffset > 0);
   const minPages = shouldSkipCachedDuringScan ? 10 : 1;
+  const filteredScanFallback = minSellerReviews > 0 ? 20 : 10;
   const maxPages = shouldSkipCachedDuringScan
     ? Math.max(minPages, getPawnScanMaxPages(20))
-    : Math.max(minPages, getPawnScanMaxPages(10));
+    : Math.max(minPages, getPawnScanMaxPages(filteredScanFallback));
   const collected: any[] = [];
   const seen = new Set<string>();
   let sort = 'newlyListed';
@@ -2560,10 +2611,23 @@ const fetchEbayCatalogSearch = async (params?: {
     const pageItems = Array.isArray(data?.items) ? data.items : [];
     const rawCount = Number(data?.rawCount ?? pageItems.length);
     const pageAppleItems = pageItems.filter((item: any) => matchesAppleProductTitle(item));
-    const pageCandidates = await collectPreferredStoreItems({
-      items: pageAppleItems,
-      seen,
-    });
+    let pageCandidates: any[] = [];
+    if (params?.pawnOnly) {
+      pageCandidates = await collectPreferredStoreItems({
+        items: pageAppleItems,
+        seen,
+        storeEntries: params?.storeEntries,
+      });
+    }
+    if (minSellerReviews > 0) {
+      for (const item of pageAppleItems) {
+        if (!matchesMinSellerReviews(item, minSellerReviews)) continue;
+        const key = getEbayCacheItemKey(item);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        pageCandidates.push(item);
+      }
+    }
     const pageCandidateKeys = pageCandidates.map((item: any) => getEbayCacheItemKey(item)).filter(Boolean);
 
     if (shouldSkipCachedDuringScan && pageCandidates.length > 0) {
@@ -2589,7 +2653,7 @@ const fetchEbayCatalogSearch = async (params?: {
     condition: params?.condition,
     buyingOptions: params?.buyingOptions,
     sort: requestedSort,
-    pawnOnly: true,
+    pawnOnly: Boolean(params?.pawnOnly),
     ebayOffset: scanOffset,
     items,
   });
@@ -2620,6 +2684,7 @@ const fetchEbayCatalogSearch = async (params?: {
     filteredTotal: returnItems.length,
     hasMore,
     rateLimited,
+    minSellerReviews,
     sellers: [],
     items: returnItems,
   };
@@ -3650,7 +3715,10 @@ export class AppController {
     @Query('buyingOptions') buyingOptions?: string,
     @Query('sort') sort?: string,
     @Query('pawnOnly') pawnOnly?: string,
+    @Query('minSellerReviews') minSellerReviews?: string,
   ) {
+    const pawnOnlyFlag = isTruthyQueryFlag(pawnOnly);
+    const storeEntries = pawnOnlyFlag ? await this.loadEbayStoreFeedFromDb() : undefined;
     return fetchEbayCatalogSearch({
       query: q,
       limit: limit ? Number(limit) : undefined,
@@ -3660,9 +3728,11 @@ export class AppController {
       condition,
       buyingOptions,
       sort,
-      pawnOnly: isTruthyQueryFlag(pawnOnly),
+      pawnOnly: pawnOnlyFlag,
+      minSellerReviews: normalizeMinSellerReviews(minSellerReviews),
       cacheRepo: this.ebaySearchItemsRepo,
       stateRepo: this.ebaySearchStateRepo,
+      storeEntries,
     });
   }
 
