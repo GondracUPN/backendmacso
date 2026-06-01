@@ -82,6 +82,11 @@ export class VentaController {
     return this.svc.findLatestAdelantosByProductos(parsedIds.length ? parsedIds : undefined);
   }
 
+  @Get('a-pedido')
+  pedidoSummary() {
+    return this.svc.pedidoSummary();
+  }
+
   @Get(':id')
   one(@Param('id', ParseIntPipe) id: number) {
     return this.svc.findOne(id);

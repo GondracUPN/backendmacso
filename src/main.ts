@@ -244,7 +244,16 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
       );
       await dataSource.query(
-        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS vendedor varchar(20)`,
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS vendedor varchar(80)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ALTER COLUMN vendedor TYPE varchar(80)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS vendedor varchar(80)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."venta" ALTER COLUMN vendedor TYPE varchar(80)`,
       );
       await dataSource.query(
         `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS estatus_esho varchar`,

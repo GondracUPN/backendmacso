@@ -9,4 +9,8 @@ export class SickwCheckDto {
   @IsOptional()
   @IsIn(['sn', 'imei', 'imei2'])
   type?: 'sn' | 'imei' | 'imei2';
+
+  @IsOptional()
+  @IsIn(['8', '30', '81', 'ifreeicloud-238'])
+  serviceId?: '8' | '30' | '81' | 'ifreeicloud-238';
 }

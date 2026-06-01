@@ -49,8 +49,8 @@ export class Venta {
   porcentajeGanancia: number; // %
 
   // — Opcional: vendedor asignado a la venta —
-  @Column({ type: 'varchar', length: 20, nullable: true })
-  vendedor?: 'Gonzalo' | 'Renato' | 'ambos' | null;
+  @Column({ type: 'varchar', length: 80, nullable: true })
+  vendedor?: string | null;
 
   @CreateDateColumn()
   createdAt: Date;

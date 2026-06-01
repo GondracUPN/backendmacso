@@ -20,15 +20,122 @@ import { ProductoValor } from '../producto/producto-valor.entity';
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
 const isSplitSeller = (s?: string | null) => normalizeSeller(s) === 'ambos';
-const normalizeSellerLabel = (s?: string | null): 'Gonzalo' | 'Renato' | 'ambos' | null => {
+const titleCaseName = (value?: string | null) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .map((part) =>
+      part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : '',
+    )
+    .join(' ');
+const normalizeSellerLabel = (s?: string | null): string | null => {
   const slug = normalizeSeller(s);
   if (slug === 'gonzalo') return 'Gonzalo';
   if (slug === 'renato') return 'Renato';
   if (slug === 'ambos') return 'ambos';
+  const requestMatch = String(s || '').trim().match(/^gonzalo\s*\(([^)]+)\)$/i);
+  if (requestMatch?.[1]) {
+    const client = titleCaseName(requestMatch[1]);
+    return client ? `Gonzalo (${client})` : null;
+  }
   return null;
 };
 const sellerFromProducto = (producto?: Producto | null, fallback?: string | null) =>
   normalizeSellerLabel((producto as any)?.vendedor ?? fallback);
+const getPedidoClient = (seller?: string | null) => {
+  const match = String(seller || '').trim().match(/^gonzalo\s*\(([^)]+)\)$/i);
+  return match?.[1] ? titleCaseName(match[1]) : null;
+};
+const toMoneyNumber = (value: any) => {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+};
+const getProductCost = (producto?: Producto | null) => {
+  const valor = (producto as any)?.valor || {};
+  return toMoneyNumber(
+    valor.costoTotalProrrateado ?? valor.costoTotal ?? valor.valorSoles,
+  );
+};
+const buildProductoNombre = (producto?: Producto | null) => {
+  if (!producto) return '-';
+  const detalle = (producto as any).detalle || {};
+  const tipo = String((producto as any).tipo || '').trim();
+  const tipoLower = tipo.toLowerCase();
+  if (tipoLower === 'otro') return detalle.descripcionOtro || 'Otros';
+  if (tipoLower === 'iphone') {
+    return ['iPhone', detalle.numero, detalle.modelo].filter(Boolean).join(' ');
+  }
+  if (tipoLower === 'watch') {
+    return [
+      'Apple Watch',
+      detalle.gama,
+      detalle.generacion,
+      detalle.tamano || detalle['tamaño'] || detalle.tamanio,
+      detalle.conexion,
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
+  return [
+    tipo,
+    detalle.gama,
+    detalle.procesador,
+    detalle.tamano || detalle['tamaño'] || detalle.tamanio,
+    detalle.almacenamiento,
+  ]
+    .filter(Boolean)
+    .join(' ');
+};
+const buildMoneyStats = (saleAmount: number, costAmount: number) => {
+  const ganancia = +(saleAmount - costAmount).toFixed(2);
+  const utilidadPct = saleAmount ? +((ganancia / saleAmount) * 100).toFixed(2) : 0;
+  const markupPct = costAmount ? +((ganancia / costAmount) * 100).toFixed(2) : 0;
+  return { ganancia, utilidadPct, markupPct };
+};
+const getLatestTracking = (producto?: Producto | null) => {
+  const tracking = Array.isArray((producto as any)?.tracking)
+    ? [...((producto as any).tracking || [])]
+    : [];
+  tracking.sort((a, b) => {
+    const at = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bt = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+    if (at !== bt) return bt - at;
+    return Number(b?.id || 0) - Number(a?.id || 0);
+  });
+  return tracking[0] || null;
+};
+const getPedidoStatus = (
+  producto: Producto | null | undefined,
+  payment: 'pagado' | 'adelanto' | 'sin_pago',
+) => {
+  const latestTracking = getLatestTracking(producto);
+  const trackingEstado = String(latestTracking?.estado || '').toLowerCase();
+  const recogido =
+    trackingEstado === 'recogido' || Boolean((latestTracking as any)?.fechaRecogido);
+  if (payment === 'pagado') {
+    return {
+      estadoPago: 'pagado',
+      estadoPedido: recogido ? 'cancelado_entregado' : 'cancelado_en_camino',
+      trackingEstado,
+      latestTracking,
+    };
+  }
+  if (payment === 'adelanto') {
+    return {
+      estadoPago: 'adelanto',
+      estadoPedido: recogido ? 'recogido_con_adelanto' : 'en_camino_con_adelanto',
+      trackingEstado,
+      latestTracking,
+    };
+  }
+  return {
+    estadoPago: 'sin_pago',
+    estadoPedido: recogido ? 'recogido_sin_pago' : 'en_camino_sin_pago',
+    trackingEstado,
+    latestTracking,
+  };
+};
 
 const calcSplitCosts = (usdTotal: number, envioSoles: number, tcG: number, tcR: number) => {
   const halfUsd = usdTotal / 2;
@@ -84,10 +191,17 @@ export class VentaService {
     }
     const vendedor = normalizeSeller(params.vendedor);
     if (vendedor) {
-      qb.andWhere(
-        "(LOWER(COALESCE(v.vendedor, p.vendedor, '')) = :vendedor OR LOWER(COALESCE(v.vendedor, p.vendedor, '')) = 'ambos')",
-        { vendedor },
-      );
+      if (vendedor === 'gonzalo') {
+        qb.andWhere(
+          "(LOWER(COALESCE(v.vendedor, p.vendedor, '')) = :vendedor OR LOWER(COALESCE(v.vendedor, p.vendedor, '')) = 'ambos' OR LOWER(COALESCE(v.vendedor, p.vendedor, '')) LIKE 'gonzalo (%)')",
+          { vendedor },
+        );
+      } else {
+        qb.andWhere(
+          "(LOWER(COALESCE(v.vendedor, p.vendedor, '')) = :vendedor OR LOWER(COALESCE(v.vendedor, p.vendedor, '')) = 'ambos')",
+          { vendedor },
+        );
+      }
     }
 
     return qb
@@ -133,6 +247,229 @@ export class VentaService {
     }
 
     return qb.getMany();
+  }
+
+  async pedidoSummary() {
+    const ventas = await this.ventaRepo
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.producto', 'p')
+      .leftJoinAndSelect('p.valor', 'val')
+      .leftJoinAndSelect('p.detalle', 'det')
+      .leftJoinAndSelect('p.tracking', 'trk')
+      .orderBy('v.fechaVenta', 'DESC')
+      .addOrderBy('v.id', 'DESC')
+      .getMany();
+
+    const adelantos = await this.adelantoRepo
+      .createQueryBuilder('a')
+      .leftJoinAndSelect('a.producto', 'p')
+      .leftJoinAndSelect('p.valor', 'val')
+      .leftJoinAndSelect('p.detalle', 'det')
+      .leftJoinAndSelect('p.tracking', 'trk')
+      .orderBy('a.createdAt', 'DESC')
+      .addOrderBy('a.id', 'DESC')
+      .getMany();
+
+    const productosPedido = await this.productoRepo.find({
+      relations: ['valor', 'detalle', 'tracking'],
+    });
+
+    const adelantosByVenta = new Map<number, VentaAdelanto>();
+    for (const adelanto of adelantos) {
+      if (adelanto.ventaId && !adelantosByVenta.has(adelanto.ventaId)) {
+        adelantosByVenta.set(adelanto.ventaId, adelanto);
+      }
+    }
+
+    const rows: any[] = [];
+    const soldProductIds = new Set<number>();
+    const pendingProductIds = new Set<number>();
+
+    for (const venta of ventas) {
+      const producto = venta.producto;
+      const seller = normalizeSellerLabel(
+        (venta as any).vendedor || (producto as any)?.vendedor,
+      );
+      const cliente = getPedidoClient(seller);
+      if (!cliente) continue;
+
+      soldProductIds.add(venta.productoId);
+      const precioVenta = toMoneyNumber(venta.precioVenta);
+      const gananciaRegistrada = toMoneyNumber(venta.ganancia);
+      const costo = precioVenta || gananciaRegistrada ? precioVenta - gananciaRegistrada : getProductCost(producto);
+      const stats = buildMoneyStats(precioVenta, costo);
+      const adelanto = adelantosByVenta.get(venta.id);
+      const montoAdelanto = adelanto ? toMoneyNumber(adelanto.montoAdelanto) : precioVenta;
+      const status = getPedidoStatus(producto, 'pagado');
+
+      rows.push({
+        id: `venta-${venta.id}`,
+        ventaId: venta.id,
+        adelantoId: adelanto?.id ?? null,
+        productoId: venta.productoId,
+        cliente,
+        vendedor: seller,
+        estadoPago: status.estadoPago,
+        estadoPedido: status.estadoPedido,
+        trackingEstado: status.trackingEstado,
+        producto: buildProductoNombre(producto),
+        fecha: venta.fechaVenta,
+        montoVenta: +precioVenta.toFixed(2),
+        montoAdelanto: +montoAdelanto.toFixed(2),
+        saldo: 0,
+        costo: +costo.toFixed(2),
+        ganancia: stats.ganancia,
+        utilidadPct: stats.utilidadPct,
+        markupPct: stats.markupPct,
+      });
+    }
+
+    for (const adelanto of adelantos) {
+      if (adelanto.completadoAt || soldProductIds.has(adelanto.productoId)) continue;
+      const producto = adelanto.producto;
+      const seller = normalizeSellerLabel((producto as any)?.vendedor);
+      const cliente = getPedidoClient(seller);
+      if (!cliente) continue;
+
+      pendingProductIds.add(adelanto.productoId);
+      const montoVenta = toMoneyNumber(adelanto.montoVenta);
+      const montoAdelanto = toMoneyNumber(adelanto.montoAdelanto);
+      const costo = getProductCost(producto);
+      const stats = buildMoneyStats(montoVenta, costo);
+      const status = getPedidoStatus(producto, 'adelanto');
+
+      rows.push({
+        id: `adelanto-${adelanto.id}`,
+        ventaId: null,
+        adelantoId: adelanto.id,
+        productoId: adelanto.productoId,
+        cliente,
+        vendedor: seller,
+        estadoPago: status.estadoPago,
+        estadoPedido: status.estadoPedido,
+        trackingEstado: status.trackingEstado,
+        producto: buildProductoNombre(producto),
+        fecha: adelanto.fechaAdelanto,
+        montoVenta: +montoVenta.toFixed(2),
+        montoAdelanto: +montoAdelanto.toFixed(2),
+        saldo: +Math.max(0, montoVenta - montoAdelanto).toFixed(2),
+        costo: +costo.toFixed(2),
+        ganancia: stats.ganancia,
+        utilidadPct: stats.utilidadPct,
+        markupPct: stats.markupPct,
+      });
+    }
+
+    for (const producto of productosPedido) {
+      if (
+        soldProductIds.has(producto.id) ||
+        pendingProductIds.has(producto.id)
+      ) {
+        continue;
+      }
+      const seller = normalizeSellerLabel((producto as any)?.vendedor);
+      const cliente = getPedidoClient(seller);
+      if (!cliente) continue;
+
+      const costo = getProductCost(producto);
+      const status = getPedidoStatus(producto, 'sin_pago');
+      const latestTracking = status.latestTracking;
+      const fecha =
+        (latestTracking as any)?.createdAt ||
+        (producto as any)?.valor?.fechaCompra ||
+        null;
+
+      rows.push({
+        id: `camino-${producto.id}`,
+        ventaId: null,
+        adelantoId: null,
+        productoId: producto.id,
+        cliente,
+        vendedor: seller,
+        estadoPago: status.estadoPago,
+        estadoPedido: status.estadoPedido,
+        trackingEstado: status.trackingEstado,
+        producto: buildProductoNombre(producto),
+        fecha,
+        montoVenta: 0,
+        montoAdelanto: 0,
+        saldo: 0,
+        costo: +costo.toFixed(2),
+        ganancia: 0,
+        utilidadPct: 0,
+        markupPct: 0,
+      });
+    }
+
+    const clientsMap = new Map<string, any>();
+    const totals = {
+      productos: 0,
+      pagados: 0,
+      pendientes: 0,
+      ventaTotal: 0,
+      adelantos: 0,
+      saldo: 0,
+      costo: 0,
+      ganancia: 0,
+      utilidadPct: 0,
+      markupPct: 0,
+    };
+
+    for (const row of rows) {
+      const current =
+        clientsMap.get(row.cliente) ||
+        {
+          cliente: row.cliente,
+          productos: 0,
+          pagados: 0,
+          pendientes: 0,
+          ventaTotal: 0,
+          adelantos: 0,
+          saldo: 0,
+          costo: 0,
+          ganancia: 0,
+          utilidadPct: 0,
+          markupPct: 0,
+        };
+
+      current.productos += 1;
+      current.pagados += row.estadoPago === 'pagado' ? 1 : 0;
+      current.pendientes += row.estadoPago === 'pagado' ? 0 : 1;
+      current.ventaTotal += toMoneyNumber(row.montoVenta);
+      current.adelantos += toMoneyNumber(row.montoAdelanto);
+      current.saldo += toMoneyNumber(row.saldo);
+      current.costo += toMoneyNumber(row.costo);
+      current.ganancia += toMoneyNumber(row.ganancia);
+      clientsMap.set(row.cliente, current);
+
+      totals.productos += 1;
+      totals.pagados += row.estadoPago === 'pagado' ? 1 : 0;
+      totals.pendientes += row.estadoPago === 'pagado' ? 0 : 1;
+      totals.ventaTotal += toMoneyNumber(row.montoVenta);
+      totals.adelantos += toMoneyNumber(row.montoAdelanto);
+      totals.saldo += toMoneyNumber(row.saldo);
+      totals.costo += toMoneyNumber(row.costo);
+      totals.ganancia += toMoneyNumber(row.ganancia);
+    }
+
+    const finalize = (obj: any) => {
+      obj.ventaTotal = +obj.ventaTotal.toFixed(2);
+      obj.adelantos = +obj.adelantos.toFixed(2);
+      obj.saldo = +obj.saldo.toFixed(2);
+      obj.costo = +obj.costo.toFixed(2);
+      obj.ganancia = +obj.ganancia.toFixed(2);
+      obj.utilidadPct = obj.ventaTotal ? +((obj.ganancia / obj.ventaTotal) * 100).toFixed(2) : 0;
+      obj.markupPct = obj.costo ? +((obj.ganancia / obj.costo) * 100).toFixed(2) : 0;
+      return obj;
+    };
+
+    return {
+      totals: finalize(totals),
+      clients: Array.from(clientsMap.values())
+        .map(finalize)
+        .sort((a, b) => b.ventaTotal - a.ventaTotal),
+      rows: rows.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))),
+    };
   }
 
   async createAdelanto(dto: CreateVentaAdelantoDto): Promise<VentaAdelanto> {
@@ -247,10 +584,8 @@ export class VentaService {
       );
 
     const v = producto.valor;
-    const resolvedSeller = sellerFromProducto(
-      producto,
-      (dto as any).vendedor ?? null,
-    );
+    const resolvedSeller =
+      normalizeSellerLabel((dto as any).vendedor) ?? sellerFromProducto(producto, null);
 
     // 2) Recalcular costos con el tipo de cambio ingresado
     const valorProductoUSD = Number(v.valorProducto); // USD
@@ -305,7 +640,9 @@ export class VentaService {
         precioVenta,
         ganancia,
         porcentajeGanancia,
-        vendedor: sellerFromProducto(producto, 'ambos'),
+        vendedor:
+          normalizeSellerLabel((dto as any).vendedor) ??
+          sellerFromProducto(producto, 'ambos'),
       });
       const saved = await this.ventaRepo.save(venta);
       // invalidar KPIs de productos
@@ -356,10 +693,10 @@ export class VentaService {
       throw new BadRequestException(
         'El producto no tiene seccion de valor asociada',
       );
-    const resolvedSeller = sellerFromProducto(
-      producto,
-      (dto as any).vendedor !== undefined ? (dto as any).vendedor : venta.vendedor,
-    );
+    const resolvedSeller =
+      (dto as any).vendedor !== undefined
+        ? normalizeSellerLabel((dto as any).vendedor)
+        : normalizeSellerLabel(venta.vendedor) ?? sellerFromProducto(producto, null);
     const nextVendedor =
       resolvedSeller ?? null;
     const splitMode =

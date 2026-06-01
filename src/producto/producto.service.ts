@@ -20,11 +20,27 @@ function normalizeEstado(str?: string | null): string {
   return s;
 }
 
-function normalizeVendedor(value?: string | null): 'Gonzalo' | 'Renato' | 'ambos' | null {
+function titleCaseName(value?: string | null): string {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .map((part) =>
+      part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : '',
+    )
+    .join(' ');
+}
+
+function normalizeVendedor(value?: string | null): string | null {
   const raw = String(value || '').trim().toLowerCase();
   if (raw === 'gonzalo') return 'Gonzalo';
   if (raw === 'renato') return 'Renato';
   if (raw === 'ambos') return 'ambos';
+  const requestMatch = String(value || '').trim().match(/^gonzalo\s*\(([^)]+)\)$/i);
+  if (requestMatch?.[1]) {
+    const client = titleCaseName(requestMatch[1]);
+    return client ? `Gonzalo (${client})` : null;
+  }
   return null;
 }
 
