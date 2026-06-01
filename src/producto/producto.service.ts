@@ -44,6 +44,15 @@ function normalizeVendedor(value?: string | null): string | null {
   return null;
 }
 
+function isPedidoVendedor(value?: string | null): boolean {
+  return /^gonzalo\s*\([^)]+\)$/i.test(String(value || '').trim());
+}
+
+function shouldSyncVentaVendedor(current?: string | null): boolean {
+  const raw = String(current || '').trim().toLowerCase();
+  return !raw || raw === 'gonzalo' || raw === 'renato' || raw === 'ambos';
+}
+
 @Injectable()
 export class ProductoService {
   // Cache corto para listados (mitiga lecturas repetidas en red/DB lenta)
@@ -302,14 +311,36 @@ export class ProductoService {
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
     if (dto.estado !== undefined) producto.estado = dto.estado;
+    let vendedorActualizado: string | null | undefined;
     if ((dto as any).vendedor !== undefined) {
-      producto.vendedor = normalizeVendedor((dto as any).vendedor);
+      vendedorActualizado = normalizeVendedor((dto as any).vendedor);
+      producto.vendedor = vendedorActualizado;
     }
     if (dto.facturaDecSubida !== undefined) {
       producto.facturaDecSubida = !!dto.facturaDecSubida;
     }
     
     await this.productoRepo.save(producto);
+
+    if (
+      vendedorActualizado &&
+      isPedidoVendedor(vendedorActualizado)
+    ) {
+      const ventas = await this.ventaRepo.find({
+        where: { productoId: producto.id },
+      });
+      const ventasToSync = ventas.filter((venta) =>
+        shouldSyncVentaVendedor((venta as any).vendedor),
+      );
+      if (ventasToSync.length) {
+        await this.ventaRepo.save(
+          ventasToSync.map((venta) => ({
+            ...venta,
+            vendedor: vendedorActualizado,
+          })),
+        );
+      }
+    }
 
     // Accesorios: si vienen en el DTO, normalizarlos y actualizar
     if ((dto as any).accesorios !== undefined) {
