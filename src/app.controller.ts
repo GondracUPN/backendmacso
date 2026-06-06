@@ -1647,22 +1647,16 @@ const collectPreferredStoreItems = async (params: {
 
 const matchesAppleProductTitle = (item: any) => {
   const titleText = normalizeLookupText(item?.title || '');
-  const titleCompact = normalizeCompactLookupText(item?.title || '');
 
-  if (/\bhome\s*pod\b/.test(titleText) || titleCompact.includes('homepod')) return false;
+  if (/\b(?:samsung|galaxy|google\s+pixel|motorola|moto|xiaomi|huawei|oneplus|oppo|vivo|dell|lenovo|thinkpad|hp|hewlett\s+packard|asus|acer|microsoft|surface|sony|nokia|lg)\b/.test(titleText)) return false;
   if (isExcludedAppleProductTitle(titleText)) return false;
-  if (isAllowedBulkAppleAccessoryPackage(titleText)) return true;
   if (isAccessoryTitle(titleText)) return false;
-  if (/\bmac\s*books?\b/.test(titleText) || titleCompact.includes('macbook')) return true;
-  if (/\bmac\s*mini\b/.test(titleText) || titleCompact.includes('macmini')) return true;
-  if (/\bi\s*phones?\b/.test(titleText) || titleCompact.includes('iphone')) return true;
-  if (/\bi\s*pads?\b/.test(titleText) || titleCompact.includes('ipad')) return true;
-  if (/\bi\s*macs?\b/.test(titleText) || titleCompact.includes('imac')) return true;
-  if (/\bair\s*pods?\b/.test(titleText) || titleCompact.includes('airpod')) return true;
-  if (/\bair\s*tags?\b/.test(titleText) || titleCompact.includes('airtag')) return true;
-  if (/\bapple\s*watches?\b/.test(titleText) || titleCompact.includes('applewatch')) return true;
-
-  return false;
+  return isLikelyAppleDeviceTitle(titleText, 'ipad') ||
+    isLikelyAppleDeviceTitle(titleText, 'iphone') ||
+    isLikelyAppleDeviceTitle(titleText, 'macbook') ||
+    hasTargetImacSignal(titleText) ||
+    hasTargetMacMiniSignal(titleText) ||
+    hasTargetAppleWatchSignal(titleText);
 };
 
 const isTruthyQueryFlag = (value?: string) =>
@@ -1730,7 +1724,7 @@ const buildEbaySearchCacheKey = (params?: {
     sort: normalizeLookupText(String(params?.sort || 'newlyListed')),
     pawnOnly: Boolean(params?.pawnOnly),
     minSellerReviews,
-    sourceRule: params?.pawnOnly || minSellerReviews > 0 ? 'apple-products-bulk-accessories-v8' : 'default',
+    sourceRule: params?.pawnOnly || minSellerReviews > 0 ? 'target-apple-devices-v12' : 'default',
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 };
@@ -2036,12 +2030,17 @@ const TARGET_IPHONE_MODEL_NUMBERS = [
   'a3575', 'a3634', 'a3635',
 ] as const;
 const TARGET_IPHONE_ORDER_CODES: readonly string[] = [];
+const IPHONE_13_MINI_MODEL_NUMBERS = ['a2481', 'a2626', 'a2628', 'a2629', 'a2630'] as const;
+const BLOCKED_IPHONE_PATTERN =
+  /\b(?:carrier|network|sim|activation|icloud|finance|financed|mdm)\s*locked\b|\b(?:verizon|at\s*&?\s*t|att|t[\s-]*mobile|sprint|cricket|boost|metro(?:pcs)?|xfinity|spectrum|tracfone|straight\s+talk|us\s+cellular)\b|\bbad\s+esn\b|\bblacklisted\b|\bnot\s+unlocked\b/;
 
 const TARGET_IMAC_MODEL_NUMBERS = ['a2438', 'a2439', 'a2873', 'a2874', 'a3137', 'a3247'] as const;
-const TARGET_IMAC_ORDER_CODES = ['mjv93', 'mgpk3', 'mqrc3', 'mqrq3', 'mwuf3', 'mwv13'] as const;
+const TARGET_IMAC_ORDER_CODES = [
+  'mjv93', 'mgpk3', 'mqrc3', 'mqrq3', 'mwuf3', 'mwue3', 'mwug3', 'mwuc3', 'mwv13',
+] as const;
 
 const TARGET_MAC_MINI_MODEL_NUMBERS = ['a2348', 'a2686', 'a2816', 'a3238', 'a3239'] as const;
-const TARGET_MAC_MINI_ORDER_CODES = ['mgnr3', 'mgnt3', 'mnh73', 'mu9d3', 'mu9e3'] as const;
+const TARGET_MAC_MINI_ORDER_CODES = ['mgnr3', 'mgnt3', 'mnh73', 'mu9d3', 'mu9e3', 'mcyt4'] as const;
 
 const TARGET_APPLE_WATCH_SERIES_11_MODEL_NUMBERS = ['a3331', 'a3333', 'a3450', 'a3451', 'a3335', 'a3337', 'a3452', 'a3453'] as const;
 const TARGET_APPLE_WATCH_SE3_MODEL_NUMBERS = ['a3324', 'a3325', 'a3391', 'a3392', 'a3326', 'a3328', 'a3327', 'a3329'] as const;
@@ -2062,40 +2061,6 @@ const hasAppleAccessoryKeyword = (normalized: string) =>
 
 const hasAppleDeviceSignals = (normalized: string) =>
   APPLE_DEVICE_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized));
-
-const getBulkAccessoryQuantity = (normalized: string, itemSource: string) => {
-  const patterns = [
-    new RegExp(`\\b(\\d{1,3})\\s*(?:x\\s*)?(?:apple\\s+)?${itemSource}\\b`),
-    new RegExp(`\\b(\\d{1,3})\\s*(?:pack|pk|pcs?|pieces?|count|ct)\\b.{0,60}\\b${itemSource}\\b`),
-    new RegExp(`\\b(?:lot|bundle|pack|set)\\s+of\\s+(\\d{1,3})\\b.{0,60}\\b${itemSource}\\b`),
-    new RegExp(`\\b${itemSource}\\b.{0,60}\\b(\\d{1,3})\\s*(?:pack|pk|pcs?|pieces?|count|ct)\\b`),
-  ];
-  for (const pattern of patterns) {
-    const quantity = Number(normalized.match(pattern)?.[1] || 0);
-    if (Number.isFinite(quantity) && quantity > 0) return quantity;
-  }
-  return 0;
-};
-
-const hasAppleBulkAccessoryBrandSignal = (normalized: string) =>
-  /\b(?:genuine|original|oem|authentic)\s+apple\b/.test(normalized) ||
-  /\bapple\s+(?:usb|usb\s*-?\s*c|lightning|magsafe|power|charging|charger|chargers|cable|cables|adapter|adapters|20w|30w|35w|61w|67w|70w|96w|140w)\b/.test(normalized) ||
-  /\bapple\s+(?:wall\s+)?(?:charger|adapter|block|brick|cube|cubo)s?\b/.test(normalized) ||
-  /\bmagsafe\b/.test(normalized);
-
-const isAllowedBulkAppleAccessoryPackage = (title: string) => {
-  const normalized = normalizeLookupText(title);
-  if (!hasAppleBulkAccessoryBrandSignal(normalized)) return false;
-
-  const cableQuantity = getBulkAccessoryQuantity(normalized, '(?:usb\\s*-?\\s*c\\s+)?(?:lightning\\s+)?(?:cables?|cords?)');
-  if (cableQuantity >= 10) return true;
-
-  const chargerQuantity = getBulkAccessoryQuantity(
-    normalized,
-    '(?:(?:usb\\s*-?\\s*c|power|wall|charging)\\s+)?(?:adapters?|chargers?|blocks?|bricks?|cubes?|cubos?)',
-  );
-  return chargerQuantity >= 3;
-};
 
 const hasAnyTargetModelNumber = (normalized: string, modelNumbers: readonly string[]) =>
   modelNumbers.some((modelNumber) => new RegExp(`\\b${modelNumber}\\b`).test(normalized));
@@ -2132,7 +2097,6 @@ const isAccessoryTitle = (
   family?: 'ipad' | 'iphone' | 'macbook',
 ) => {
   const normalized = normalizeLookupText(title);
-  if (isAllowedBulkAppleAccessoryPackage(normalized)) return false;
   if (!hasAppleAccessoryKeyword(normalized)) return false;
   if (APPLE_ACCESSORY_PRIMARY_PATTERNS.some((pattern) => pattern.test(normalized))) return true;
   if (family && isAccessoryPrimaryForFamily(normalized, family)) return true;
@@ -2166,8 +2130,8 @@ const hasTargetIpadSignal = (title: string) => {
     if (/\b13(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[4-5]\b/.test(normalized)) return true;
   }
   if (/\bipad\s+air\b/.test(normalized)) {
-    if (/\b(?:4th|fourth|5th|fifth|m[1-5])\b/.test(normalized)) return true;
-    if (/\b(?:11|13)(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[2-5]\b/.test(normalized)) return true;
+    if (/\b(?:4th|fourth|5th|fifth|m[1-4])\b/.test(normalized)) return true;
+    if (/\b(?:11|13)(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[2-4]\b/.test(normalized)) return true;
   }
   if (/\bipad\b/.test(normalized) && !/\b(?:pro|air|mini)\b/.test(normalized)) {
     return /\b(?:11th|eleventh|a16)\b/.test(normalized);
@@ -2177,6 +2141,9 @@ const hasTargetIpadSignal = (title: string) => {
 
 const hasTargetIphoneSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
+  if (/\bmini\b/.test(normalized)) return false;
+  if (hasAnyTargetModelNumber(normalized, IPHONE_13_MINI_MODEL_NUMBERS)) return false;
+  if (BLOCKED_IPHONE_PATTERN.test(normalized)) return false;
   if (titleHasTargetIdentifier(title, TARGET_IPHONE_MODEL_NUMBERS, TARGET_IPHONE_ORDER_CODES)) return true;
   return /\biphone\s*(?:13|14|15|16|17)\b/.test(normalized) ||
     /\biphone\s*(?:16|17)\s*e\b|\b(?:16|17)e\b/.test(normalized) ||
@@ -2207,11 +2174,14 @@ const hasTargetAppleWatchSignal = (title: string) => {
   ];
   if (hasAnyTargetModelNumber(normalized, modelNumbers)) return true;
   const isWatch = /\bapple\s+watch\b|\biwatch\b/.test(normalized);
-  return isWatch && (
-    /\b(?:series\s*)?11\b|\bs11\b/.test(normalized) ||
-    /\bse\s*3\b|\bse\s*third\b|\bse\s*3rd\b/.test(normalized) ||
-    /\bultra\b/.test(normalized)
-  );
+  if (!isWatch) return false;
+  if (/\bultra(?:\s*[123])?\b/.test(normalized)) return true;
+  if (/\bse\s*3\b|\bse\s*third\b|\bse\s*3rd\b/.test(normalized)) return true;
+  if (/\b(?:series\s*)?11\b|\bs11\b/.test(normalized)) {
+    const statedSize = normalized.match(/\b(\d{2})\s*mm\b/)?.[1];
+    return !statedSize || statedSize === '42' || statedSize === '46';
+  }
+  return false;
 };
 
 const isLikelyAppleDeviceTitle = (title: string, family: 'ipad' | 'iphone' | 'macbook') => {
@@ -2608,7 +2578,9 @@ const fetchEbayCatalogSearch = async (params?: {
   const minSellerReviews = normalizeMinSellerReviews(params?.minSellerReviews);
   const cacheTake = Math.min(200, Math.max(1, Number(params?.limit || 140)));
   const cacheOffset = Math.max(0, Number(params?.cacheOffset || 0));
-  if (params?.preferCache && cacheRepo) {
+  const requestedSort = params?.sort === 'oldestListed' ? 'oldestListed' : 'newlyListed';
+  const canServeCachedPage = requestedSort !== 'newlyListed';
+  if (params?.preferCache && canServeCachedPage && cacheRepo) {
     const cached = await loadCachedEbaySearchItems(cacheRepo, {
       searchKey,
       skip: cacheOffset,
@@ -2642,6 +2614,7 @@ const fetchEbayCatalogSearch = async (params?: {
       buyingOptions: params?.buyingOptions,
       sort: params?.sort,
     });
+    const deviceItems = data.items.filter((item: any) => matchesAppleProductTitle(item));
     const saved = await saveEbaySearchItemsToCache(cacheRepo, {
       searchKey,
       query: params?.query,
@@ -2650,11 +2623,13 @@ const fetchEbayCatalogSearch = async (params?: {
       sort: params?.sort,
       pawnOnly: false,
       ebayOffset: params?.offset,
-      items: data.items,
+      items: deviceItems,
     });
     const shouldReadCacheNext = saved.duplicateDetected && cacheOffset === 0;
     return {
       ...data,
+      items: deviceItems,
+      filteredTotal: deviceItems.length,
       cacheOffset,
       nextCacheOffset: shouldReadCacheNext ? data.items.length : cacheOffset,
       nextPreferCache: shouldReadCacheNext,
@@ -2670,7 +2645,12 @@ const fetchEbayCatalogSearch = async (params?: {
   const scanOffset = requestedOffset;
   const desiredCount = targetLimit;
   const perPageLimit = 200;
-  const shouldSkipCachedDuringScan = Boolean(cacheRepo && params?.preferCache && cacheOffset > 0);
+  const shouldSkipCachedDuringScan = Boolean(
+    cacheRepo &&
+    params?.preferCache &&
+    canServeCachedPage &&
+    cacheOffset > 0,
+  );
   const minPages = shouldSkipCachedDuringScan ? 10 : 1;
   const filteredScanFallback = minSellerReviews > 0 ? 20 : 10;
   const maxPages = shouldSkipCachedDuringScan
@@ -2681,7 +2661,6 @@ const fetchEbayCatalogSearch = async (params?: {
   const collected: any[] = [];
   const seen = new Set<string>();
   let sort = 'newlyListed';
-  const requestedSort = params?.sort === 'oldestListed' ? 'oldestListed' : 'newlyListed';
   let searchedTotal = 0;
   let exhausted = false;
   let nextOffset = scanOffset;
@@ -2803,7 +2782,12 @@ const fetchEbayCatalogSearch = async (params?: {
     ? items.filter((item) => newKeySet.has(getEbayCacheItemKey(item)))
     : items;
   const nextCacheOffset = cacheOffset + returnItems.length;
-  const nextPreferCache = Boolean(cacheRepo && cacheOffset > 0 && saved.duplicateDetected);
+  const nextPreferCache = Boolean(
+    canServeCachedPage &&
+    cacheRepo &&
+    cacheOffset > 0 &&
+    saved.duplicateDetected,
+  );
 
   return {
     query: String(params?.query || 'apple').trim() || 'apple',
