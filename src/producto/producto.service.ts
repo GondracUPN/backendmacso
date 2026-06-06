@@ -7,6 +7,7 @@ import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { CreateProductoDto } from './dto/create-producto.dto';
+import { CreateProductoLoteDto } from './dto/create-producto-lote.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { Tracking, EstadoTracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
@@ -184,6 +185,88 @@ export class ProductoService {
     });
     await this.invalidateListCache();
     return this.applyProrrateadoView(finalProd);
+  }
+
+  async createLote(data: CreateProductoLoteDto): Promise<Producto[]> {
+    const totalDistribuido = data.distribucion.reduce(
+      (sum, item) => sum + Number(item.cantidad || 0),
+      0,
+    );
+    if (totalDistribuido !== data.cantidad) {
+      throw new BadRequestException(
+        `La distribución debe sumar ${data.cantidad} productos`,
+      );
+    }
+
+    const repartirImporte = (total: number, cantidad: number): number[] => {
+      const totalCentavos = Math.round(Number(total || 0) * 100);
+      const baseCentavos = Math.floor(totalCentavos / cantidad);
+      const sobrante = totalCentavos - baseCentavos * cantidad;
+      return Array.from(
+        { length: cantidad },
+        (_, index) => (baseCentavos + (index < sobrante ? 1 : 0)) / 100,
+      );
+    };
+    const valoresProducto = data.producto.valor
+      ? repartirImporte(data.producto.valor.valorProducto, data.cantidad)
+      : [];
+    const productos: Producto[] = [];
+    let unidadIndex = 0;
+    for (const item of data.distribucion) {
+      for (let index = 0; index < item.cantidad; index += 1) {
+        const producto = await this.create({
+          ...data.producto,
+          vendedor: item.vendedor || undefined,
+          detalle: data.producto.detalle
+            ? { ...data.producto.detalle }
+            : undefined,
+          valor: data.producto.valor
+            ? {
+                ...data.producto.valor,
+                valorProducto: valoresProducto[unidadIndex],
+              }
+            : undefined,
+          accesorios: Array.isArray(data.producto.accesorios)
+            ? [...data.producto.accesorios]
+            : undefined,
+        });
+
+        if (data.casillero) {
+          await this.trackingRepo.update(
+            { productoId: producto.id },
+            { casillero: data.casillero },
+          );
+          if (Array.isArray(producto.tracking) && producto.tracking[0]) {
+            producto.tracking[0].casillero = data.casillero;
+          }
+        }
+        productos.push(producto);
+        unidadIndex += 1;
+      }
+    }
+
+    if (data.vincularTodos && productos.length > 1) {
+      const envioGrupoId = `grp-${crypto.randomUUID()}`;
+      productos.forEach((producto) => {
+        producto.envioGrupoId = envioGrupoId;
+      });
+      await this.productoRepo.save(productos);
+      await this.recalcEnvioGrupo(envioGrupoId);
+      await this.syncTrackingEnGrupo(envioGrupoId);
+
+      const productosVinculados = await this.productoRepo.find({
+        where: { envioGrupoId },
+        relations: ['detalle', 'valor', 'tracking'],
+        order: { id: 'ASC' },
+      });
+      await this.invalidateListCache();
+      return productosVinculados.map((producto) =>
+        this.applyProrrateadoView(producto),
+      );
+    }
+
+    await this.invalidateListCache();
+    return productos;
   }
 
   /** Devuelve todos los productos (opcionalmente filtrados por estatus) con sus relaciones */

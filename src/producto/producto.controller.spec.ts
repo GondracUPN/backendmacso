@@ -13,6 +13,7 @@ describe('ProductoController', () => {
           provide: ProductoService,
           useValue: {
             create: jest.fn(),
+            createLote: jest.fn(),
             findAll: jest.fn(),
             stats: jest.fn(),
             statsCached: jest.fn(),

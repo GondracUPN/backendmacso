@@ -2,6 +2,7 @@
 import { Controller, Post, Get, Patch, Param, Body, Delete, HttpException, HttpStatus, Query } from "@nestjs/common";
 import { ProductoService } from './producto.service';
 import { CreateProductoDto } from './dto/create-producto.dto';
+import { CreateProductoLoteDto } from './dto/create-producto-lote.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -15,6 +16,11 @@ export class ProductoController {
   @Post()
   create(@Body() dto: CreateProductoDto) {
     return this.productoService.create(dto);
+  }
+
+  @Post('lote')
+  createLote(@Body() dto: CreateProductoLoteDto) {
+    return this.productoService.createLote(dto);
   }
 
   // Listado público para catálogo/front
@@ -65,4 +71,3 @@ export class ProductoController {
     return this.productoService.remove(+id);
   }
 }
-
