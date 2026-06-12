@@ -259,6 +259,9 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS estatus_esho varchar`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."tracking" ADD COLUMN IF NOT EXISTS "contabilizadoAt" TIMESTAMPTZ`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto_detalle" ADD COLUMN IF NOT EXISTS esim varchar`,
       );
       await dataSource.query(

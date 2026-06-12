@@ -40,6 +40,10 @@ export class CreateTrackingDto {
   fechaRecogido?: string;
 
   @IsOptional()
+  @IsDateString()
+  contabilizadoAt?: string | null;
+
+  @IsOptional()
   @IsEnum([
     'comprado_sin_tracking',
     'comprado_en_camino',

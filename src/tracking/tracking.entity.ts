@@ -58,6 +58,9 @@ export class Tracking {
   @Column({ type: 'date', nullable: true })
   fechaRecogido?: string; // entregado/recogido
 
+  @Column({ type: 'timestamptz', nullable: true })
+  contabilizadoAt?: string | null; // confirmado en el cotejo de inventario
+
   // Estado calculado / persistido
   @Column({
     type: 'enum',
