@@ -11,6 +11,7 @@ import { CreateProductoLoteDto } from './dto/create-producto-lote.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { Tracking, EstadoTracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
+import { PersonalEshopex } from './personal-eshopex.entity';
 import * as crypto from 'node:crypto';
 
 function normalizeEstado(str?: string | null): string {
@@ -74,6 +75,8 @@ export class ProductoService {
     private readonly trackingRepo: Repository<Tracking>,
     @InjectRepository(Venta)
     private readonly ventaRepo: Repository<Venta>,
+    @InjectRepository(PersonalEshopex)
+    private readonly personalEshopexRepo: Repository<PersonalEshopex>,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -109,14 +112,7 @@ export class ProductoService {
     if (data.valor) {
       const { valorProducto, valorDec, peso, fechaCompra } = data.valor;
       const valorSoles = Number((valorProducto * 3.7).toFixed(2));
-      const tarifaBase = this.getTarifa(peso);
-      const hasta3kg = this.getTarifa(Math.min(peso, 3));
-      let descuento = Number((hasta3kg * 0.35).toFixed(2));
-      if (descuento > 41.99) descuento = 41.99;
-      const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
-      const honorarios = this.getHonorarios(valorDec);
-      const seguro = this.getSeguro(valorDec);
-      const costoEnvio = Number((tarifaFinal + honorarios + seguro).toFixed(2));
+      const costoEnvio = this.getCostoEnvio(peso, valorDec, fechaCompra);
       const costoTotal = Number((valorSoles + costoEnvio).toFixed(2));
 
       valor = this.valorRepo.create({
@@ -347,6 +343,7 @@ export class ProductoService {
     if (Array.isArray(p?.tracking)) {
       p.tracking = this.sortTrackingDesc(p.tracking);
     }
+    (p as any).despacho = Boolean((p as any).despachoCasillero);
     if (p?.valor && p.valor.costoEnvioProrrateado != null) {
       const v: any = { ...p.valor };
       const envio = Number(p.valor.costoEnvioProrrateado);
@@ -356,6 +353,70 @@ export class ProductoService {
       p.valor = v;
     }
     return p;
+  }
+
+  async marcarDespachoCasillero(id: number): Promise<Producto> {
+    const producto = await this.productoRepo.findOne({
+      where: { id },
+      relations: ['detalle', 'valor', 'tracking'],
+    });
+    if (!producto) {
+      throw new NotFoundException(`Producto con id ${id} no encontrado`);
+    }
+    producto.despachoCasillero = true;
+    producto.despachoCasilleroAt = new Date();
+    await this.productoRepo.save(producto);
+    await this.invalidateListCache();
+    return this.applyProrrateadoView(producto);
+  }
+
+  async findPersonalEshopex(): Promise<PersonalEshopex[]> {
+    return this.personalEshopexRepo.find({ order: { id: 'DESC' } });
+  }
+
+  async upsertPersonalEshopex(data: Partial<PersonalEshopex>): Promise<PersonalEshopex> {
+    const trackingEshop = String((data as any)?.trackingEshop || (data as any)?.guia || '').trim();
+    if (!trackingEshop) throw new BadRequestException('Tracking Eshopex requerido');
+    const existing = await this.personalEshopexRepo.findOne({ where: { trackingEshop } });
+    const patch: Partial<PersonalEshopex> = {
+      trackingEshop,
+      descripcion: String(data.descripcion || 'Personal').trim() || 'Personal',
+      peso: data.peso == null ? null : Number(data.peso),
+      valorDec: Number(data.valorDec || 0) || 0,
+      estatusEsho: data.estatusEsho ? String(data.estatusEsho).trim() : null,
+      fechaRecepcion: data.fechaRecepcion || null,
+      fechaRecepcionRaw: data.fechaRecepcionRaw || null,
+      casillero: data.casillero ? String(data.casillero).trim() : null,
+      account: data.account ? String(data.account).trim() : null,
+    };
+    if (existing) {
+      Object.assign(existing, patch);
+      return this.personalEshopexRepo.save(existing);
+    }
+    return this.personalEshopexRepo.save(
+      this.personalEshopexRepo.create({
+        ...patch,
+        despacho: Boolean((data as any).despacho),
+        despachoAt: (data as any).despacho ? new Date() : null,
+        recogido: Boolean((data as any).recogido),
+        fechaRecogido: (data as any).fechaRecogido || null,
+      }),
+    );
+  }
+
+  async updatePersonalEshopex(id: number, patch: Partial<PersonalEshopex>): Promise<PersonalEshopex> {
+    const item = await this.personalEshopexRepo.findOne({ where: { id } });
+    if (!item) throw new NotFoundException(`Personal Eshopex ${id} no encontrado`);
+    if ((patch as any).despacho === true && !item.despacho) {
+      item.despachoAt = new Date();
+    }
+    Object.assign(item, patch);
+    return this.personalEshopexRepo.save(item);
+  }
+
+  async removePersonalEshopex(id: number): Promise<void> {
+    const res = await this.personalEshopexRepo.delete(id);
+    if (!res.affected) throw new NotFoundException(`Personal Eshopex ${id} no encontrado`);
   }
 
   private sortTrackingDesc(trackings: Tracking[]): Tracking[] {
@@ -467,14 +528,7 @@ export class ProductoService {
       Object.assign(v, dto.valor);
 
       v.valorSoles = Number((v.valorProducto * 3.7).toFixed(2));
-      const tarifaBase = this.getTarifa(v.peso);
-      const hasta3kg = this.getTarifa(Math.min(v.peso, 3));
-      let descuento = Number((hasta3kg * 0.35).toFixed(2));
-      if (descuento > 41.99) descuento = 41.99;
-      const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
-      const honorarios = this.getHonorarios(v.valorDec);
-      const seguro = this.getSeguro(v.valorDec);
-      v.costoEnvio = Number((tarifaFinal + honorarios + seguro).toFixed(2));
+      v.costoEnvio = this.getCostoEnvio(v.peso, v.valorDec, v.fechaCompra);
       v.costoTotal = Number((v.valorSoles + v.costoEnvio).toFixed(2));
 
       await this.valorRepo.save(v);
@@ -502,17 +556,11 @@ export class ProductoService {
         if (pesoRefNum !== undefined) peer.valor.peso = pesoRefNum;
         if (decRefNum !== undefined) peer.valor.valorDec = decRefNum;
         peer.valor.valorSoles = Number((Number(peer.valor.valorProducto) * 3.7).toFixed(2));
-        peer.valor.costoEnvio = (() => {
-          const pesoCalc = Number(peer.valor.peso);
-          const tarifaBase = this.getTarifa(pesoCalc);
-          const hasta3kg = this.getTarifa(Math.min(pesoCalc, 3));
-          let descuento = Number((hasta3kg * 0.35).toFixed(2));
-          if (descuento > 41.99) descuento = 41.99;
-          const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
-          const honorarios = this.getHonorarios(Number(peer.valor.valorDec));
-          const seguro = this.getSeguro(Number(peer.valor.valorDec));
-          return Number((tarifaFinal + honorarios + seguro).toFixed(2));
-        })();
+        peer.valor.costoEnvio = this.getCostoEnvio(
+          Number(peer.valor.peso),
+          Number(peer.valor.valorDec),
+          peer.valor.fechaCompra,
+        );
         const baseSoles = Number(peer.valor.valorSoles ?? peer.valor.valorProducto * 3.7 ?? 0);
         peer.valor.costoTotal = Number((baseSoles + (peer.valor.costoEnvio || 0)).toFixed(2));
         await this.valorRepo.save(peer.valor);
@@ -566,9 +614,74 @@ export class ProductoService {
     await this.invalidateListCache();
   }
 
+  async recalcularEnviosNuevaTarifa(cutoffDate = '2026-05-01') {
+    const productos = await this.productoRepo.find({
+      relations: ['valor'],
+    });
+    const afectados = productos.filter((producto) => {
+      const fecha = this.getFechaCompraIso(producto.valor?.fechaCompra);
+      return !!fecha && fecha > cutoffDate;
+    });
+    const grupos = new Set<string>();
+    let individuales = 0;
 
-  private getTarifa(peso: number): number {
-    const tabla: [number, number][] = [
+    for (const producto of afectados) {
+      if (!producto.valor) continue;
+      if (producto.envioGrupoId) {
+        grupos.add(producto.envioGrupoId);
+        continue;
+      }
+      const v = producto.valor;
+      v.valorSoles = Number((Number(v.valorProducto) * 3.7).toFixed(2));
+      v.costoEnvio = this.getCostoEnvio(Number(v.peso), Number(v.valorDec), v.fechaCompra);
+      v.costoTotal = Number((Number(v.valorSoles) + Number(v.costoEnvio || 0)).toFixed(2));
+      v.costoEnvioProrrateado = v.costoEnvio;
+      v.costoTotalProrrateado = v.costoTotal;
+      await this.valorRepo.save(v);
+      individuales += 1;
+    }
+
+    for (const grupoId of grupos) {
+      await this.recalcEnvioGrupo(grupoId);
+    }
+
+    await this.invalidateListCache();
+    return {
+      ok: true,
+      cutoffDate,
+      afectados: afectados.length,
+      individuales,
+      grupos: grupos.size,
+    };
+  }
+
+
+  private getCostoEnvio(peso: number, valorDec: number, fechaCompra?: Date | string | null): number {
+    const tarifaBase = this.getTarifa(peso, fechaCompra);
+    const hasta3kg = this.getTarifa(Math.min(peso, 3), fechaCompra);
+    let descuento = Number((hasta3kg * 0.35).toFixed(2));
+    if (descuento > 41.99) descuento = 41.99;
+    const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
+    const honorarios = this.getHonorarios(valorDec);
+    const seguro = this.getSeguro(valorDec);
+    return Number((tarifaFinal + honorarios + seguro).toFixed(2));
+  }
+
+  private usesLegacyTarifa(fechaCompra?: Date | string | null): boolean {
+    const isoDate = this.getFechaCompraIso(fechaCompra);
+    return /^\d{4}-\d{2}-\d{2}$/.test(isoDate) && isoDate <= '2026-05-01';
+  }
+
+  private getFechaCompraIso(fechaCompra?: Date | string | null): string {
+    if (!fechaCompra) return '';
+    if (fechaCompra instanceof Date && !Number.isNaN(fechaCompra.getTime())) {
+      return fechaCompra.toISOString().slice(0, 10);
+    }
+    return String(fechaCompra).slice(0, 10);
+  }
+
+  private getTarifa(peso: number, fechaCompra?: Date | string | null): number {
+    const tablaLegacy: [number, number][] = [
       [0.5, 30.6],
       [1.0, 55],
       [1.5, 74],
@@ -590,10 +703,36 @@ export class ProductoService {
       [9.5, 250],
       [10.0, 260],
     ];
+    const tablaNueva: [number, number][] = [
+      [0.5, 31.79],
+      [1.0, 56.19],
+      [1.5, 75.86],
+      [2.0, 91.86],
+      [2.5, 112.53],
+      [3.0, 122.53],
+      [3.5, 133.2],
+      [4.0, 143.2],
+      [4.5, 153.87],
+      [5.0, 163.87],
+      [5.5, 174.54],
+      [6.0, 184.54],
+      [6.5, 195.21],
+      [7.0, 205.21],
+      [7.5, 215.88],
+      [8.0, 225.88],
+      [8.5, 236.55],
+      [9.0, 246.55],
+      [9.5, 257.22],
+      [10.0, 267.22],
+    ];
+    const tabla = this.usesLegacyTarifa(fechaCompra) ? tablaLegacy : tablaNueva;
+    const adicional05kg = this.usesLegacyTarifa(fechaCompra) ? 10 : 10.52;
     for (const [max, tarifa] of tabla) {
       if (peso <= max) return tarifa;
     }
-    return tabla[tabla.length - 1][1];
+    const [maxPeso, tarifaBase] = tabla[tabla.length - 1];
+    const extraKg = peso - maxPeso;
+    return tarifaBase + Math.ceil(extraKg / 0.5) * adicional05kg;
   }
 
   private getHonorarios(fobUsd: number): number {
@@ -701,14 +840,8 @@ export class ProductoService {
     );
 
     // Costo de envío total usando fórmula normal con peso y valorDec base (como producto individual)
-    const tarifaBase = this.getTarifa(pesoRef);
-    const hasta3kg = this.getTarifa(Math.min(pesoRef, 3));
-    let descuento = Number((hasta3kg * 0.35).toFixed(2));
-    if (descuento > 41.99) descuento = 41.99;
-    const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
-    const honorarios = this.getHonorarios(valorDecBase);
-    const seguro = this.getSeguro(valorDecBase);
-    const totalEnvio = Number((tarifaFinal + honorarios + seguro).toFixed(2));
+    const fechaCompraRef = conValor[0].valor?.fechaCompra ?? null;
+    const totalEnvio = this.getCostoEnvio(pesoRef, valorDecBase, fechaCompraRef);
 
     const totalPrecio = conValor.reduce((sum, p) => sum + Number(p.valor?.valorProducto ?? 0), 0);
     if (!totalPrecio) return;
@@ -892,10 +1025,17 @@ export class ProductoService {
     const modelo = (d?.modelo || '').toString();
     const gama = (d?.gama || '').toString();
     const proc = (d?.procesador || '').toString();
+    const generacion = (d?.generacion || '').toString();
     const tam = ((d as any)?.tamano || '').toString();
     if (tipo.toLowerCase() === 'iphone') {
       const base = ['iPhone', numero, modelo].filter(Boolean).join(' ').trim();
       return base || `Producto ${p.id}`;
+    }
+    if (tipo.toLowerCase() === 'ipad') {
+      const linea = gama === 'Normal' ? '' : gama;
+      const modeloIpad = gama === 'Normal' || gama === 'Mini' ? generacion : proc;
+      const pantalla = tam && tam !== modeloIpad ? tam : '';
+      return ['iPad', linea, modeloIpad, pantalla].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
     }
     return [tipo, gama, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
   }
@@ -1078,11 +1218,13 @@ export class ProductoService {
     });
 
     let enviados = 0;
+    let marcados = 0;
     const candidatos: number[] = [];
     const errores: Array<{ id: number; error: string }> = [];
 
     for (const p of prods) {
       try {
+        if ((p as any).catalogoEnviado) continue;
         if (vendidosSet.has(p.id)) continue;
         const estado = this.getUltimoTrackingEstado(p);
         if (estado !== 'recogido') continue;
@@ -1092,7 +1234,14 @@ export class ProductoService {
           try {
             const r = await fetch(`${apiBase}/api/sync/exists?sku=${encodeURIComponent(sku)}`);
             const j = await r.json().catch(() => ({} as any));
-            if (j && j.exists) continue;
+            if (j && j.exists) {
+              await this.productoRepo.update(
+                { id: p.id },
+                { catalogoEnviado: true, catalogoEnviadoAt: new Date() } as any,
+              );
+              marcados++;
+              continue;
+            }
           } catch {}
         }
         const payload = ((): any => {
@@ -1119,7 +1268,7 @@ export class ProductoService {
         const signature = this.hmac(body, secret);
         const idem = crypto.randomUUID();
 
-        await fetch(url, {
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1128,12 +1277,21 @@ export class ProductoService {
           },
           body,
         });
+        if (!response.ok) {
+          throw new Error(`Catalog sync HTTP ${response.status}`);
+        }
+        await this.productoRepo.update(
+          { id: p.id },
+          { catalogoEnviado: true, catalogoEnviadoAt: new Date() } as any,
+        );
         enviados++;
+        marcados++;
       } catch (e: any) {
         errores.push({ id: (p as any).id, error: String(e?.message || e) });
       }
     }
 
-    return { ok: true, total: candidatos.length, enviados, candidatos, errores };
+    if (marcados > 0) await this.invalidateListCache();
+    return { ok: true, total: candidatos.length, enviados, marcados, candidatos, errores };
   }
 }

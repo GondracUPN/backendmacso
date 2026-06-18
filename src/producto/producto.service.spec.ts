@@ -153,4 +153,16 @@ describe('ProductoService', () => {
     );
     expect(result[0].envioGrupoId).toBe(result[1].envioGrupoId);
   });
+
+  it('suma tarifa adicional cuando el peso supera 10 kg', () => {
+    expect((service as any).getTarifa(10)).toBe(267.22);
+    expect((service as any).getTarifa(11)).toBeCloseTo(288.26, 2);
+    expect((service as any).getTarifa(11.82)).toBeCloseTo(309.3, 2);
+  });
+
+  it('mantiene tarifa antigua para compras hasta el 1 de mayo de 2026', () => {
+    expect((service as any).getTarifa(10, '2026-05-01')).toBe(260);
+    expect((service as any).getTarifa(11, '2026-05-01')).toBe(280);
+    expect((service as any).getTarifa(10, '2026-05-02')).toBe(267.22);
+  });
 });

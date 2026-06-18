@@ -584,10 +584,30 @@ export class AnalyticsService {
       }
       return true;
     });
+    const productosHistoricosComprados = productos.filter((p) => {
+      if (!matchesProductFilters(p)) return false;
+      if (sellerTarget && !matchesProductoSeller(p, sellerTarget)) return false;
+      if (estadoTracking) {
+        const estados = (p.tracking || []).map((t) => t.estado);
+        if (!estados.includes(estadoTracking as any)) return false;
+      }
+      if (transportista || casillero) {
+        const ok = (p.tracking || []).some((t) => {
+          if (transportista && t.transportista !== transportista) return false;
+          if (casillero && t.casillero !== casillero) return false;
+          return true;
+        });
+        if (!ok) return false;
+      }
+      return true;
+    });
     const productoShareById = new Map<number, number>();
     for (const p of productosFiltered) {
       productoShareById.set(p.id, productoShareForSeller(p, sellerTarget));
     }
+    const inventoryHistoricalPurchasedUnits = +productosHistoricosComprados
+      .reduce((s, p) => s + productoShareForSeller(p, sellerTarget), 0)
+      .toFixed(2);
 
     // Helper to build a user-friendly display for each product
     const productDisplay = (p: Producto): string => {
@@ -1360,6 +1380,7 @@ export class AnalyticsService {
         inventoryActiveUnits,
         inventoryUnsoldUnits,
         inventoryAvailableUnits,
+        inventoryHistoricalPurchasedUnits,
         capitalInmovilizado,
         capitalInmovilizadoProducto,
         capitalInmovilizadoEnvio,

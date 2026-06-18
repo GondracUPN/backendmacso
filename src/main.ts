@@ -247,6 +247,18 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS vendedor varchar(80)`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "catalogoEnviado" boolean NOT NULL DEFAULT false`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "catalogoEnviadoAt" TIMESTAMPTZ`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "despachoCasillero" boolean NOT NULL DEFAULT false`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "despachoCasilleroAt" TIMESTAMPTZ`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ALTER COLUMN vendedor TYPE varchar(80)`,
       );
       await dataSource.query(
@@ -269,6 +281,29 @@ async function bootstrap() {
       );
       await dataSource.query(
         `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "tipoCambioRenato" numeric(10,4)`,
+      );
+      await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."personal_eshopex" (
+          "id" SERIAL PRIMARY KEY,
+          "trackingEshop" varchar(80) NOT NULL,
+          "descripcion" text NOT NULL DEFAULT 'Personal',
+          "peso" numeric(10,2),
+          "valorDec" numeric(10,2) NOT NULL DEFAULT 0,
+          "estatusEsho" varchar(120),
+          "fechaRecepcion" date,
+          "fechaRecepcionRaw" varchar(40),
+          "casillero" varchar(80),
+          "account" varchar(160),
+          "despacho" boolean NOT NULL DEFAULT false,
+          "despachoAt" TIMESTAMPTZ,
+          "recogido" boolean NOT NULL DEFAULT false,
+          "fechaRecogido" date,
+          "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_personal_eshopex_tracking" ON "${schema}"."personal_eshopex" ("trackingEshop")`,
       );
 
       const renameCandidates = await dataSource.query(

@@ -31,12 +31,24 @@ export class Producto {
   @Column({ type: 'boolean', default: false })
   facturaDecSubida: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  catalogoEnviado: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  catalogoEnviadoAt?: Date | null;
+
   // Agrupador de envíos para prorratear costo entre productos vinculados
   @Column({ type: 'varchar', length: 64, nullable: true })
   envioGrupoId?: string | null;
 
   @Column({ type: 'varchar', length: 80, nullable: true })
   vendedor?: string | null;
+
+  @Column({ type: 'boolean', default: false })
+  despachoCasillero: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  despachoCasilleroAt?: Date | null;
 
   @ManyToOne(() => ProductoDetalle, { cascade: true, eager: true })
   @JoinColumn()

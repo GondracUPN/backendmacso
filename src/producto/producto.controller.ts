@@ -59,6 +59,36 @@ export class ProductoController {
     return this.productoService.syncDisponiblesConCatalogo();
   }
 
+  @Post('recalcular-envios-nueva-tarifa')
+  async recalcularEnviosNuevaTarifa(@Body() body?: { cutoffDate?: string }) {
+    return this.productoService.recalcularEnviosNuevaTarifa(body?.cutoffDate || '2026-05-01');
+  }
+
+  @Get('personal-eshopex')
+  personalEshopex() {
+    return this.productoService.findPersonalEshopex();
+  }
+
+  @Post('personal-eshopex')
+  guardarPersonalEshopex(@Body() body: any) {
+    return this.productoService.upsertPersonalEshopex(body);
+  }
+
+  @Patch('personal-eshopex/:id')
+  actualizarPersonalEshopex(@Param('id') id: string, @Body() body: any) {
+    return this.productoService.updatePersonalEshopex(+id, body);
+  }
+
+  @Delete('personal-eshopex/:id')
+  borrarPersonalEshopex(@Param('id') id: string) {
+    return this.productoService.removePersonalEshopex(+id);
+  }
+
+  @Patch(':id/despacho-casillero')
+  marcarDespachoCasillero(@Param('id') id: string) {
+    return this.productoService.marcarDespachoCasillero(+id);
+  }
+
   // Editar producto (sin auth para flujo Servicios)
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateProductoDto) {
