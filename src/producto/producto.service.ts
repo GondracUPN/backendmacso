@@ -370,6 +370,21 @@ export class ProductoService {
     return this.applyProrrateadoView(producto);
   }
 
+  async anularDespachoCasillero(id: number): Promise<Producto> {
+    const producto = await this.productoRepo.findOne({
+      where: { id },
+      relations: ['detalle', 'valor', 'tracking'],
+    });
+    if (!producto) {
+      throw new NotFoundException(`Producto con id ${id} no encontrado`);
+    }
+    producto.despachoCasillero = false;
+    producto.despachoCasilleroAt = null;
+    await this.productoRepo.save(producto);
+    await this.invalidateListCache();
+    return this.applyProrrateadoView(producto);
+  }
+
   async findPersonalEshopex(): Promise<PersonalEshopex[]> {
     return this.personalEshopexRepo.find({ order: { id: 'DESC' } });
   }

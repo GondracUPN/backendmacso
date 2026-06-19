@@ -69,10 +69,12 @@ export class SickwService {
     }
 
     const rawResult = this.extractResultText(payload, rawBody);
+    const fields = this.parseResultFields(rawResult);
     const status = String(payload.status || '').toLowerCase();
+    const hasResultFields = fields.length > 0;
     const failed =
-      ['error', 'failed', 'fail', 'rejected'].includes(status) ||
-      /error|invalid|wrong|insufficient|balance|not found/i.test(rawResult || payload.message || payload.error || '');
+      (!hasResultFields && ['error', 'failed', 'fail', 'rejected'].includes(status)) ||
+      (!hasResultFields && /invalid|wrong|insufficient|balance|not found|api key|service unavailable/i.test(rawResult || payload.message || payload.error || ''));
 
     if (failed) {
       throw new HttpException(
@@ -89,7 +91,7 @@ export class SickwService {
       identifier: cleanIdentifier,
       type: type || null,
       raw: rawResult,
-      fields: this.parseResultFields(rawResult),
+      fields,
     };
   }
 
@@ -210,10 +212,12 @@ export class SickwService {
     }
 
     const rawResult = this.extractResultText(payload, rawBody);
+    const fields = this.parseResultFields(rawResult);
     const status = String(payload.status || '').toLowerCase();
+    const hasResultFields = fields.length > 0;
     const failed =
-      ['error', 'failed', 'fail', 'rejected'].includes(status) ||
-      /error|invalid|wrong|insufficient|balance|not found/i.test(rawResult || payload.message || payload.error || '');
+      (!hasResultFields && ['error', 'failed', 'fail', 'rejected'].includes(status)) ||
+      (!hasResultFields && /invalid|wrong|insufficient|balance|not found|api key|service unavailable/i.test(rawResult || payload.message || payload.error || ''));
 
     if (failed) {
       throw new HttpException(
@@ -230,7 +234,7 @@ export class SickwService {
       identifier: cleanIdentifier,
       type: type || null,
       raw: rawResult,
-      fields: this.parseResultFields(rawResult),
+      fields,
     };
   }
 
@@ -248,15 +252,55 @@ export class SickwService {
     return JSON.stringify(result);
   }
 
-  private parseResultFields(result: string) {
+  private normalizeResultText(result: string) {
     const normalized = String(result || '')
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/p>/gi, '\n')
       .replace(/<\/div>/gi, '\n')
+      .replace(/<\/li>/gi, '\n')
       .replace(/&nbsp;/gi, ' ')
       .replace(/&amp;/gi, '&')
       .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>');
+      .replace(/&gt;/gi, '>')
+      .replace(/&#39;/gi, "'")
+      .replace(/&quot;/gi, '"');
+
+    const text = this.htmlToText(normalized);
+    const knownLabels = [
+      'Model Description',
+      'Serial Number',
+      'Estimated Purchase Date',
+      'Warranty Status',
+      'iCloud Lock',
+      'Demo Unit',
+      'Loaner Device',
+      'Replaced Device',
+      'Replacement Device',
+      'Refurbished Device',
+      'Locked Carrier',
+      'Sim-Lock Status',
+      'SIM Lock Status',
+      'Find My iPhone',
+      'IMEI2',
+      'IMEI',
+      'MEID',
+      'Model',
+      'Blacklist Status',
+      'MDM Status',
+    ];
+    const labelPattern = knownLabels
+      .sort((a, b) => b.length - a.length)
+      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|');
+
+    return text
+      .replace(new RegExp(`[\\\\|]?\\s*(?=(${labelPattern})\\s*:)`, 'gi'), '\n')
+      .replace(/^\n+/, '')
+      .trim();
+  }
+
+  private parseResultFields(result: string) {
+    const normalized = this.normalizeResultText(result);
 
     const lines = normalized
       .split('\n')

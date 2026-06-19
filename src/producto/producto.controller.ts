@@ -89,6 +89,11 @@ export class ProductoController {
     return this.productoService.marcarDespachoCasillero(+id);
   }
 
+  @Patch(':id/despacho-casillero/anular')
+  anularDespachoCasillero(@Param('id') id: string) {
+    return this.productoService.anularDespachoCasillero(+id);
+  }
+
   // Editar producto (sin auth para flujo Servicios)
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateProductoDto) {
