@@ -422,10 +422,14 @@ export class ProductoService {
   async updatePersonalEshopex(id: number, patch: Partial<PersonalEshopex>): Promise<PersonalEshopex> {
     const item = await this.personalEshopexRepo.findOne({ where: { id } });
     if (!item) throw new NotFoundException(`Personal Eshopex ${id} no encontrado`);
-    if ((patch as any).despacho === true && !item.despacho) {
+    if ((patch as any).despacho === true && (patch as any).recogido !== true && !item.despacho) {
       item.despachoAt = new Date();
     }
     Object.assign(item, patch);
+    if ((patch as any).recogido === true) {
+      item.despacho = false;
+      item.despachoAt = null;
+    }
     return this.personalEshopexRepo.save(item);
   }
 
