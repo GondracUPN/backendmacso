@@ -267,6 +267,7 @@ async function bootstrap() {
           "ciclosBateria" integer,
           "saludBateria" integer,
           "primerPrecioSoles" numeric(12,2),
+          "ultimoPrecioSoles" numeric(12,2),
           "garantiaHasta" date,
           "tieneGarantia" boolean NOT NULL DEFAULT false,
           "tipoGarantia" varchar(30),
@@ -315,6 +316,9 @@ async function bootstrap() {
       );
       await dataSource.query(
         `ALTER TABLE "${schema}"."inventario" ADD COLUMN IF NOT EXISTS "primerPrecioSoles" numeric(12,2)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."inventario" ADD COLUMN IF NOT EXISTS "ultimoPrecioSoles" numeric(12,2)`,
       );
       await dataSource.query(
         `ALTER TABLE "${schema}"."inventario" ADD COLUMN IF NOT EXISTS "tieneGarantia" boolean NOT NULL DEFAULT false`,

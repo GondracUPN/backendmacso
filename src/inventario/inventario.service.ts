@@ -106,6 +106,9 @@ export class InventarioService {
     if (data.primerPrecioSoles !== undefined) {
       patch.primerPrecioSoles = data.primerPrecioSoles;
     }
+    if (data.ultimoPrecioSoles !== undefined) {
+      patch.ultimoPrecioSoles = data.ultimoPrecioSoles;
+    }
     if (data.garantiaHasta !== undefined) {
       patch.garantiaHasta = cleanText(data.garantiaHasta, 10);
     }

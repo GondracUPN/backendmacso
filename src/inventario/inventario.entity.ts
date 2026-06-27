@@ -36,6 +36,9 @@ export class Inventario {
   @Column({ type: 'numeric', precision: 12, scale: 2, nullable: true })
   primerPrecioSoles?: number | null;
 
+  @Column({ type: 'numeric', precision: 12, scale: 2, nullable: true })
+  ultimoPrecioSoles?: number | null;
+
   @Column({ type: 'date', nullable: true })
   garantiaHasta?: string | null;
 
