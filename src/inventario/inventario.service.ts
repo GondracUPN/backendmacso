@@ -103,6 +103,9 @@ export class InventarioService {
     if (data.color !== undefined) patch.color = cleanText(data.color, 80);
     if (data.ciclosBateria !== undefined) patch.ciclosBateria = data.ciclosBateria;
     if (data.saludBateria !== undefined) patch.saludBateria = data.saludBateria;
+    if (data.primerPrecioSoles !== undefined) {
+      patch.primerPrecioSoles = data.primerPrecioSoles;
+    }
     if (data.garantiaHasta !== undefined) {
       patch.garantiaHasta = cleanText(data.garantiaHasta, 10);
     }

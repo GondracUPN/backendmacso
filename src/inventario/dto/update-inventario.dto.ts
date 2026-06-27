@@ -4,6 +4,7 @@ import {
   IsBoolean,
   IsDateString,
   IsInt,
+  IsNumber,
   IsIn,
   IsOptional,
   IsString,
@@ -17,6 +18,7 @@ export class UpdateInventarioDto {
   @IsOptional() @IsString() @MaxLength(80) color?: string | null;
   @IsOptional() @IsInt() @Min(0) @Max(100000) ciclosBateria?: number | null;
   @IsOptional() @IsInt() @Min(0) @Max(100) saludBateria?: number | null;
+  @IsOptional() @IsNumber() @Min(0) primerPrecioSoles?: number | null;
   @IsOptional() @IsDateString() garantiaHasta?: string | null;
   @IsOptional() @IsBoolean() tieneGarantia?: boolean;
   @IsOptional() @IsIn(['limitada', 'applecare']) tipoGarantia?: string | null;
