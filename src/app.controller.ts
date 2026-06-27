@@ -1275,6 +1275,11 @@ const normalizeLookupText = (val: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const isAppleCatalogQuery = (query?: string) => {
+  const normalized = normalizeLookupText(String(query || 'apple').trim() || 'apple');
+  return /\b(?:apple|iphone|ipad|macbook|imac|mac\s+mini|airpods?|iwatch)\b/.test(normalized);
+};
+
 const EBAY_QUERY_KNOWN_TERMS = [
   'apple',
   'iphone',
@@ -1717,6 +1722,9 @@ const buildEbaySearchCacheKey = (params?: {
   minSellerReviews?: number;
 }) => {
   const minSellerReviews = normalizeMinSellerReviews(params?.minSellerReviews);
+  const filteredSourceRule = isAppleCatalogQuery(params?.query)
+    ? 'target-apple-devices-v12'
+    : 'target-query-items-v1';
   const payload = {
     query: normalizeLookupText(String(params?.query || 'apple').trim() || 'apple'),
     condition: normalizeLookupText(String(params?.condition || '')),
@@ -1724,7 +1732,7 @@ const buildEbaySearchCacheKey = (params?: {
     sort: normalizeLookupText(String(params?.sort || 'newlyListed')),
     pawnOnly: Boolean(params?.pawnOnly),
     minSellerReviews,
-    sourceRule: params?.pawnOnly || minSellerReviews > 0 ? 'target-apple-devices-v12' : 'default',
+    sourceRule: params?.pawnOnly || minSellerReviews > 0 ? filteredSourceRule : 'default',
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 };
@@ -2614,7 +2622,6 @@ const fetchEbayCatalogSearch = async (params?: {
       buyingOptions: params?.buyingOptions,
       sort: params?.sort,
     });
-    const deviceItems = data.items.filter((item: any) => matchesAppleProductTitle(item));
     const saved = await saveEbaySearchItemsToCache(cacheRepo, {
       searchKey,
       query: params?.query,
@@ -2623,13 +2630,12 @@ const fetchEbayCatalogSearch = async (params?: {
       sort: params?.sort,
       pawnOnly: false,
       ebayOffset: params?.offset,
-      items: deviceItems,
+      items: data.items,
     });
     const shouldReadCacheNext = saved.duplicateDetected && cacheOffset === 0;
     return {
       ...data,
-      items: deviceItems,
-      filteredTotal: deviceItems.length,
+      filteredTotal: data.items.length,
       cacheOffset,
       nextCacheOffset: shouldReadCacheNext ? data.items.length : cacheOffset,
       nextPreferCache: shouldReadCacheNext,
@@ -2666,6 +2672,7 @@ const fetchEbayCatalogSearch = async (params?: {
   let nextOffset = scanOffset;
   let rateLimited = false;
   let oldestSearchTotal: number | null = null;
+  const shouldRestrictScanToApple = isAppleCatalogQuery(params?.query);
 
   if (requestedSort === 'oldestListed') {
     try {
@@ -2725,17 +2732,19 @@ const fetchEbayCatalogSearch = async (params?: {
 
     const pageItems = Array.isArray(data?.items) ? data.items : [];
     const rawCount = Number(data?.rawCount ?? pageItems.length);
-    const pageAppleItems = pageItems.filter((item: any) => matchesAppleProductTitle(item));
+    const pageTargetItems = shouldRestrictScanToApple
+      ? pageItems.filter((item: any) => matchesAppleProductTitle(item))
+      : pageItems;
     let pageCandidates: any[] = [];
     if (params?.pawnOnly) {
       pageCandidates = await collectPreferredStoreItems({
-        items: pageAppleItems,
+        items: pageTargetItems,
         seen,
         storeEntries: params?.storeEntries,
       });
     }
     if (minSellerReviews > 0) {
-      for (const item of pageAppleItems) {
+      for (const item of pageTargetItems) {
         if (!matchesMinSellerReviews(item, minSellerReviews)) continue;
         const key = getEbayCacheItemKey(item);
         if (!key || seen.has(key)) continue;
@@ -3433,9 +3442,19 @@ export class AppController {
   async parseEbay(@Query('url') url: string) {
     console.log('[eBay] parseEbay start', { url });
     if (!url) throw new BadRequestException('URL requerida');
+    const rawUrl = String(url).trim();
+    const normalizedUrl = /^\d{9,15}$/.test(rawUrl)
+      ? `https://www.ebay.com/itm/${rawUrl}`
+      : /^https?:\/\//i.test(rawUrl)
+      ? rawUrl
+      : /^\/\//.test(rawUrl)
+        ? `https:${rawUrl}`
+        : /^(?:(?:www|m)\.)?(?:ebay\.[a-z.]+|amazon\.[a-z.]+)\//i.test(rawUrl)
+          ? `https://${rawUrl}`
+          : rawUrl;
     let parsed: URL;
     try {
-      parsed = new URL(url);
+      parsed = new URL(normalizedUrl);
     } catch {
       throw new BadRequestException('URL invalida');
     }

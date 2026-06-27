@@ -15,6 +15,7 @@ import { SchedulesModule } from './schedules/schedules.module';
 import { OcrModule } from './ocr/ocr.module';
 import { SickwModule } from './sickw/sickw.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { InventarioModule } from './inventario/inventario.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { EbayPawn } from './ebay-pawn.entity';
@@ -76,6 +77,7 @@ import { EbayViewedItem } from './ebay-viewed-item.entity';
     OcrModule,
     SickwModule,
     CatalogModule,
+    InventarioModule,
   ],
   controllers: [AppController],
   providers: [AppService],

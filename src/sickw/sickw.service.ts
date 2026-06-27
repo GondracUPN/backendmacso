@@ -1,5 +1,8 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SickwCheckHistory } from './sickw-check-history.entity';
 
 type SickwApiResponse = {
   status?: string;
@@ -16,34 +19,331 @@ const SICKW_SERVICES: Record<string, { id: '8' | '30' | '81'; name: string; cost
   '81': { id: '81', name: 'APPLE MDM STATUS', costUSD: 0.30 },
 };
 
+const COMBINED_SICKW_SERVICES: Record<
+  string,
+  { ids: Array<'8' | '30' | '81'>; name: string; costUSD: number }
+> = {
+  '30+81': {
+    ids: ['30', '81'],
+    name: 'MACBOOK / IPAD MDM',
+    costUSD: SICKW_SERVICES['30'].costUSD + SICKW_SERVICES['81'].costUSD,
+  },
+  '30+8': {
+    ids: ['30', '8'],
+    name: 'IPHONE / IPAD SIM LOCK',
+    costUSD: SICKW_SERVICES['30'].costUSD + SICKW_SERVICES['8'].costUSD,
+  },
+};
+
 const IFREEICLOUD_SERVICE_ID = '238';
 const IFREEICLOUD_MODAL_SERVICE_ID = 'ifreeicloud-238';
 
 @Injectable()
 export class SickwService {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @InjectRepository(SickwCheckHistory)
+    private readonly historyRepo: Repository<SickwCheckHistory>,
+  ) {}
 
   async appleBasicInfo(identifier: string, type?: string, serviceId?: string) {
     if (serviceId === IFREEICLOUD_MODAL_SERVICE_ID) {
-      return this.ifreeIcloudCheck(identifier, type);
+      const result = await this.ifreeIcloudCheck(identifier, type);
+      return this.saveHistory(result);
     }
 
-    const key =
-      this.config.get<string>('SICKW_API_KEY') ||
-      process.env.SICKW_API_KEY;
+    const cleanIdentifier = this.cleanIdentifier(identifier);
 
+    const combinedService = COMBINED_SICKW_SERVICES[String(serviceId || '')];
+    if (combinedService) {
+      const existing = await this.findExistingServiceResults(cleanIdentifier, combinedService.ids);
+      const missingIds = combinedService.ids.filter((id) => !existing.has(id));
+      const existingIds = combinedService.ids.filter((id) => existing.has(id));
+
+      if (!missingIds.length) {
+        return this.composeCombinedResult(
+          cleanIdentifier,
+          type,
+          String(serviceId),
+          combinedService,
+          combinedService.ids.map((id) => existing.get(id)),
+          0,
+          null,
+          this.buildLookupStatus(cleanIdentifier, existingIds, [], []),
+        );
+      }
+
+      const key = this.getSickwKey();
+      const queried = await Promise.all(
+        missingIds.map((id) => this.runSickwCheck(key, cleanIdentifier, id)),
+      );
+      const queriedById = new Map(queried.map((result) => [result.serviceId, result]));
+      const results = combinedService.ids.map((id) => existing.get(id) || queriedById.get(id));
+      const lookupStatus = this.buildLookupStatus(cleanIdentifier, existingIds, missingIds, []);
+      const result = this.composeCombinedResult(
+        cleanIdentifier,
+        type,
+        String(serviceId),
+        combinedService,
+        results,
+        missingIds.reduce((sum, id) => sum + SICKW_SERVICES[id].costUSD, 0),
+        await this.getSickwBalance().catch(() => null),
+        lookupStatus,
+      );
+      const savedResults = await Promise.all(
+        queried.map((queriedResult) =>
+          this.saveHistory({
+            ...queriedResult,
+            type: type || null,
+            lookupStatus: this.buildLookupStatus(
+              cleanIdentifier,
+              [],
+              [queriedResult.serviceId],
+              [],
+            ),
+          }),
+        ),
+      );
+      return {
+        ...result,
+        historyRecords: savedResults.map((saved) => saved.historyRecord),
+      };
+    }
+
+    const service = SICKW_SERVICES[String(serviceId || '30')] || SICKW_SERVICES['30'];
+    const existing = await this.findExistingServiceResults(cleanIdentifier, [service.id]);
+    const cachedResult = existing.get(service.id);
+    if (cachedResult) {
+      return {
+        ...cachedResult,
+        identifier: cleanIdentifier,
+        type: type || cachedResult.type || null,
+        costUSD: 0,
+        lookupStatus: this.buildLookupStatus(cleanIdentifier, [service.id], [], []),
+      };
+    }
+
+    const key = this.getSickwKey();
+    const result = await this.runSickwCheck(key, cleanIdentifier, service.id);
+
+    const response = {
+      ...result,
+      balance: await this.getSickwBalance().catch(() => null),
+      type: type || null,
+      lookupStatus: this.buildLookupStatus(cleanIdentifier, [], [service.id], []),
+    };
+    return this.saveHistory(response);
+  }
+
+  async historyStatus(identifier: string, type?: string, serviceId?: string) {
+    const cleanIdentifier = this.cleanIdentifier(identifier);
+    const combinedService = COMBINED_SICKW_SERVICES[String(serviceId || '')];
+
+    if (combinedService) {
+      const existing = await this.findExistingServiceResults(cleanIdentifier, combinedService.ids);
+      const existingIds = combinedService.ids.filter((id) => existing.has(id));
+      const missingIds = combinedService.ids.filter((id) => !existing.has(id));
+      const status = this.buildLookupStatus(cleanIdentifier, existingIds, [], missingIds);
+      if (!missingIds.length) {
+        return {
+          ...status,
+          result: this.composeCombinedResult(
+            cleanIdentifier,
+            type,
+            String(serviceId),
+            combinedService,
+            combinedService.ids.map((id) => existing.get(id)),
+            0,
+            null,
+            status,
+          ),
+        };
+      }
+      return status;
+    }
+
+    const service = SICKW_SERVICES[String(serviceId || '30')] || SICKW_SERVICES['30'];
+    const existing = await this.findExistingServiceResults(cleanIdentifier, [service.id]);
+    const cachedResult = existing.get(service.id);
+    if (!cachedResult) {
+      return this.buildLookupStatus(cleanIdentifier, [], [], [service.id]);
+    }
+
+    const status = this.buildLookupStatus(cleanIdentifier, [service.id], [], []);
+    return {
+      ...status,
+      result: {
+        ...cachedResult,
+        identifier: cleanIdentifier,
+        type: type || cachedResult.type || null,
+        costUSD: 0,
+        lookupStatus: status,
+      },
+    };
+  }
+
+  private cleanIdentifier(identifier: string) {
+    const cleanIdentifier = String(identifier || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{8,20}$/.test(cleanIdentifier)) {
+      throw new HttpException(
+        { message: 'SN/IMEI invalido para consultar SICKW.' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return cleanIdentifier;
+  }
+
+  private getSickwKey() {
+    const key = this.config.get<string>('SICKW_API_KEY') || process.env.SICKW_API_KEY;
     if (!key) {
       throw new HttpException(
         { message: 'Falta configurar SICKW_API_KEY en el backend.' },
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
+    return key;
+  }
 
-    const cleanIdentifier = String(identifier || '').trim().toUpperCase();
-    if (!/^[A-Z0-9]{8,20}$/.test(cleanIdentifier)) {
-      throw new HttpException({ message: 'SN/IMEI invalido para consultar SICKW.' }, HttpStatus.BAD_REQUEST);
+  private composeCombinedResult(
+    identifier: string,
+    type: string | undefined,
+    serviceId: string,
+    combinedService: { ids: Array<'8' | '30' | '81'>; name: string; costUSD: number },
+    results: any[],
+    costUSD: number,
+    balance: any,
+    lookupStatus: any,
+  ) {
+    const validResults = results.filter(Boolean);
+    return {
+      serviceId,
+      serviceName: combinedService.name,
+      costUSD,
+      balance,
+      identifier,
+      type: type || null,
+      raw: validResults
+        .map((result) => `--- ${result.serviceName} ---\n${result.raw}`)
+        .join('\n\n'),
+      fields: this.mergeCombinedFields(validResults),
+      results: validResults,
+      lookupStatus,
+    };
+  }
+
+  private buildLookupStatus(
+    identifier: string,
+    existingServiceIds: Array<'8' | '30' | '81'>,
+    queriedServiceIds: Array<'8' | '30' | '81'>,
+    missingServiceIds: Array<'8' | '30' | '81'>,
+  ) {
+    const identifierType = /^\d{15}$/.test(identifier) ? 'IMEI' : 'SN';
+    const names = (ids: Array<'8' | '30' | '81'>) =>
+      ids.map((id) => SICKW_SERVICES[id].name);
+    let state: 'new' | 'partial' | 'cached' | 'queried' = 'new';
+    let message = '';
+
+    if (existingServiceIds.length && !queriedServiceIds.length && !missingServiceIds.length) {
+      state = 'cached';
+      message = existingServiceIds.length > 1
+        ? `Este ${identifierType} ya fue consultado en ambos servicios (${names(existingServiceIds).join(' y ')}). Se muestran los resultados guardados y no se realizo una consulta nueva.`
+        : `Este ${identifierType} ya fue consultado en ${names(existingServiceIds)[0]}. Se muestra el resultado guardado y no se realizo una consulta nueva.`;
+    } else if (existingServiceIds.length && (queriedServiceIds.length || missingServiceIds.length)) {
+      state = 'partial';
+      const pendingIds = queriedServiceIds.length ? queriedServiceIds : missingServiceIds;
+      message = `${names(existingServiceIds).join(' y ')} ya estaba guardado para este ${identifierType}. ${queriedServiceIds.length ? 'Solo se consulto' : 'Solo se consultara'} ${names(pendingIds).join(' y ')}.`;
+    } else if (queriedServiceIds.length) {
+      state = 'queried';
+      message = `Consulta realizada en ${names(queriedServiceIds).join(' y ')} y guardada en el historial.`;
     }
-    const service = SICKW_SERVICES[String(serviceId || '30')] || SICKW_SERVICES['30'];
+
+    return {
+      state,
+      existingServiceIds,
+      queriedServiceIds,
+      missingServiceIds,
+      message,
+    };
+  }
+
+  private async findExistingServiceResults(
+    identifier: string,
+    serviceIds: Array<'8' | '30' | '81'>,
+  ) {
+    const aliases = new Set([identifier]);
+    const recordsById = new Map<number, SickwCheckHistory>();
+
+    // Basic Info suele relacionar SN, IMEI e IMEI2. Expandimos esos alias para
+    // detectar un servicio previo aunque la nueva busqueda use otro identificador.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const identifiers = Array.from(aliases);
+      const records = await this.historyRepo
+        .createQueryBuilder('history')
+        .where(
+          `(UPPER(history.identifier) IN (:...identifiers)
+            OR UPPER(COALESCE(history.serial, '')) IN (:...identifiers)
+            OR UPPER(COALESCE(history.imei, '')) IN (:...identifiers)
+            OR UPPER(COALESCE(history.imei2, '')) IN (:...identifiers))`,
+          { identifiers },
+        )
+        .orderBy('history.checkedAt', 'DESC')
+        .getMany();
+      let addedAlias = false;
+
+      for (const record of records) {
+        recordsById.set(record.id, record);
+        for (const value of [record.identifier, record.serial, record.imei, record.imei2]) {
+          const clean = String(value || '').trim().toUpperCase();
+          if (!/^[A-Z0-9]{8,20}$/.test(clean) || aliases.has(clean)) continue;
+          aliases.add(clean);
+          addedAlias = true;
+        }
+      }
+
+      if (!addedAlias) break;
+    }
+
+    const records = Array.from(recordsById.values()).sort(
+      (a, b) => new Date(b.checkedAt).getTime() - new Date(a.checkedAt).getTime(),
+    );
+    const found = new Map<string, any>();
+
+    for (const record of records) {
+      if (serviceIds.includes(record.serviceId as '8' | '30' | '81') && !found.has(record.serviceId)) {
+        found.set(record.serviceId, {
+          serviceId: record.serviceId,
+          serviceName: record.serviceName,
+          costUSD: Number(record.costUSD),
+          identifier,
+          type: record.type || null,
+          raw: record.raw || '',
+          fields: Array.isArray(record.fields) ? record.fields : [],
+        });
+      }
+
+      for (const nested of Array.isArray(record.results) ? record.results : []) {
+        const nestedServiceId = String((nested as any)?.serviceId || '');
+        if (serviceIds.includes(nestedServiceId as '8' | '30' | '81') && !found.has(nestedServiceId)) {
+          found.set(nestedServiceId, {
+            ...(nested as any),
+            identifier,
+            type: record.type || (nested as any)?.type || null,
+          });
+        }
+      }
+
+      if (found.size === serviceIds.length) break;
+    }
+
+    return found;
+  }
+
+  private async runSickwCheck(
+    key: string,
+    cleanIdentifier: string,
+    serviceId: '8' | '30' | '81',
+  ) {
+    const service = SICKW_SERVICES[serviceId];
 
     const url = new URL('https://sickw.com/api.php');
     url.searchParams.set('format', 'json');
@@ -87,12 +387,128 @@ export class SickwService {
       serviceId: service.id,
       serviceName: service.name,
       costUSD: service.costUSD,
-      balance: await this.getSickwBalance().catch(() => null),
       identifier: cleanIdentifier,
-      type: type || null,
       raw: rawResult,
       fields,
     };
+  }
+
+  private mergeCombinedFields(
+    results: Array<{
+      serviceName: string;
+      fields: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>;
+    }>,
+  ) {
+    const merged: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }> = [];
+    const labels = new Map<string, string>();
+
+    for (const result of results) {
+      for (const field of result.fields) {
+        const key = field.label.toLowerCase();
+        const previousValue = labels.get(key);
+        if (previousValue === field.value) continue;
+
+        if (previousValue !== undefined) {
+          merged.push({
+            ...field,
+            label: `${field.label} (${result.serviceName})`,
+          });
+          continue;
+        }
+
+        labels.set(key, field.value);
+        merged.push(field);
+      }
+    }
+
+    return merged;
+  }
+
+  async history(query?: string, rawLimit?: string, serviceId?: string) {
+    const limit = Math.min(Math.max(Number.parseInt(String(rawLimit || '150'), 10) || 150, 1), 500);
+    const normalizedQuery = String(query || '').trim().toUpperCase().replace(/[^A-Z0-9+\- /]/g, '');
+    const qb = this.historyRepo
+      .createQueryBuilder('history')
+      .orderBy('history.checkedAt', 'DESC')
+      .take(limit);
+
+    if (normalizedQuery) {
+      qb.where(
+        `(UPPER(history.identifier) LIKE :query
+          OR UPPER(COALESCE(history.serial, '')) LIKE :query
+          OR UPPER(COALESCE(history.imei, '')) LIKE :query
+          OR UPPER(COALESCE(history.imei2, '')) LIKE :query
+          OR UPPER(history.serviceName) LIKE :query)`,
+        { query: `%${normalizedQuery}%` },
+      );
+    }
+
+    const normalizedServiceId = String(serviceId || '').trim();
+    if (normalizedServiceId) {
+      qb.andWhere('history.serviceId = :serviceId', { serviceId: normalizedServiceId });
+    }
+
+    const [records, total] = await qb.getManyAndCount();
+    return {
+      items: records.map((record) => this.toHistoryResponse(record)),
+      total,
+    };
+  }
+
+  private async saveHistory(result: any) {
+    const fields = Array.isArray(result?.fields) ? result.fields : [];
+    const serial = this.findFieldValue(fields, [/^serial number$/i, /^serial$/i, /^s\/n$/i]);
+    const imei = this.findFieldValue(fields, [/^imei number$/i, /^imei$/i]);
+    const imei2 = this.findFieldValue(fields, [/^imei2 number$/i, /^imei2$/i]);
+    const record = this.historyRepo.create({
+      serviceId: String(result.serviceId || ''),
+      serviceName: String(result.serviceName || ''),
+      costUSD: String(result.costUSD ?? 0),
+      identifier: String(result.identifier || '').toUpperCase(),
+      type: result.type || null,
+      serial: serial || null,
+      imei: imei || null,
+      imei2: imei2 || null,
+      fields,
+      raw: result.raw || null,
+      results: Array.isArray(result.results) ? result.results : null,
+    });
+    const saved = await this.historyRepo.save(record);
+    return {
+      ...result,
+      historyRecord: this.toHistoryResponse(saved),
+    };
+  }
+
+  private toHistoryResponse(record: SickwCheckHistory) {
+    const identifiers = Array.from(
+      new Set([record.identifier, record.serial, record.imei, record.imei2].filter(Boolean)),
+    );
+    return {
+      id: record.id,
+      checkedAt: record.checkedAt,
+      serviceId: record.serviceId,
+      serviceName: record.serviceName,
+      costUSD: Number(record.costUSD),
+      identifier: record.identifier,
+      type: record.type || '',
+      serial: record.serial || '',
+      imei1: record.imei || '',
+      imei2: record.imei2 || '',
+      identifiers,
+      fields: Array.isArray(record.fields) ? record.fields : [],
+      raw: record.raw || '',
+    };
+  }
+
+  private findFieldValue(
+    fields: Array<{ label?: string; value?: string }>,
+    patterns: RegExp[],
+  ) {
+    const field = fields.find((candidate) =>
+      patterns.some((pattern) => pattern.test(String(candidate.label || ''))),
+    );
+    return String(field?.value || '').trim();
   }
 
   async balance() {
@@ -269,6 +685,8 @@ export class SickwService {
     const knownLabels = [
       'Model Description',
       'Serial Number',
+      'Model Number',
+      'Part Number',
       'Estimated Purchase Date',
       'Warranty Status',
       'iCloud Lock',
@@ -287,6 +705,7 @@ export class SickwService {
       'Model',
       'Blacklist Status',
       'MDM Status',
+      'MDM Lock',
     ];
     const labelPattern = knownLabels
       .sort((a, b) => b.length - a.length)
@@ -398,6 +817,12 @@ export class SickwService {
   private normalizeLabel(label: string) {
     const clean = label.replace(/\s+/g, ' ').trim();
     const map: Record<string, string> = {
+      MODEL: 'Model',
+      'SERIAL NUMBER': 'Serial Number',
+      'MODEL NUMBER': 'Model Number',
+      'PART NUMBER': 'Part Number',
+      'MDM LOCK': 'MDM Lock',
+      'MDM STATUS': 'MDM Status',
       'Model Description': 'Description',
       IMEI: 'IMEI Number',
       IMEI2: 'IMEI2 Number',
@@ -414,6 +839,7 @@ export class SickwService {
     const cleanValue = value.toLowerCase();
     if (/\boff\b|unlocked|\bno\b|clean|limited warranty/.test(cleanValue)) return 'good';
     if (/find my iphone|icloud/.test(cleanLabel) && /\bon\b|lost|locked/.test(cleanValue)) return 'bad';
+    if (/mdm/.test(cleanLabel) && /\bon\b|locked|\byes\b/.test(cleanValue)) return 'bad';
     if (/sim-lock/.test(cleanLabel) && /locked/.test(cleanValue) && !/unlocked/.test(cleanValue)) return 'bad';
     if (/blacklist/.test(cleanLabel) && /blacklist|lost|stolen/.test(cleanValue)) return 'bad';
     if (/replaced|replacement|refurbished|demo|loaner/.test(cleanLabel) && /\byes\b/.test(cleanValue)) return 'bad';

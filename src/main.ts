@@ -259,6 +259,66 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "despachoCasilleroAt" TIMESTAMPTZ`,
       );
       await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."inventario" (
+          "id" SERIAL PRIMARY KEY,
+          "productoId" integer NOT NULL REFERENCES "${schema}"."producto"("id") ON DELETE CASCADE,
+          "enAlmacen" boolean NOT NULL DEFAULT false,
+          "color" varchar(80),
+          "ciclosBateria" integer,
+          "saludBateria" integer,
+          "garantiaHasta" date,
+          "tieneGarantia" boolean NOT NULL DEFAULT false,
+          "tipoGarantia" varchar(30),
+          "garantiaDetalle" varchar(180),
+          "serial" varchar(120),
+          "imei" varchar(40),
+          "imei2" varchar(40),
+          "accesorios" text[] NOT NULL DEFAULT '{}'::text[],
+          "observaciones" text,
+          "fotoUrl" varchar(600),
+          "fotoPublicId" varchar(240),
+          "fotosTomadas" boolean NOT NULL DEFAULT false,
+          "marketplaceSubido" boolean NOT NULL DEFAULT false,
+          "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_inventario_producto" ON "${schema}"."inventario" ("productoId")`,
+      );
+      await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."sickw_check_history" (
+          "id" SERIAL PRIMARY KEY,
+          "service_id" varchar(32) NOT NULL,
+          "service_name" varchar(120) NOT NULL,
+          "cost_usd" numeric(10,3) NOT NULL DEFAULT 0,
+          "identifier" varchar(32) NOT NULL,
+          "type" varchar(12),
+          "serial" varchar(32),
+          "imei" varchar(20),
+          "imei2" varchar(20),
+          "fields" jsonb NOT NULL DEFAULT '[]'::jsonb,
+          "raw" text,
+          "results" jsonb,
+          "checked_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_sickw_history_identifier_service" ON "${schema}"."sickw_check_history" ("identifier", "service_id")`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_sickw_history_checked_at" ON "${schema}"."sickw_check_history" ("checked_at" DESC)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."inventario" ADD COLUMN IF NOT EXISTS "imei2" varchar(40)`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."inventario" ADD COLUMN IF NOT EXISTS "tieneGarantia" boolean NOT NULL DEFAULT false`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."inventario" ADD COLUMN IF NOT EXISTS "tipoGarantia" varchar(30)`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ALTER COLUMN vendedor TYPE varchar(80)`,
       );
       await dataSource.query(
