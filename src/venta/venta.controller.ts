@@ -14,6 +14,7 @@ import { CreateVentaDto } from './dto/create-venta.dto';
 import { UpdateVentaDto } from './dto/update-venta.dto';
 import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
 import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
+import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
 
 @Controller('ventas')
 export class VentaController {
@@ -45,6 +46,14 @@ export class VentaController {
   @Post('adelanto')
   createAdelanto(@Body() dto: CreateVentaAdelantoDto) {
     return this.svc.createAdelanto(dto);
+  }
+
+  @Post('adelanto/:id/cuotas')
+  addAdelantoCuota(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddVentaAdelantoCuotaDto,
+  ) {
+    return this.svc.addAdelantoCuota(id, dto);
   }
 
   @Post('adelanto/:id/completar')

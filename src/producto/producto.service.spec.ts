@@ -7,6 +7,7 @@ import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
+import { PersonalEshopex } from './personal-eshopex.entity';
 
 const repositoryMock = () => ({
   create: jest.fn((value) => value),
@@ -31,6 +32,7 @@ describe('ProductoService', () => {
         { provide: getRepositoryToken(ProductoValor), useValue: repositoryMock() },
         { provide: getRepositoryToken(Tracking), useValue: repositoryMock() },
         { provide: getRepositoryToken(Venta), useValue: repositoryMock() },
+        { provide: getRepositoryToken(PersonalEshopex), useValue: repositoryMock() },
         {
           provide: CACHE_MANAGER,
           useValue: {

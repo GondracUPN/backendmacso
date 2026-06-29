@@ -8,6 +8,11 @@ import {
 } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
 
+export type VentaAdelantoCuota = {
+  fecha: string;
+  monto: number;
+};
+
 @Entity()
 export class VentaAdelanto {
   @PrimaryGeneratedColumn()
@@ -28,6 +33,9 @@ export class VentaAdelanto {
 
   @Column('decimal', { precision: 12, scale: 2 })
   montoVenta: number; // S/
+
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  cuotas: VentaAdelantoCuota[];
 
   @Column({ type: 'int', nullable: true })
   ventaId?: number | null;

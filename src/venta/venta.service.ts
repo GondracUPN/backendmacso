@@ -14,6 +14,7 @@ import { CreateVentaDto } from './dto/create-venta.dto';
 import { UpdateVentaDto } from './dto/update-venta.dto';
 import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
 import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
+import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 
@@ -495,12 +496,61 @@ export class VentaService {
       throw new BadRequestException('El producto ya tiene un adelanto activo.');
     }
 
+    const montoAdelanto = +Number(dto.montoAdelanto).toFixed(2);
+    const montoVenta = +Number(dto.montoVenta).toFixed(2);
+    if (montoAdelanto > montoVenta) {
+      throw new BadRequestException(
+        'El adelanto no puede superar el monto de la venta.',
+      );
+    }
+
     const adelanto = this.adelantoRepo.create({
       productoId: producto.id,
-      montoAdelanto: Number(dto.montoAdelanto),
+      montoAdelanto,
       fechaAdelanto: dto.fechaAdelanto,
-      montoVenta: Number(dto.montoVenta),
+      montoVenta,
+      cuotas: [{ fecha: dto.fechaAdelanto, monto: montoAdelanto }],
     });
+    return this.adelantoRepo.save(adelanto);
+  }
+
+  async addAdelantoCuota(
+    id: number,
+    dto: AddVentaAdelantoCuotaDto,
+  ): Promise<VentaAdelanto> {
+    const adelanto = await this.adelantoRepo.findOne({ where: { id } });
+    if (!adelanto) throw new NotFoundException(`Adelanto ${id} no encontrado`);
+    if (adelanto.completadoAt) {
+      throw new BadRequestException(
+        'No se puede agregar otro adelanto a una venta completada.',
+      );
+    }
+
+    const montoCuota = +Number(dto.montoCuota).toFixed(2);
+    const montoActual = +Number(adelanto.montoAdelanto || 0).toFixed(2);
+    const montoVenta = +Number(adelanto.montoVenta || 0).toFixed(2);
+    const nuevoTotal = +(montoActual + montoCuota).toFixed(2);
+
+    if (nuevoTotal > montoVenta) {
+      const restante = Math.max(+(montoVenta - montoActual).toFixed(2), 0);
+      throw new BadRequestException(
+        `El nuevo adelanto supera el saldo pendiente de S/ ${restante.toFixed(2)}.`,
+      );
+    }
+
+    const cuotas = Array.isArray(adelanto.cuotas)
+      ? [...adelanto.cuotas]
+      : [];
+    if (cuotas.length === 0 && montoActual > 0) {
+      cuotas.push({
+        fecha: adelanto.fechaAdelanto,
+        monto: montoActual,
+      });
+    }
+    cuotas.push({ fecha: dto.fechaCuota, monto: montoCuota });
+
+    adelanto.cuotas = cuotas;
+    adelanto.montoAdelanto = nuevoTotal;
     return this.adelantoRepo.save(adelanto);
   }
 
