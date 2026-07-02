@@ -8,6 +8,7 @@ import {
   Patch,
   Delete,
   Query,
+  BadRequestException,
 } from '@nestjs/common';
 import { VentaService } from './venta.service';
 import { CreateVentaDto } from './dto/create-venta.dto';
@@ -78,6 +79,18 @@ export class VentaController {
         .filter((n) => Number.isFinite(n) && n > 0) || [];
 
     return this.svc.findLatestByProductos(parsedIds.length ? parsedIds : undefined);
+  }
+
+  @Get('similares')
+  similarSold(
+    @Query('productoId') productoId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedProductId = Number(productoId);
+    if (!Number.isFinite(parsedProductId) || parsedProductId <= 0) {
+      throw new BadRequestException('productoId invalido');
+    }
+    return this.svc.findSimilarSold(parsedProductId, Number(limit) || 8);
   }
 
   @Get('adelantos/ultimos')

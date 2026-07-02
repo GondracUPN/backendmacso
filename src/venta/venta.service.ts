@@ -21,6 +21,21 @@ import { calculateProfitPercentage } from './venta-profit.utils';
 
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
+const normalizeComparable = (value?: string | number | null) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9.]+/g, '');
+const daysBetweenDates = (from?: string | null, to?: string | null) => {
+  if (!from || !to) return null;
+  const start = new Date(from);
+  const end = new Date(to);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+  const days = Math.round((end.getTime() - start.getTime()) / 86400000);
+  return days >= 0 ? days : null;
+};
 const isSplitSeller = (s?: string | null) => normalizeSeller(s) === 'ambos';
 const titleCaseName = (value?: string | null) =>
   String(value || '')
@@ -216,6 +231,66 @@ export class VentaService {
     return this.ventaRepo.find({
       where: { productoId },
       order: { id: 'DESC' },
+    });
+  }
+
+  async findSimilarSold(productoId: number, requestedLimit = 8): Promise<Array<Venta & {
+    fechaIngresoAlmacen: string | null;
+    diasHastaVenta: number | null;
+  }>> {
+    const reference = await this.productoRepo.findOne({
+      where: { id: productoId },
+      relations: ['detalle'],
+    });
+    if (!reference) throw new NotFoundException('Producto no encontrado');
+
+    const limit = Math.min(20, Math.max(1, Number(requestedLimit) || 8));
+    const candidates = await this.ventaRepo
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.producto', 'p')
+      .leftJoinAndSelect('p.detalle', 'det')
+      .leftJoinAndSelect('p.tracking', 'trk')
+      .where('LOWER(p.tipo) = LOWER(:tipo)', { tipo: reference.tipo })
+      .andWhere('v.productoId <> :productoId', { productoId })
+      .orderBy('v.fechaVenta', 'DESC')
+      .addOrderBy('v.id', 'DESC')
+      .take(Math.max(50, limit * 10))
+      .getMany();
+
+    const referenceDetail: any = reference.detalle || {};
+    const type = normalizeComparable(reference.tipo);
+    const sameWhenPresent = (candidateDetail: any, key: string) => {
+      const expected = normalizeComparable(referenceDetail[key]);
+      return !expected || normalizeComparable(candidateDetail?.[key]) === expected;
+    };
+
+    const similar = candidates.filter((sale) => {
+      const candidateDetail: any = sale.producto?.detalle || {};
+      if (!sameWhenPresent(candidateDetail, 'procesador')) return false;
+      if (!sameWhenPresent(candidateDetail, 'tamano')) return false;
+      if (['macbook', 'ipad', 'watch'].includes(type) && !sameWhenPresent(candidateDetail, 'gama')) return false;
+      if (type === 'ipad' && !normalizeComparable(referenceDetail.procesador) && !sameWhenPresent(candidateDetail, 'generacion')) return false;
+      if (type === 'watch') {
+        if (!sameWhenPresent(candidateDetail, 'generacion')) return false;
+        if (!sameWhenPresent(candidateDetail, 'conexion')) return false;
+      }
+      if (type === 'iphone') {
+        if (!sameWhenPresent(candidateDetail, 'numero')) return false;
+        if (!sameWhenPresent(candidateDetail, 'modelo')) return false;
+      }
+      return true;
+    }).slice(0, limit);
+
+    return similar.map((sale) => {
+      const pickupDates = (sale.producto?.tracking || [])
+        .map((tracking) => tracking?.fechaRecogido)
+        .filter((date): date is string => Boolean(date))
+        .sort();
+      const fechaIngresoAlmacen = pickupDates.length ? pickupDates[pickupDates.length - 1] : null;
+      return Object.assign(sale, {
+        fechaIngresoAlmacen,
+        diasHastaVenta: daysBetweenDates(fechaIngresoAlmacen, sale.fechaVenta),
+      });
     });
   }
 
