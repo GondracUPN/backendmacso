@@ -17,6 +17,7 @@ import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
+import { calculateProfitPercentage } from './venta-profit.utils';
 
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
@@ -593,8 +594,10 @@ export class VentaService {
 
     const precioVenta = Number(adelanto.montoVenta);
     const ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
-    const base = Math.max(costoTotalRecalc - Number(adelanto.montoAdelanto || 0), 1);
-    const porcentajeGanancia = +((ganancia / base) * 100).toFixed(3);
+    const porcentajeGanancia = calculateProfitPercentage(
+      ganancia,
+      costoTotalRecalc,
+    );
 
     const venta = this.ventaRepo.create({
       productoId: producto.id,
@@ -674,10 +677,7 @@ export class VentaService {
 
       const precioVenta = Number(dto.precioVenta);
       const ganancia = +(precioVenta - total).toFixed(2);
-      const porcentajeGanancia = +(
-        (ganancia / (total || 1)) *
-        100
-      ).toFixed(3);
+      const porcentajeGanancia = calculateProfitPercentage(ganancia, total);
 
       const avgTc = +(((tipoCambioGonzalo + tipoCambioRenato) / 2).toFixed(4));
 
@@ -712,10 +712,10 @@ export class VentaService {
     // 3) Calcular ganancia y porcentaje
     const precioVenta = Number(dto.precioVenta);
     const ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
-    const porcentajeGanancia = +(
-      (ganancia / (costoTotalRecalc || 1)) *
-      100
-    ).toFixed(3);
+    const porcentajeGanancia = calculateProfitPercentage(
+      ganancia,
+      costoTotalRecalc,
+    );
 
     // 4) Crear venta (acepta vendedor opcional)
     const venta = this.ventaRepo.create({
@@ -808,10 +808,10 @@ export class VentaService {
         venta.tipoCambioRenato = tipoCambioRenato;
         venta.precioVenta = precioVenta;
         venta.ganancia = +(precioVenta - total).toFixed(2);
-        venta.porcentajeGanancia = +(
-          (venta.ganancia / (total || 1)) *
-          100
-        ).toFixed(3);
+        venta.porcentajeGanancia = calculateProfitPercentage(
+          Number(venta.ganancia),
+          total,
+        );
       } else {
         const tipoCambio =
           dto.tipoCambio !== undefined
@@ -833,10 +833,10 @@ export class VentaService {
         venta.tipoCambioRenato = null;
         venta.precioVenta = precioVenta;
         venta.ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
-        venta.porcentajeGanancia = +(
-          (venta.ganancia / (costoTotalRecalc || 1)) *
-          100
-        ).toFixed(3);
+        venta.porcentajeGanancia = calculateProfitPercentage(
+          Number(venta.ganancia),
+          costoTotalRecalc,
+        );
       }
     }
     // permitir asignar vendedor
