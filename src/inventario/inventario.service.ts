@@ -179,7 +179,7 @@ export class InventarioService {
     });
     ficha.fotoUrl = uploaded.secure_url;
     ficha.fotoPublicId = uploaded.public_id;
-    ficha.fotosTomadas = true;
+    ficha.enAlmacen = true;
     const saved = await this.inventarioRepo.save(ficha);
 
     if (anteriorPublicId && anteriorPublicId !== uploaded.public_id) {
@@ -196,7 +196,6 @@ export class InventarioService {
     }
     ficha.fotoUrl = null;
     ficha.fotoPublicId = null;
-    ficha.fotosTomadas = false;
     return this.inventarioRepo.save(ficha);
   }
 

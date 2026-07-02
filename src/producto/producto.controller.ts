@@ -59,6 +59,11 @@ export class ProductoController {
     return this.productoService.syncDisponiblesConCatalogo();
   }
 
+  @Get('catalog-pending')
+  catalogPending() {
+    return this.productoService.findPendientesCatalogo();
+  }
+
   @Post('recalcular-envios-nueva-tarifa')
   async recalcularEnviosNuevaTarifa(@Body() body?: { cutoffDate?: string }) {
     return this.productoService.recalcularEnviosNuevaTarifa(body?.cutoffDate || '2026-05-01');

@@ -1,7 +1,7 @@
 ﻿import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import type { Cache } from 'cache-manager';
 import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
@@ -12,6 +12,7 @@ import { UpdateProductoDto } from './dto/update-producto.dto';
 import { Tracking, EstadoTracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
+import { Inventario } from '../inventario/inventario.entity';
 import * as crypto from 'node:crypto';
 
 function normalizeEstado(str?: string | null): string {
@@ -77,6 +78,8 @@ export class ProductoService {
     private readonly ventaRepo: Repository<Venta>,
     @InjectRepository(PersonalEshopex)
     private readonly personalEshopexRepo: Repository<PersonalEshopex>,
+    @InjectRepository(Inventario)
+    private readonly inventarioRepo: Repository<Inventario>,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -1220,6 +1223,21 @@ export class ProductoService {
     );
   }
 
+  async findPendientesCatalogo(): Promise<Producto[]> {
+    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
+    const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
+    const productos = await this.productoRepo.find({
+      where: { catalogoEnviado: false },
+      relations: ['detalle', 'valor', 'tracking'],
+      order: { id: 'DESC' },
+    });
+
+    return productos
+      .filter((producto) => !vendidosSet.has(producto.id))
+      .filter((producto) => this.getUltimoTrackingEstado(producto) === 'recogido')
+      .map((producto) => this.applyProrrateadoView(producto));
+  }
+
   async syncDisponiblesConCatalogo() {
     const url = process.env.CATALOG_SYNC_URL;
     const secret = process.env.SYNC_SECRET || '';
@@ -1228,25 +1246,19 @@ export class ProductoService {
     }
     const apiBase = (() => { try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; } })();
 
-    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
-    const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
-
-    const prods = await this.productoRepo.find({
-      relations: ['detalle', 'valor', 'tracking'],
-      order: { id: 'DESC' },
-    });
+    const prods = await this.findPendientesCatalogo();
+    const fichas = prods.length
+      ? await this.inventarioRepo.find({ where: { productoId: In(prods.map((p) => p.id)) } })
+      : [];
+    const fichaByProducto = new Map(fichas.map((ficha) => [ficha.productoId, ficha]));
 
     let enviados = 0;
     let marcados = 0;
-    const candidatos: number[] = [];
+    const candidatos = prods.map((producto) => producto.id);
     const errores: Array<{ id: number; error: string }> = [];
 
     for (const p of prods) {
       try {
-        if ((p as any).catalogoEnviado) continue;
-        if (vendidosSet.has(p.id)) continue;
-        const estado = this.getUltimoTrackingEstado(p);
-        if (estado !== 'recogido') continue;
         // Evitar duplicados consultando el catÃ¡logo por SKU
         const sku = `svc-${p.id}`;
         if (apiBase) {
@@ -1264,7 +1276,9 @@ export class ProductoService {
           } catch {}
         }
         const payload = ((): any => {
-          const price = p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
+          const ficha = fichaByProducto.get(p.id);
+          const price = ficha?.primerPrecioSoles ?? p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
+          const minOfferPrice = ficha?.ultimoPrecioSoles ?? null;
           const d: any = (p as any).detalle || {};
           return {
             id: p.id,
@@ -1273,6 +1287,12 @@ export class ProductoService {
             price: String(price ?? '0'),
             status: 'listed',
             stock: 1,
+            saleType: minOfferPrice != null ? 'OFERTA' : 'VENTA_SIMPLE',
+            minOfferPrice,
+            color: ficha?.color ?? null,
+            batteryCycles: ficha?.ciclosBateria ?? null,
+            batteryHealth: ficha?.saludBateria ?? null,
+            productCondition: p.estado ?? null,
             specs: {
               tipo: p.tipo ?? null,
               estado: p.estado ?? null,
@@ -1282,7 +1302,6 @@ export class ProductoService {
             },
           };
         })();
-        candidatos.push(p.id);
         const body = JSON.stringify({ event: 'product.listed', product: payload });
         const signature = this.hmac(body, secret);
         const idem = crypto.randomUUID();

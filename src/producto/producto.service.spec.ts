@@ -8,6 +8,7 @@ import { ProductoValor } from './producto-valor.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
+import { Inventario } from '../inventario/inventario.entity';
 
 const repositoryMock = () => ({
   create: jest.fn((value) => value),
@@ -22,6 +23,8 @@ const repositoryMock = () => ({
 describe('ProductoService', () => {
   let service: ProductoService;
   let productoRepo: ReturnType<typeof repositoryMock>;
+  let ventaRepo: ReturnType<typeof repositoryMock>;
+  let inventarioRepo: ReturnType<typeof repositoryMock>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -33,6 +36,7 @@ describe('ProductoService', () => {
         { provide: getRepositoryToken(Tracking), useValue: repositoryMock() },
         { provide: getRepositoryToken(Venta), useValue: repositoryMock() },
         { provide: getRepositoryToken(PersonalEshopex), useValue: repositoryMock() },
+        { provide: getRepositoryToken(Inventario), useValue: repositoryMock() },
         {
           provide: CACHE_MANAGER,
           useValue: {
@@ -46,6 +50,8 @@ describe('ProductoService', () => {
 
     service = module.get<ProductoService>(ProductoService);
     productoRepo = module.get(getRepositoryToken(Producto));
+    ventaRepo = module.get(getRepositoryToken(Venta));
+    inventarioRepo = module.get(getRepositoryToken(Inventario));
   });
 
   it('should be defined', () => {
@@ -166,5 +172,72 @@ describe('ProductoService', () => {
     expect((service as any).getTarifa(10, '2026-05-01')).toBe(260);
     expect((service as any).getTarifa(11, '2026-05-01')).toBe(280);
     expect((service as any).getTarifa(10, '2026-05-02')).toBe(267.22);
+  });
+
+  it('lista para catálogo solo disponibles que todavía no fueron enviados', async () => {
+    ventaRepo.find.mockResolvedValue([{ productoId: 2 }]);
+    productoRepo.find.mockResolvedValue([
+      { id: 1, catalogoEnviado: false, tracking: [{ id: 3, estado: 'recogido' }] },
+      { id: 2, catalogoEnviado: false, tracking: [{ id: 2, estado: 'recogido' }] },
+      { id: 3, catalogoEnviado: false, tracking: [{ id: 1, estado: 'en_eshopex' }] },
+    ]);
+
+    const result = await service.findPendientesCatalogo();
+
+    expect(productoRepo.find).toHaveBeenCalledWith(expect.objectContaining({
+      where: { catalogoEnviado: false },
+    }));
+    expect(result.map((producto) => producto.id)).toEqual([1]);
+  });
+
+  it('envía al catálogo la información comercial y de inventario', async () => {
+    const originalFetch = global.fetch;
+    const originalUrl = process.env.CATALOG_SYNC_URL;
+    process.env.CATALOG_SYNC_URL = 'https://catalog.example/api/sync/product';
+    jest.spyOn(service, 'findPendientesCatalogo').mockResolvedValue([{
+      id: 42,
+      tipo: 'iphone',
+      estado: 'usado',
+      accesorios: ['Caja'],
+      detalle: { numero: '15', modelo: 'Pro', almacenamiento: '256 GB' },
+      valor: { costoTotal: 800 },
+      tracking: [{ id: 1, estado: 'recogido' }],
+    } as any]);
+    inventarioRepo.find.mockResolvedValue([{
+      productoId: 42,
+      color: 'Space Black',
+      primerPrecioSoles: 2500,
+      ultimoPrecioSoles: 2300,
+      ciclosBateria: 5,
+      saludBateria: 100,
+    }]);
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({ json: async () => ({ exists: false }) })
+      .mockResolvedValueOnce({ ok: true });
+    global.fetch = fetchMock as any;
+
+    try {
+      const result = await service.syncDisponiblesConCatalogo();
+      const request = fetchMock.mock.calls[1][1];
+      const sent = JSON.parse(request.body).product;
+
+      expect(sent).toEqual(expect.objectContaining({
+        price: '2500',
+        saleType: 'OFERTA',
+        minOfferPrice: 2300,
+        color: 'Space Black',
+        batteryCycles: 5,
+        batteryHealth: 100,
+      }));
+      expect(result).toEqual(expect.objectContaining({ total: 1, enviados: 1, marcados: 1 }));
+      expect(productoRepo.update).toHaveBeenCalledWith(
+        { id: 42 },
+        expect.objectContaining({ catalogoEnviado: true }),
+      );
+    } finally {
+      global.fetch = originalFetch;
+      if (originalUrl === undefined) delete process.env.CATALOG_SYNC_URL;
+      else process.env.CATALOG_SYNC_URL = originalUrl;
+    }
   });
 });

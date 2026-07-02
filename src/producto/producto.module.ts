@@ -9,6 +9,7 @@ import { ProductoController } from './producto.controller';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
+import { Inventario } from '../inventario/inventario.entity';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { PersonalEshopex } from './personal-eshopex.entity';
       Tracking,
       Venta,
       PersonalEshopex,
+      Inventario,
     ]),
   ],
   controllers: [ProductoController],
