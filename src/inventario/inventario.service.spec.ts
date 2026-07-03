@@ -4,6 +4,7 @@ import { InventarioService } from './inventario.service';
 
 describe('InventarioService photos', () => {
   const inventarioRepo = {
+    find: jest.fn(),
     findOne: jest.fn(),
     create: jest.fn(),
     save: jest.fn(),
@@ -68,5 +69,17 @@ describe('InventarioService photos', () => {
       fotoUrl: null,
       fotoPublicId: null,
     }));
+  });
+
+  it('returns only stored cover photos in the requested product order', async () => {
+    inventarioRepo.find.mockResolvedValue([
+      { productoId: 42, fotoUrl: 'https://res.cloudinary.com/demo/image/upload/42.jpg' },
+      { productoId: 44, fotoUrl: null },
+      { productoId: 43, fotoUrl: 'https://res.cloudinary.com/demo/image/upload/43.jpg' },
+    ]);
+
+    const result = await service.findPhotoCovers([43, 44, 42]);
+
+    expect(result.map((ficha) => ficha.productoId)).toEqual([43, 42]);
   });
 });

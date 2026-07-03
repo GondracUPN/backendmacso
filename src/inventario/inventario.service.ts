@@ -188,6 +188,22 @@ export class InventarioService {
     return saved;
   }
 
+  async findPhotoCovers(productoIds: number[]) {
+    const ids = Array.from(new Set((productoIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)));
+    if (!ids.length) throw new BadRequestException('Selecciona productos con foto.');
+    if (ids.length > 200) throw new BadRequestException('Maximo 200 fotos por descarga.');
+
+    const fichas = await this.inventarioRepo.find({
+      where: { productoId: In(ids) },
+    });
+    const fichaByProducto = new Map(fichas.map((ficha) => [ficha.productoId, ficha]));
+    return ids
+      .map((productoId) => fichaByProducto.get(productoId))
+      .filter((ficha): ficha is Inventario => Boolean(ficha?.fotoUrl));
+  }
+
   async deleteFoto(productoId: number) {
     const ficha = await this.inventarioRepo.findOne({ where: { productoId } });
     if (!ficha) throw new NotFoundException('Ficha de inventario no encontrada.');
