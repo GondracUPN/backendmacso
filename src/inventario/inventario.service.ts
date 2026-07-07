@@ -203,6 +203,32 @@ export class InventarioService {
       .filter((ficha): ficha is Inventario => Boolean(ficha?.fotoUrl));
   }
 
+  async findAllAvailablePhotoCovers() {
+    return this.inventarioRepo
+      .createQueryBuilder('i')
+      .innerJoin('i.producto', 'p')
+      .where('i."fotosTomadas" = true')
+      .andWhere('i."fotoUrl" IS NOT NULL')
+      .andWhere('i."fotoUrl" <> :empty', { empty: '' })
+      .andWhere(
+        `EXISTS (
+          SELECT 1 FROM tracking t
+          WHERE t."productoId" = p.id
+            AND (t.estado = :recogido OR t."fechaRecogido" IS NOT NULL)
+        )`,
+        { recogido: 'recogido' },
+      )
+      .andWhere('NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)')
+      .andWhere(
+        `NOT EXISTS (
+          SELECT 1 FROM venta_adelanto va
+          WHERE va."productoId" = p.id AND va."completadoAt" IS NULL
+        )`,
+      )
+      .orderBy('i."productoId"', 'DESC')
+      .getMany();
+  }
+
   async deleteFoto(productoId: number) {
     const ficha = await this.inventarioRepo.findOne({ where: { productoId } });
     if (!ficha) throw new NotFoundException('Ficha de inventario no encontrada.');

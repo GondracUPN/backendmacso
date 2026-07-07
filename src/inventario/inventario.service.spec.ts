@@ -6,6 +6,7 @@ describe('InventarioService photos', () => {
   const inventarioRepo = {
     find: jest.fn(),
     findOne: jest.fn(),
+    createQueryBuilder: jest.fn(),
     create: jest.fn(),
     save: jest.fn(),
   };
@@ -81,5 +82,28 @@ describe('InventarioService photos', () => {
     const result = await service.findPhotoCovers([43, 44, 42]);
 
     expect(result.map((ficha) => ficha.productoId)).toEqual([43, 42]);
+  });
+
+  it('finds every available product with completed photos and a stored cover', async () => {
+    const queryBuilder = {
+      innerJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([
+        { productoId: 53, fotosTomadas: true, fotoUrl: 'https://res.cloudinary.com/demo/image/upload/53.jpg' },
+        { productoId: 42, fotosTomadas: true, fotoUrl: 'https://res.cloudinary.com/demo/image/upload/42.jpg' },
+      ]),
+    };
+    inventarioRepo.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    const result = await service.findAllAvailablePhotoCovers();
+
+    expect(inventarioRepo.createQueryBuilder).toHaveBeenCalledWith('i');
+    expect(queryBuilder.innerJoin).toHaveBeenCalledWith('i.producto', 'p');
+    expect(queryBuilder.where).toHaveBeenCalledWith('i."fotosTomadas" = true');
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('i."fotoUrl" IS NOT NULL');
+    expect(queryBuilder.orderBy).toHaveBeenCalledWith('i."productoId"', 'DESC');
+    expect(result.map((ficha) => ficha.productoId)).toEqual([53, 42]);
   });
 });

@@ -10,6 +10,10 @@ import { InventarioService } from './inventario.service';
 const PHOTO_DOWNLOAD_CONCURRENCY = 6;
 const PHOTO_DOWNLOAD_TIMEOUT_MS = 30000;
 
+type PreparedPhotoFile =
+  | { buffer: Buffer; name: string }
+  | { error: string };
+
 export async function watermarkInventoryPhoto(photo: Buffer, watermark: Buffer) {
   const base = sharp(photo).rotate();
   const metadata = await base.metadata();
@@ -33,10 +37,24 @@ async function fetchBufferWithTimeout(url: string) {
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) return null;
-    return Buffer.from(await response.arrayBuffer());
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get('content-type') || '',
+    };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function extensionForPhoto(url: string, contentType: string) {
+  const type = contentType.toLowerCase();
+  if (type.includes('png')) return 'png';
+  if (type.includes('webp')) return 'webp';
+  if (type.includes('heic')) return 'heic';
+  if (type.includes('heif')) return 'heif';
+  const cleanPath = url.split('?')[0].toLowerCase();
+  const match = cleanPath.match(/\.([a-z0-9]{3,5})$/);
+  return match?.[1] || 'jpg';
 }
 
 async function mapWithConcurrency<T, R>(
@@ -94,6 +112,7 @@ export class InventarioController {
   @UseInterceptors(FileInterceptor('watermark', { limits: { fileSize: 2 * 1024 * 1024 } }))
   async downloadPhotoCovers(
     @Body('productoIds') rawProductoIds: string,
+    @Body('scope') scope: string,
     @UploadedFile() watermarkFile: any,
     @Res() res: Response,
   ) {
@@ -105,20 +124,33 @@ export class InventarioController {
     } catch {
       throw new BadRequestException('Lista de productos invalida.');
     }
-    const fichas = await this.inventarioService.findPhotoCovers(productoIds);
-    const files = (await mapWithConcurrency(fichas, PHOTO_DOWNLOAD_CONCURRENCY, async (ficha) => {
+    const fichas = scope === 'conFotosPortada'
+      ? await this.inventarioService.findAllAvailablePhotoCovers()
+      : await this.inventarioService.findPhotoCovers(productoIds);
+    const prepared = await mapWithConcurrency(fichas, PHOTO_DOWNLOAD_CONCURRENCY, async (ficha): Promise<PreparedPhotoFile> => {
       try {
-        const photo = await fetchBufferWithTimeout(String(ficha.fotoUrl));
-        if (!photo) return null;
-        return {
-          buffer: await watermarkInventoryPhoto(photo, watermarkFile.buffer),
-          name: `MS-${ficha.productoId}-portada.jpg`,
-        };
+        const url = String(ficha.fotoUrl);
+        const photo = await fetchBufferWithTimeout(url);
+        if (!photo) {
+          return { error: `MS-${ficha.productoId}: no se pudo descargar la portada.` };
+        }
+        try {
+          return {
+            buffer: await watermarkInventoryPhoto(photo.buffer, watermarkFile.buffer),
+            name: `MS-${ficha.productoId}-portada.jpg`,
+          };
+        } catch {
+          return {
+            buffer: photo.buffer,
+            name: `MS-${ficha.productoId}-portada.${extensionForPhoto(url, photo.contentType)}`,
+          };
+        }
       } catch {
-        // Si una portada falla, se continua con las demas.
-        return null;
+        return { error: `MS-${ficha.productoId}: error preparando la portada.` };
       }
-    })).filter((file): file is { buffer: Buffer; name: string } => Boolean(file));
+    });
+    const files = prepared.filter((file): file is { buffer: Buffer; name: string } => 'buffer' in file);
+    const errors = prepared.filter((file): file is { error: string } => 'error' in file);
     if (!files.length) throw new BadRequestException('No se pudieron descargar las portadas.');
 
     res.setHeader('Content-Type', 'application/zip');
@@ -127,6 +159,9 @@ export class InventarioController {
     archive.on('error', (error) => res.destroy(error));
     archive.pipe(res);
     files.forEach((file) => archive.append(file.buffer, { name: file.name }));
+    if (errors.length) {
+      archive.append(`${errors.map((item) => item.error).join('\n')}\n`, { name: 'errores.txt' });
+    }
     await archive.finalize();
   }
 
