@@ -208,8 +208,6 @@ export class InventarioService {
       .createQueryBuilder('i')
       .innerJoin('i.producto', 'p')
       .where('i."fotosTomadas" = true')
-      .andWhere('i."fotoUrl" IS NOT NULL')
-      .andWhere('i."fotoUrl" <> :empty', { empty: '' })
       .andWhere(
         `EXISTS (
           SELECT 1 FROM tracking t

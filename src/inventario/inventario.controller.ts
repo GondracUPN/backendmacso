@@ -1,8 +1,7 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Res, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as archiver from 'archiver';
-import sharp = require('sharp');
 import { UpdateInventarioDto } from './dto/update-inventario.dto';
 import { UploadInventarioFotoDto } from './dto/upload-inventario-foto.dto';
 import { InventarioService } from './inventario.service';
@@ -13,23 +12,6 @@ const PHOTO_DOWNLOAD_TIMEOUT_MS = 30000;
 type PreparedPhotoFile =
   | { buffer: Buffer; name: string }
   | { error: string };
-
-export async function watermarkInventoryPhoto(photo: Buffer, watermark: Buffer) {
-  const base = sharp(photo).rotate();
-  const metadata = await base.metadata();
-  const width = Math.max(1, Number(metadata.width) || 1);
-  const watermarkWidth = Math.max(1, Math.round(width * 0.7));
-  const overlay = await sharp(watermark)
-    .resize({ width: watermarkWidth, withoutEnlargement: false })
-    .ensureAlpha()
-    .linear([1, 1, 1, 0.2], [0, 0, 0, 0])
-    .png()
-    .toBuffer();
-  return base
-    .composite([{ input: overlay, gravity: 'centre' }])
-    .jpeg({ quality: 98, chromaSubsampling: '4:4:4' })
-    .toBuffer();
-}
 
 async function fetchBufferWithTimeout(url: string) {
   const controller = new AbortController();
@@ -46,13 +28,14 @@ async function fetchBufferWithTimeout(url: string) {
   }
 }
 
-function extensionForPhoto(url: string, contentType: string) {
-  const type = contentType.toLowerCase();
+export function extensionForPhoto(url: string, contentType: string) {
+  const type = String(contentType || '').toLowerCase();
   if (type.includes('png')) return 'png';
   if (type.includes('webp')) return 'webp';
   if (type.includes('heic')) return 'heic';
   if (type.includes('heif')) return 'heif';
-  const cleanPath = url.split('?')[0].toLowerCase();
+  if (type.includes('gif')) return 'gif';
+  const cleanPath = String(url || '').split('?')[0].toLowerCase();
   const match = cleanPath.match(/\.([a-z0-9]{3,5})$/);
   return match?.[1] || 'jpg';
 }
@@ -113,10 +96,8 @@ export class InventarioController {
   async downloadPhotoCovers(
     @Body('productoIds') rawProductoIds: string,
     @Body('scope') scope: string,
-    @UploadedFile() watermarkFile: any,
     @Res() res: Response,
   ) {
-    if (!watermarkFile?.buffer) throw new BadRequestException('Marca de agua requerida.');
     let productoIds: number[] = [];
     try {
       const parsed = JSON.parse(String(rawProductoIds || '[]'));
@@ -129,28 +110,27 @@ export class InventarioController {
       : await this.inventarioService.findPhotoCovers(productoIds);
     const prepared = await mapWithConcurrency(fichas, PHOTO_DOWNLOAD_CONCURRENCY, async (ficha): Promise<PreparedPhotoFile> => {
       try {
-        const url = String(ficha.fotoUrl);
+        const url = String(ficha.fotoUrl || '').trim();
+        if (!url) {
+          return { error: `MS-${ficha.productoId}: tiene Fotos marcado pero no tiene portada guardada.` };
+        }
         const photo = await fetchBufferWithTimeout(url);
         if (!photo) {
           return { error: `MS-${ficha.productoId}: no se pudo descargar la portada.` };
         }
-        try {
-          return {
-            buffer: await watermarkInventoryPhoto(photo.buffer, watermarkFile.buffer),
-            name: `MS-${ficha.productoId}-portada.jpg`,
-          };
-        } catch {
-          return {
-            buffer: photo.buffer,
-            name: `MS-${ficha.productoId}-portada.${extensionForPhoto(url, photo.contentType)}`,
-          };
-        }
+        return {
+          buffer: photo.buffer,
+          name: `MS-${ficha.productoId}-portada.${extensionForPhoto(url, photo.contentType)}`,
+        };
       } catch {
-        return { error: `MS-${ficha.productoId}: error preparando la portada.` };
+        return { error: `MS-${ficha.productoId}: no se pudo descargar la portada.` };
       }
     });
     const files = prepared.filter((file): file is { buffer: Buffer; name: string } => 'buffer' in file);
     const errors = prepared.filter((file): file is { error: string } => 'error' in file);
+    if (errors.length) {
+      throw new BadRequestException(`No se generó el ZIP porque hay portadas que no se pudieron descargar:\n${errors.map((item) => item.error).join('\n')}`);
+    }
     if (!files.length) throw new BadRequestException('No se pudieron descargar las portadas.');
 
     res.setHeader('Content-Type', 'application/zip');
@@ -159,9 +139,6 @@ export class InventarioController {
     archive.on('error', (error) => res.destroy(error));
     archive.pipe(res);
     files.forEach((file) => archive.append(file.buffer, { name: file.name }));
-    if (errors.length) {
-      archive.append(`${errors.map((item) => item.error).join('\n')}\n`, { name: 'errores.txt' });
-    }
     await archive.finalize();
   }
 

@@ -84,7 +84,7 @@ describe('InventarioService photos', () => {
     expect(result.map((ficha) => ficha.productoId)).toEqual([43, 42]);
   });
 
-  it('finds every available product with completed photos and a stored cover', async () => {
+  it('finds every available product with completed photos', async () => {
     const queryBuilder = {
       innerJoin: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
@@ -92,6 +92,7 @@ describe('InventarioService photos', () => {
       orderBy: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([
         { productoId: 53, fotosTomadas: true, fotoUrl: 'https://res.cloudinary.com/demo/image/upload/53.jpg' },
+        { productoId: 44, fotosTomadas: true, fotoUrl: null },
         { productoId: 42, fotosTomadas: true, fotoUrl: 'https://res.cloudinary.com/demo/image/upload/42.jpg' },
       ]),
     };
@@ -102,8 +103,7 @@ describe('InventarioService photos', () => {
     expect(inventarioRepo.createQueryBuilder).toHaveBeenCalledWith('i');
     expect(queryBuilder.innerJoin).toHaveBeenCalledWith('i.producto', 'p');
     expect(queryBuilder.where).toHaveBeenCalledWith('i."fotosTomadas" = true');
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith('i."fotoUrl" IS NOT NULL');
     expect(queryBuilder.orderBy).toHaveBeenCalledWith('i."productoId"', 'DESC');
-    expect(result.map((ficha) => ficha.productoId)).toEqual([53, 42]);
+    expect(result.map((ficha) => ficha.productoId)).toEqual([53, 44, 42]);
   });
 });
