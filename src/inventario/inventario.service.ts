@@ -193,7 +193,6 @@ export class InventarioService {
       .map((id) => Number(id))
       .filter((id) => Number.isInteger(id) && id > 0)));
     if (!ids.length) throw new BadRequestException('Selecciona productos con foto.');
-    if (ids.length > 200) throw new BadRequestException('Maximo 200 fotos por descarga.');
 
     const fichas = await this.inventarioRepo.find({
       where: { productoId: In(ids) },

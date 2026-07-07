@@ -7,6 +7,9 @@ import { UpdateInventarioDto } from './dto/update-inventario.dto';
 import { UploadInventarioFotoDto } from './dto/upload-inventario-foto.dto';
 import { InventarioService } from './inventario.service';
 
+const PHOTO_DOWNLOAD_CONCURRENCY = 6;
+const PHOTO_DOWNLOAD_TIMEOUT_MS = 30000;
+
 export async function watermarkInventoryPhoto(photo: Buffer, watermark: Buffer) {
   const base = sharp(photo).rotate();
   const metadata = await base.metadata();
@@ -22,6 +25,39 @@ export async function watermarkInventoryPhoto(photo: Buffer, watermark: Buffer) 
     .composite([{ input: overlay, gravity: 'centre' }])
     .jpeg({ quality: 98, chromaSubsampling: '4:4:4' })
     .toBuffer();
+}
+
+async function fetchBufferWithTimeout(url: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PHOTO_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return null;
+    return Buffer.from(await response.arrayBuffer());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+) {
+  const results: R[] = [];
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 @Controller('inventario')
@@ -70,27 +106,24 @@ export class InventarioController {
       throw new BadRequestException('Lista de productos invalida.');
     }
     const fichas = await this.inventarioService.findPhotoCovers(productoIds);
-    const files: Array<{ buffer: Buffer; name: string }> = [];
-    for (const ficha of fichas) {
+    const files = (await mapWithConcurrency(fichas, PHOTO_DOWNLOAD_CONCURRENCY, async (ficha) => {
       try {
-        const response = await fetch(String(ficha.fotoUrl));
-        if (!response.ok) continue;
-        files.push({
-          buffer: await watermarkInventoryPhoto(
-            Buffer.from(await response.arrayBuffer()),
-            watermarkFile.buffer,
-          ),
+        const photo = await fetchBufferWithTimeout(String(ficha.fotoUrl));
+        if (!photo) return null;
+        return {
+          buffer: await watermarkInventoryPhoto(photo, watermarkFile.buffer),
           name: `MS-${ficha.productoId}-portada.jpg`,
-        });
+        };
       } catch {
-        // Si una portada falla, se continúa con las demás.
+        // Si una portada falla, se continua con las demas.
+        return null;
       }
-    }
+    })).filter((file): file is { buffer: Buffer; name: string } => Boolean(file));
     if (!files.length) throw new BadRequestException('No se pudieron descargar las portadas.');
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="inventario-portadas.zip"');
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const archive = archiver('zip', { zlib: { level: 1 } });
     archive.on('error', (error) => res.destroy(error));
     archive.pipe(res);
     files.forEach((file) => archive.append(file.buffer, { name: file.name }));
