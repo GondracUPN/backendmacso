@@ -56,6 +56,8 @@ function shouldSyncVentaVendedor(current?: string | null): boolean {
   return !raw || raw === 'gonzalo' || raw === 'renato' || raw === 'ambos';
 }
 
+const TARIFA_CUTOFF_DATE = '2026-05-01';
+
 @Injectable()
 export class ProductoService {
   // Cache corto para listados (mitiga lecturas repetidas en red/DB lenta)
@@ -636,7 +638,7 @@ export class ProductoService {
     await this.invalidateListCache();
   }
 
-  async recalcularEnviosNuevaTarifa(cutoffDate = '2026-05-01') {
+  async recalcularEnviosNuevaTarifa(cutoffDate = TARIFA_CUTOFF_DATE) {
     const productos = await this.productoRepo.find({
       relations: ['valor'],
     });
@@ -684,14 +686,14 @@ export class ProductoService {
     let descuento = Number((hasta3kg * 0.35).toFixed(2));
     if (descuento > 41.99) descuento = 41.99;
     const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
-    const honorarios = this.getHonorarios(valorDec);
+    const honorarios = this.getHonorarios(valorDec, fechaCompra);
     const seguro = this.getSeguro(valorDec);
     return Number((tarifaFinal + honorarios + seguro).toFixed(2));
   }
 
   private usesLegacyTarifa(fechaCompra?: Date | string | null): boolean {
     const isoDate = this.getFechaCompraIso(fechaCompra);
-    return /^\d{4}-\d{2}-\d{2}$/.test(isoDate) && isoDate <= '2026-05-01';
+    return /^\d{4}-\d{2}-\d{2}$/.test(isoDate) && isoDate <= TARIFA_CUTOFF_DATE;
   }
 
   private getFechaCompraIso(fechaCompra?: Date | string | null): string {
@@ -757,9 +759,15 @@ export class ProductoService {
     return tarifaBase + Math.ceil(extraKg / 0.5) * adicional05kg;
   }
 
-  private getHonorarios(fobUsd: number): number {
-    if (fobUsd <= 100) return 16.3;
-    if (fobUsd <= 200) return 25.28;
+  private getHonorarios(fobUsd: number, fechaCompra?: Date | string | null): number {
+    if (this.usesLegacyTarifa(fechaCompra)) {
+      if (fobUsd <= 100) return 16.3;
+      if (fobUsd <= 200) return 25.28;
+      if (fobUsd <= 1000) return 39.76;
+      return 60.16;
+    }
+    if (fobUsd <= 100) return 23.5;
+    if (fobUsd <= 200) return 28.8;
     if (fobUsd <= 1000) return 39.76;
     return 60.16;
   }

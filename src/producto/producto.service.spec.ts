@@ -174,7 +174,16 @@ describe('ProductoService', () => {
     expect((service as any).getTarifa(10, '2026-05-02')).toBe(267.22);
   });
 
-  it('lista para catálogo solo disponibles que todavía no fueron enviados', async () => {
+  it('mantiene honorarios antiguos hasta el corte y usa los nuevos despues', () => {
+    expect((service as any).getHonorarios(90, '2026-05-01')).toBe(16.3);
+    expect((service as any).getHonorarios(150, '2026-05-01')).toBe(25.28);
+    expect((service as any).getHonorarios(90, '2026-05-02')).toBe(23.5);
+    expect((service as any).getHonorarios(150, '2026-05-02')).toBe(28.8);
+    expect((service as any).getHonorarios(500, '2026-05-02')).toBe(39.76);
+    expect((service as any).getHonorarios(1500, '2026-05-02')).toBe(60.16);
+  });
+
+  it('lista para catalogo solo disponibles que todavia no fueron enviados', async () => {
     ventaRepo.find.mockResolvedValue([{ productoId: 2 }]);
     productoRepo.find.mockResolvedValue([
       { id: 1, catalogoEnviado: false, tracking: [{ id: 3, estado: 'recogido' }] },

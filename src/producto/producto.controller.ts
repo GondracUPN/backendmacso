@@ -66,7 +66,7 @@ export class ProductoController {
 
   @Post('recalcular-envios-nueva-tarifa')
   async recalcularEnviosNuevaTarifa(@Body() body?: { cutoffDate?: string }) {
-    return this.productoService.recalcularEnviosNuevaTarifa(body?.cutoffDate || '2026-05-01');
+    return this.productoService.recalcularEnviosNuevaTarifa(body?.cutoffDate);
   }
 
   @Get('personal-eshopex')
