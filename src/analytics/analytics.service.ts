@@ -465,7 +465,7 @@ export class AnalyticsService {
 
   // Stale‑while‑revalidate wrapper for the heavy summary aggregation
   async summaryCached(params: Params) {
-    const key = this.buildKey('analytics:summary', params);
+    const key = this.buildKey('analytics:summary:v3', params);
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 120_000; // recompute in background every 2 min if accessed
@@ -1200,13 +1200,16 @@ export class AnalyticsService {
 
     // Product groups (MacBook): aggregate stats by gama/proc/pantalla from productos + ventas
     type GroupKey = string;
-    type CompraDetalle = { productoId: number; fechaCompra?: string | Date | null; precioUSD?: number | null; costoTotal?: number | null; estado?: string | null; ram?: string | null; ssd?: string | null; };
-    type VentaDetalle = { ventaId: number; productoId: number; fechaVenta?: string | Date | null; precioVenta?: number | null; ganancia?: number | null; porcentaje?: number | null; dias?: number | null; };
+    type CompraDetalle = { productoId: number; fechaCompra?: string | Date | null; precioUSD?: number | null; costoTotal?: number | null; estado?: string | null; ram?: string | null; ssd?: string | null; accesoriosCategoria?: string; };
+    type VentaDetalle = { ventaId: number; productoId: number; fechaVenta?: string | Date | null; precioVenta?: number | null; ganancia?: number | null; porcentaje?: number | null; dias?: number | null; estado?: string | null; accesoriosCategoria?: string; };
     type Group = {
       tipo: string;
       gama: string;
       proc: string;
       pantalla: string;
+      estado: string;
+      ram: string;
+      ssd: string;
       compras: number[];
       ventas: number[];
       margenes: number[];
@@ -1216,10 +1219,27 @@ export class AnalyticsService {
       ssdSet: Set<string>;
     };
     const groups = new Map<GroupKey, Group>();
+    const normalizeProductState = (value: unknown) => {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (normalized === 'new') return 'nuevo';
+      if (normalized === 'used') return 'usado';
+      return normalized;
+    };
+    const accessoryCategory = (value: unknown) => {
+      const items = Array.isArray(value)
+        ? value.map((item) => String(item || '').trim().toLowerCase()).filter((item) => item && item !== 'ninguno')
+        : [];
+      if (items.includes('caja')) return 'caja';
+      if (items.length) return 'accesorios';
+      return 'sin_nada';
+    };
     for (const p of productosFiltered) {
       const a = getAttrs(p);
-      const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
-      const g = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
+      const estado = normalizeProductState(p.estado) || 'sin estado';
+      const ram = a.ram || '';
+      const ssd = a.ssd || '';
+      const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-', estado, ram || '-', ssd || '-'].join('|');
+      const g: Group = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', estado, ram, ssd, compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
       g.compras.push(Number(p.valor?.costoTotal ?? 0) || 0);
       g.comprasDet.push({
         productoId: p.id,
@@ -1229,6 +1249,7 @@ export class AnalyticsService {
         estado: p.estado || null,
         ram: a.ram || null,
         ssd: a.ssd || null,
+        accesoriosCategoria: accessoryCategory(p.accesorios),
       });
       if (a.ram) g.ramSet.add(a.ram);
       if (a.ssd) g.ssdSet.add(a.ssd);
@@ -1240,8 +1261,11 @@ export class AnalyticsService {
       const p = productoLite || productoFull;
       if (!p) continue;
       const a = getAttrs(p);
-      const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-'].join('|');
-      const g = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
+      const estado = normalizeProductState(p.estado) || 'sin estado';
+      const ram = a.ram || '';
+      const ssd = a.ssd || '';
+      const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-', estado, ram || '-', ssd || '-'].join('|');
+      const g: Group = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', estado, ram, ssd, compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
       g.ventas.push(Number(v.precioVenta) || 0);
       g.margenes.push(Number(v.porcentajeGanancia) || 0);
       const tracking = productoFull?.tracking || [];
@@ -1258,6 +1282,8 @@ export class AnalyticsService {
         ganancia: Number(v.ganancia) || null,
         porcentaje: Number(v.porcentajeGanancia) || null,
         dias: fechaRecogido ? daysBetween(fechaRecogido, v.fechaVenta) : null,
+        estado: p.estado || null,
+        accesoriosCategoria: accessoryCategory(productoFull?.accesorios ?? p.accesorios),
       });
       if (a.ram) g.ramSet.add(a.ram);
       if (a.ssd) g.ssdSet.add(a.ssd);
@@ -1305,6 +1331,9 @@ export class AnalyticsService {
         gama: g.gama,
         proc: g.proc,
         pantalla: g.pantalla,
+        estado: g.estado,
+        ram: g.ram,
+        ssd: g.ssd,
         label: labelParts.join(' '),
         compras: comprasStats,
         ventas: { ...ventasStats, margenPromedio },
