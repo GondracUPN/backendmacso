@@ -1992,6 +1992,7 @@ const TARGET_MACBOOK_ORDER_CODES = [
 ] as const;
 
 const TARGET_IPAD_MODEL_NUMBERS = [
+  'a2567', 'a2568', 'a2569', 'a2993', 'a2995', 'a2996',
   'a2377', 'a2301', 'a2459', 'a2460', 'a2378', 'a2379', 'a2461', 'a2462',
   'a2759', 'a2435', 'a2761', 'a2762', 'a2436', 'a2764', 'a2437', 'a2766',
   'a2836', 'a2837', 'a3006', 'a2925', 'a2926', 'a3007',
@@ -2004,6 +2005,7 @@ const TARGET_IPAD_MODEL_NUMBERS = [
 ] as const;
 
 const TARGET_IPAD_ORDER_CODES = [
+  'mk7m3', 'mk893', 'mk8y3', 'mxn73', 'mxpp3', 'mxq13',
   'mhqt3', 'mhmu3', 'mhw63', 'mhwh3', 'mhng3', 'mhnt3', 'mhr53', 'mhrg3',
   'mnxe3', 'mp563', 'mnyd3', 'mnyp3', 'mnxq3', 'mp5y3', 'mp1y3', 'mp293',
   'mvv93', 'mvw23', 'mvwa3', 'mvx33', 'mvxt3', 'mvy23', 'mdwl4', 'me2p4',
@@ -2132,6 +2134,7 @@ const hasTargetIpadSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
   if (titleHasTargetIdentifier(title, TARGET_IPAD_MODEL_NUMBERS, TARGET_IPAD_ORDER_CODES)) return true;
   if (/\bm[1-5]\b/.test(normalized) && /\bipad\s+pro\b|\bipad\s+air\b/.test(normalized)) return true;
+  if (/\bipad\s+mini\b/.test(normalized) && /\bipad\s+mini\s+(?:6|7)\b|\b(?:6th|sixth|7th|seventh|a17\s*pro)\b/.test(normalized)) return true;
   if (/\bipad\s+pro\b/.test(normalized)) {
     if (/\b11(?:\.\d+)?\s*(?:inch|in|")?\b/.test(normalized) && /\b(?:3rd|third|4th|fourth|m[1-5])\b/.test(normalized)) return true;
     if (/\b12\.9(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\b(?:5th|fifth|6th|sixth|m[1-5])\b/.test(normalized)) return true;
