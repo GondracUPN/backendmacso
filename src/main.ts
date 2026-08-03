@@ -351,6 +351,9 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "tipoCambioRenato" numeric(10,4)`,
       );
       await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_venta_producto_unique" ON "${schema}"."venta" ("productoId")`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."venta_adelanto" ADD COLUMN IF NOT EXISTS "cuotas" jsonb NOT NULL DEFAULT '[]'::jsonb`,
       );
       await dataSource.query(

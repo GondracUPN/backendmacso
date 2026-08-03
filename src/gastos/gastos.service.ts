@@ -1,5 +1,6 @@
 ﻿import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConflictException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { Gasto } from './entities/gasto.entity';
 import { GastoBudget } from './entities/gasto-budget.entity';
@@ -91,6 +92,29 @@ export class GastosService {
 
     const montoNum = Number(dto.monto);
     const montoSigned = concepto === 'cashback' ? -Math.abs(montoNum) : montoNum;
+
+    if (concepto !== 'gastos_recurrentes' && !dto.allowDuplicate) {
+      const sameDayRows = await this.repo.find({
+        where: { userId, fecha: dto.fecha, concepto, metodoPago, moneda },
+        order: { id: 'DESC' },
+      });
+      const card = String(dto.tarjeta || '');
+      const paymentCard = metodoPago === 'debito' && concepto === 'pago_tarjeta'
+        ? String(dto.tarjetaPago || '')
+        : '';
+      const duplicates = sameDayRows.filter((row) => (
+        Math.abs(Number(row.monto)) === Math.abs(montoSigned)
+        && String(row.tarjeta || '') === card
+        && String(row.tarjetaPago || '') === paymentCard
+      ));
+      if (duplicates.length) {
+        throw new ConflictException({
+          code: 'DUPLICATE_GASTO',
+          message: 'Se encontraron gastos o pagos posiblemente duplicados.',
+          duplicates,
+        });
+      }
+    }
 
     const gasto = this.repo.create({
       userId,
@@ -306,11 +330,26 @@ export class GastosService {
 
     if (dto.notas !== undefined) g.notas = dto.notas ?? null;
 
+    if (dto.tipoCambioDia !== undefined) {
+      g.tasaUsdPen = Number(dto.tipoCambioDia).toFixed(4) as any;
+    }
+    if (dto.pagoObjetivo !== undefined) {
+      g.pagoObjetivo = dto.pagoObjetivo;
+    }
+    if (dto.montoUsdAplicado !== undefined) {
+      g.montoUsdAplicado = Number(dto.montoUsdAplicado).toFixed(2) as any;
+    }
+
     // Si el concepto es cashback, forzamos monto negativo
     if (g.concepto === 'cashback' && dto.monto !== undefined) {
       g.monto = (-Math.abs(Number(dto.monto))).toFixed(2);
     } else if (dto.monto !== undefined) {
       g.monto = Number(dto.monto).toFixed(2);
+    }
+
+    if (dto.monto !== undefined || dto.moneda !== undefined || dto.tipoCambioDia !== undefined) {
+      const rate = Number(g.tasaUsdPen || 3.7);
+      g.montoPen = (g.moneda === 'USD' ? Number(g.monto) * rate : Number(g.monto)).toFixed(2) as any;
     }
 
     return this.repo.save(g);

@@ -1,5 +1,6 @@
 import {
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
@@ -9,6 +10,7 @@ import {
 import { Producto } from '../producto/producto.entity';
 
 @Entity()
+@Index('idx_venta_producto_unique', ['productoId'], { unique: true })
 export class Venta {
   @PrimaryGeneratedColumn()
   id: number;

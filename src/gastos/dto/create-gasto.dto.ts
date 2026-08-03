@@ -100,4 +100,8 @@ export class CreateGastoDto {
   @IsOptional()
   @IsBoolean()
   recurrente?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowDuplicate?: boolean;
 }

@@ -70,8 +70,17 @@ export class GastosController {
   }
 
   @Post()
-  create(@CurrentUser() user: JwtUserPayload, @Body() dto: CreateGastoDto) {
-    return this.svc.create(user.userId, dto); // <-- usar user.userId
+  create(
+    @CurrentUser() user: JwtUserPayload,
+    @Body() dto: CreateGastoDto,
+    @Query('userId') userId?: string,
+  ) {
+    const requestedUserId = userId ? Number(userId) : undefined;
+    const targetUserId =
+      user.role === 'admin' && requestedUserId && Number.isInteger(requestedUserId)
+        ? requestedUserId
+        : user.userId;
+    return this.svc.create(targetUserId, dto);
   }
 
   @Patch(':id')

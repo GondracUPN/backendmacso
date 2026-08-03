@@ -1,5 +1,69 @@
 import { VentaService } from './venta.service';
 
+describe('VentaService.create', () => {
+  it('devuelve la venta existente sin crear otra para el mismo producto', async () => {
+    const existing = { id: 91, productoId: 42, precioVenta: 1500 };
+    const ventaRepo = {
+      findOne: jest.fn(async () => existing),
+      create: jest.fn(),
+      save: jest.fn(),
+    };
+    const productoRepo = { findOne: jest.fn() };
+    const service = new VentaService(
+      ventaRepo as any,
+      {} as any,
+      productoRepo as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await service.create({
+      productoId: 42,
+      tipoCambio: 3.75,
+      fechaVenta: '2026-07-20',
+      precioVenta: 1500,
+    });
+
+    expect(result).toBe(existing);
+    expect(productoRepo.findOne).not.toHaveBeenCalled();
+    expect(ventaRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('recupera la venta ganadora si dos solicitudes se guardan a la vez', async () => {
+    const winner = { id: 92, productoId: 43, precioVenta: 1600 };
+    const ventaRepo = {
+      findOne: jest.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(winner),
+      create: jest.fn((data) => data),
+      save: jest.fn(async () => {
+        const error: any = new Error('duplicate key');
+        error.code = '23505';
+        throw error;
+      }),
+    };
+    const valor = { valorProducto: 300, costoEnvio: 50 };
+    const service = new VentaService(
+      ventaRepo as any,
+      {} as any,
+      { findOne: jest.fn(async () => ({ id: 43, vendedor: 'Gonzalo', valor })) } as any,
+      { save: jest.fn(async (data) => data) } as any,
+      { del: jest.fn(async () => undefined) } as any,
+    );
+
+    const result = await service.create({
+      productoId: 43,
+      tipoCambio: 3.75,
+      fechaVenta: '2026-07-20',
+      precioVenta: 1600,
+    });
+
+    expect(result).toBe(winner);
+    expect(ventaRepo.save).toHaveBeenCalledTimes(1);
+    expect(ventaRepo.findOne).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('VentaService.completeAdelanto', () => {
   it('calcula el porcentaje sobre el costo total aunque el adelanto sea mayor que el costo', async () => {
     const adelanto = {

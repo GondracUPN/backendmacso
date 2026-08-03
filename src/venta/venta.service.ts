@@ -186,6 +186,27 @@ export class VentaService {
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
+  private async findExistingByProducto(productoId: number): Promise<Venta | null> {
+    return this.ventaRepo.findOne({
+      where: { productoId },
+      order: { id: 'DESC' },
+    });
+  }
+
+  private async saveIdempotent(venta: Venta): Promise<Venta> {
+    try {
+      return await this.ventaRepo.save(venta);
+    } catch (error: any) {
+      // PostgreSQL 23505: otra solicitud simultanea ya registro este producto.
+      if (error?.code !== '23505' && error?.driverError?.code !== '23505') {
+        throw error;
+      }
+      const existing = await this.findExistingByProducto(venta.productoId);
+      if (existing) return existing;
+      throw error;
+    }
+  }
+
   // Lista con filtros + joins para devolver producto, valor y detalle
   async findAll(params: ListVentasParams) {
     const qb = this.ventaRepo
@@ -699,6 +720,10 @@ export class VentaService {
   }
 
   async create(dto: CreateVentaDto): Promise<Venta> {
+    // Una venta completa por producto. Los reintentos deben devolver la misma fila.
+    const existing = await this.findExistingByProducto(dto.productoId);
+    if (existing) return existing;
+
     // 1) Cargar producto con valor
     const producto = await this.productoRepo.findOne({
       where: { id: dto.productoId },
@@ -769,7 +794,7 @@ export class VentaService {
           normalizeSellerLabel((dto as any).vendedor) ??
           sellerFromProducto(producto, 'ambos'),
       });
-      const saved = await this.ventaRepo.save(venta);
+      const saved = await this.saveIdempotent(venta);
       // invalidar KPIs de productos
       await this.cache.del?.('productos:stats').catch?.(() => {});
       return saved;
@@ -802,7 +827,7 @@ export class VentaService {
       porcentajeGanancia,
       vendedor: resolvedSeller,
     });
-    const saved = await this.ventaRepo.save(venta);
+    const saved = await this.saveIdempotent(venta);
     // invalidar KPIs de productos
     await this.cache.del?.('productos:stats').catch?.(() => {});
     return saved;
