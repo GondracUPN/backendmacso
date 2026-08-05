@@ -15,6 +15,7 @@ import { GastosService } from './gastos.service';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
 import { UpsertGastoBudgetDto } from './dto/upsert-gasto-budget.dto';
+import { UpsertBolsaInvestmentDto } from './dto/upsert-bolsa-investment.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -58,6 +59,32 @@ export class GastosController {
     @Query('userId') userId?: string,
   ) {
     return this.svc.upsertBudget(user.userId, user.role, dto, userId ? Number(userId) : undefined);
+  }
+
+  @Get('bolsa-registro')
+  getBolsaInvestments(
+    @CurrentUser() user: JwtUserPayload,
+    @Query('userId') userId?: string,
+  ) {
+    return this.svc.findBolsaInvestments(user.userId, user.role, userId ? Number(userId) : undefined);
+  }
+
+  @Post('bolsa-registro')
+  upsertBolsaInvestment(
+    @CurrentUser() user: JwtUserPayload,
+    @Body() dto: UpsertBolsaInvestmentDto,
+    @Query('userId') userId?: string,
+  ) {
+    return this.svc.upsertBolsaInvestment(user.userId, user.role, dto, userId ? Number(userId) : undefined);
+  }
+
+  @Delete('bolsa-registro/:month')
+  removeBolsaInvestment(
+    @CurrentUser() user: JwtUserPayload,
+    @Param('month') month: string,
+    @Query('userId') userId?: string,
+  ) {
+    return this.svc.removeBolsaInvestment(user.userId, user.role, month, userId ? Number(userId) : undefined);
   }
 
   // Obtener un gasto por id (propio o admin)

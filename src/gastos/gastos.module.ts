@@ -4,11 +4,12 @@ import { GastosService } from './gastos.service';
 import { GastosController } from './gastos.controller';
 import { Gasto } from './entities/gasto.entity';
 import { GastoBudget } from './entities/gasto-budget.entity';
+import { BolsaInvestment } from './entities/bolsa-investment.entity';
 import { ScheduledCharge } from '../schedules/scheduled-charge.entity';
 import { CatalogModule } from '../catalog/catalog.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Gasto, GastoBudget, ScheduledCharge]), CatalogModule],
+  imports: [TypeOrmModule.forFeature([Gasto, GastoBudget, BolsaInvestment, ScheduledCharge]), CatalogModule],
   controllers: [GastosController],
   providers: [GastosService],
 })

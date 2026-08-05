@@ -4,6 +4,8 @@ import { ConflictException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { Gasto } from './entities/gasto.entity';
 import { GastoBudget } from './entities/gasto-budget.entity';
+import { BolsaInvestment } from './entities/bolsa-investment.entity';
+import { UpsertBolsaInvestmentDto } from './dto/upsert-bolsa-investment.dto';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
 import { UpsertGastoBudgetDto } from './dto/upsert-gasto-budget.dto';
@@ -52,6 +54,7 @@ export class GastosService {
   constructor(
     @InjectRepository(Gasto) private readonly repo: Repository<Gasto>,
     @InjectRepository(GastoBudget) private readonly budgetsRepo: Repository<GastoBudget>,
+    @InjectRepository(BolsaInvestment) private readonly bolsaRepo: Repository<BolsaInvestment>,
     @InjectRepository(ScheduledCharge) private readonly schedulesRepo: Repository<ScheduledCharge>,
     private readonly catalogService: CatalogService,
   ) {}
@@ -240,6 +243,47 @@ export class GastosService {
       return targetUserId;
     }
     return userId;
+  }
+
+  findBolsaInvestments(userId: number, role: Role, targetUserId?: number) {
+    const resolvedUserId = this.resolveBudgetUserId(userId, role, targetUserId);
+    return this.bolsaRepo.find({ where: { userId: resolvedUserId }, order: { month: 'ASC' } });
+  }
+
+  async upsertBolsaInvestment(
+    userId: number,
+    role: Role,
+    dto: UpsertBolsaInvestmentDto,
+    targetUserId?: number,
+  ) {
+    const month = this.normalizeBudgetMonth(dto.month);
+    if (!String(dto.date || '').startsWith(`${month}-`)) {
+      throw new BadRequestException('La fecha debe pertenecer al mes indicado.');
+    }
+    const resolvedUserId = this.resolveBudgetUserId(userId, role, targetUserId);
+    const amount = Number(dto.amount);
+    let row = await this.bolsaRepo.findOne({ where: { userId: resolvedUserId, month } });
+    if (!row) {
+      row = this.bolsaRepo.create({
+        userId: resolvedUserId,
+        month,
+        amount: amount.toFixed(2),
+        date: dto.date,
+      });
+    } else {
+      row.amount = amount.toFixed(2);
+      row.date = dto.date;
+    }
+    return this.bolsaRepo.save(row);
+  }
+
+  async removeBolsaInvestment(userId: number, role: Role, monthValue: string, targetUserId?: number) {
+    const month = this.normalizeBudgetMonth(monthValue);
+    const resolvedUserId = this.resolveBudgetUserId(userId, role, targetUserId);
+    const row = await this.bolsaRepo.findOne({ where: { userId: resolvedUserId, month } });
+    if (!row) throw new NotFoundException('No se encontro el registro de Bolsa.');
+    await this.bolsaRepo.remove(row);
+    return { ok: true };
   }
 
   async getBudget(userId: number, role: Role, month: string, targetUserId?: number) {

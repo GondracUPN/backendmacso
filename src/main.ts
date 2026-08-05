@@ -241,6 +241,23 @@ async function bootstrap() {
         `CREATE INDEX IF NOT EXISTS "idx_gastos_presupuestos_month" ON "${schema}"."gastos_presupuestos" ("month")`,
       );
       await dataSource.query(
+        `CREATE TABLE IF NOT EXISTS "${schema}"."bolsa_inversiones" (
+          "id" SERIAL PRIMARY KEY,
+          "user_id" integer NOT NULL REFERENCES "${schema}"."users"("id") ON DELETE CASCADE,
+          "month" varchar(7) NOT NULL,
+          "amount" numeric(12,2) NOT NULL,
+          "date" date NOT NULL,
+          "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+          "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_bolsa_inversiones_user_month" ON "${schema}"."bolsa_inversiones" ("user_id", "month")`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_bolsa_inversiones_month" ON "${schema}"."bolsa_inversiones" ("month")`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
       );
       await dataSource.query(
