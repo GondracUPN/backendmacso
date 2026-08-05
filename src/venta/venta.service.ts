@@ -3,11 +3,12 @@ import {
   NotFoundException,
   BadRequestException,
   Inject,
+  Optional,
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { ILike, In, IsNull, Repository } from 'typeorm';
 import { Venta } from './venta.entity';
 import { VentaAdelanto } from './venta-adelanto.entity';
 import { CreateVentaDto } from './dto/create-venta.dto';
@@ -18,6 +19,8 @@ import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 import { calculateProfitPercentage } from './venta-profit.utils';
+import { Gasto } from '../gastos/entities/gasto.entity';
+import { User } from '../auth/entities/user.entity';
 
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
@@ -184,7 +187,71 @@ export class VentaService {
     @InjectRepository(ProductoValor)
     private readonly valorRepo: Repository<ProductoValor>,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    @Optional() @InjectRepository(Gasto)
+    private readonly gastoRepo?: Repository<Gasto>,
+    @Optional() @InjectRepository(User)
+    private readonly userRepo?: Repository<User>,
   ) {}
+
+  private async resolveIncomeUser(owner: 'gonzalo' | 'renato'): Promise<User | null> {
+    if (!this.userRepo) return null;
+    const named = await this.userRepo.findOne({ where: { username: ILike(`%${owner}%`) } });
+    if (named) return named;
+    return owner === 'gonzalo' ? this.userRepo.findOne({ where: { role: 'admin' } }) : null;
+  }
+
+  private async syncSaleIncome(venta: Venta, incomeBank?: string): Promise<void> {
+    if (!this.gastoRepo || !this.userRepo) return;
+    const seller = normalizeSeller(venta.vendedor);
+    const owners: Array<{ owner: 'gonzalo' | 'renato'; share: number }> = seller === 'ambos'
+      ? [{ owner: 'gonzalo', share: 0.5 }, { owner: 'renato', share: 0.5 }]
+      : seller === 'renato'
+        ? [{ owner: 'renato', share: 1 }]
+        : seller === 'gonzalo' || seller.startsWith('gonzalo (')
+          ? [{ owner: 'gonzalo', share: 1 }]
+          : [];
+    if (!owners.length) return;
+
+    const reference = `__SALE_INCOME__:${venta.productoId}`;
+    const linked = await this.gastoRepo.find({
+      where: {
+        concepto: 'ingreso',
+        metodoPago: 'debito',
+        notas: In([reference, String(venta.productoId)]),
+      },
+      order: { id: 'ASC' },
+    });
+    const desiredUserIds = new Set<number>();
+
+    for (const { owner, share } of owners) {
+      const user = await this.resolveIncomeUser(owner);
+      if (!user?.id) throw new BadRequestException(`No se encontró el usuario ${owner} para registrar el ingreso.`);
+      desiredUserIds.add(user.id);
+      const amount = +(Number(venta.precioVenta || 0) * share).toFixed(2);
+      const existing = linked.find((row) => row.userId === user.id);
+      const values = {
+        userId: user.id,
+        concepto: 'ingreso',
+        metodoPago: 'debito' as const,
+        moneda: 'PEN' as const,
+        monto: amount.toFixed(2),
+        montoPen: amount.toFixed(2),
+        fecha: String(venta.fechaVenta || '').slice(0, 10),
+        tarjeta: incomeBank || existing?.tarjeta || 'bcp',
+        tarjetaPago: null,
+        notas: reference,
+      };
+      if (existing) {
+        Object.assign(existing, values);
+        await this.gastoRepo.save(existing);
+      } else {
+        await this.gastoRepo.save(this.gastoRepo.create(values));
+      }
+    }
+
+    const obsolete = linked.filter((row) => !desiredUserIds.has(row.userId));
+    if (obsolete.length) await this.gastoRepo.remove(obsolete);
+  }
 
   private async findExistingByProducto(productoId: number): Promise<Venta | null> {
     return this.ventaRepo.findOne({
@@ -705,6 +772,7 @@ export class VentaService {
       vendedor: sellerFromProducto(producto, null),
     });
     const saved = await this.ventaRepo.save(venta);
+    await this.syncSaleIncome(saved);
 
     adelanto.ventaId = saved.id;
     adelanto.completadoAt = new Date();
@@ -722,7 +790,10 @@ export class VentaService {
   async create(dto: CreateVentaDto): Promise<Venta> {
     // Una venta completa por producto. Los reintentos deben devolver la misma fila.
     const existing = await this.findExistingByProducto(dto.productoId);
-    if (existing) return existing;
+    if (existing) {
+      await this.syncSaleIncome(existing, dto.incomeBank);
+      return existing;
+    }
 
     // 1) Cargar producto con valor
     const producto = await this.productoRepo.findOne({
@@ -795,6 +866,7 @@ export class VentaService {
           sellerFromProducto(producto, 'ambos'),
       });
       const saved = await this.saveIdempotent(venta);
+      await this.syncSaleIncome(saved, dto.incomeBank);
       // invalidar KPIs de productos
       await this.cache.del?.('productos:stats').catch?.(() => {});
       return saved;
@@ -828,6 +900,7 @@ export class VentaService {
       vendedor: resolvedSeller,
     });
     const saved = await this.saveIdempotent(venta);
+    await this.syncSaleIncome(saved, dto.incomeBank);
     // invalidar KPIs de productos
     await this.cache.del?.('productos:stats').catch?.(() => {});
     return saved;
@@ -948,6 +1021,7 @@ export class VentaService {
     if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;
 
     const saved = await this.ventaRepo.save(venta);
+    await this.syncSaleIncome(saved, dto.incomeBank);
     await this.cache.del?.('productos:stats').catch?.(() => {});
     return saved;
   }

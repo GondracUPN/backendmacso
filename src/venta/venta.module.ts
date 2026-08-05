@@ -7,9 +7,11 @@ import { VentaService } from './venta.service';
 import { VentaController } from './venta.controller';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
+import { Gasto } from '../gastos/entities/gasto.entity';
+import { User } from '../auth/entities/user.entity';
 
 @Module({
-  imports: [CacheModule.register(), TypeOrmModule.forFeature([Venta, VentaAdelanto, Producto, ProductoValor])],
+  imports: [CacheModule.register(), TypeOrmModule.forFeature([Venta, VentaAdelanto, Producto, ProductoValor, Gasto, User])],
   providers: [VentaService],
   controllers: [VentaController],
   exports: [VentaService],

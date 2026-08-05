@@ -1,6 +1,55 @@
 import { VentaService } from './venta.service';
 
 describe('VentaService.create', () => {
+  it('registra el ingreso de Gonzalo desde el backend sin sesión de Gastos', async () => {
+    const existing = {
+      id: 93,
+      productoId: 44,
+      vendedor: 'Gonzalo',
+      fechaVenta: '2026-08-04',
+      precioVenta: 3000,
+    };
+    const ventaRepo = { findOne: jest.fn(async () => existing) };
+    const gastoRepo = {
+      find: jest.fn(async () => []),
+      create: jest.fn((data) => data),
+      save: jest.fn(async (data) => ({ id: 1200, ...data })),
+      remove: jest.fn(),
+    };
+    const userRepo = {
+      findOne: jest.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 1, username: 'Admin', role: 'admin' }),
+    };
+    const service = new VentaService(
+      ventaRepo as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      gastoRepo as any,
+      userRepo as any,
+    );
+
+    const result = await service.create({
+      productoId: 44,
+      tipoCambio: 3.75,
+      fechaVenta: '2026-08-04',
+      precioVenta: 3000,
+      incomeBank: 'bcp',
+    });
+
+    expect(result).toBe(existing);
+    expect(gastoRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 1,
+      concepto: 'ingreso',
+      monto: '3000.00',
+      fecha: '2026-08-04',
+      tarjeta: 'bcp',
+      notas: '__SALE_INCOME__:44',
+    }));
+  });
+
   it('devuelve la venta existente sin crear otra para el mismo producto', async () => {
     const existing = { id: 91, productoId: 42, precioVenta: 1500 };
     const ventaRepo = {

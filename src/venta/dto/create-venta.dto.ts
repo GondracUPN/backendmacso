@@ -4,6 +4,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsIn,
 } from 'class-validator';
 
 export class CreateVentaDto {
@@ -26,6 +27,10 @@ export class CreateVentaDto {
 
   @IsNumber()
   precioVenta: number; // S/
+
+  @IsOptional()
+  @IsIn(['bcp', 'interbank', 'bbva'])
+  incomeBank?: 'bcp' | 'interbank' | 'bbva';
 
   @IsOptional()
   @IsString()
