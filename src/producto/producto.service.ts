@@ -1,7 +1,7 @@
 ﻿import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, MoreThan, Repository } from 'typeorm';
 import type { Cache } from 'cache-manager';
 import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
@@ -14,6 +14,7 @@ import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
 import { Inventario } from '../inventario/inventario.entity';
 import * as crypto from 'node:crypto';
+import { isAccessoryStock, normalizeIncludedAccessories } from './accessory-rules';
 
 function normalizeEstado(str?: string | null): string {
   if (!str) return '';
@@ -100,15 +101,21 @@ export class ProductoService {
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
   async create(data: CreateProductoDto): Promise<Producto> {
+    const rawDetalle: any = data.detalle ? { ...(data.detalle as any) } : null;
+    if (rawDetalle) {
+      rawDetalle.tamano = rawDetalle.tamano ?? rawDetalle.tamanio ?? rawDetalle['tama\u00f1o'] ?? null;
+      delete rawDetalle.tamanio;
+      delete rawDetalle['tama\u00f1o'];
+    }
+
+    const accessoryDisplayCode = isAccessoryStock(data.tipo)
+      ? await this.findAccessoryDisplayCode(data, rawDetalle)
+      : null;
+
     // 1) Guardar detalle
     let detalle: ProductoDetalle | null = null;
-    if (data.detalle) {
-      // Normalizar variantes hacia la clave estándar ASCII 'tamano'
-      const raw: any = { ...(data.detalle as any) };
-      raw.tamano = raw.tamano ?? raw.tamanio ?? raw['tama\u00f1o'] ?? null;
-      delete raw.tamanio;
-      delete raw['tama\u00f1o'];
-      detalle = this.detalleRepo.create(raw as any) as unknown as ProductoDetalle;
+    if (rawDetalle) {
+      detalle = this.detalleRepo.create(rawDetalle as any) as unknown as ProductoDetalle;
       detalle = (await this.detalleRepo.save(detalle as any)) as ProductoDetalle;
     }
 
@@ -139,25 +146,32 @@ export class ProductoService {
     }
 
     // 4) Crear y guardar producto
-    // Normalizar accesorios según reglas de negocio
-    let accesorios: string[] = Array.isArray((data as any).accesorios)
-      ? ((data as any).accesorios as string[])
-      : [];
-    const accNorm = (s: string) => s?.toString().trim().toLowerCase();
-    if (accesorios.map(accNorm).includes('todos')) accesorios = ['Caja', 'Cubo', 'Cable'];
-    if ((data.estado || '').toLowerCase() === 'nuevo') { accesorios = ['Caja','Cubo','Cable']; }
+    const accessoryStock = isAccessoryStock(data.tipo);
+    const cantidad = accessoryStock ? Number(data.cantidad || 1) : 1;
+    const accesorios = normalizeIncludedAccessories(
+      data.tipo,
+      data.accesorios,
+      (data.detalle as any)?.modelo,
+    );
 
     const producto = this.productoRepo.create({
       tipo: data.tipo,
       estado: data.estado,
       vendedor: normalizeVendedor((data as any).vendedor),
       accesorios,
+      stockInicial: cantidad,
+      stockActual: cantidad,
+      codigoInventario: accessoryDisplayCode,
       envioGrupoId: envioGrupoId || null,
       detalle: detalle || undefined,
       valor: valor || undefined,
       facturaDecSubida: !!data.facturaDecSubida,
     });
     const savedProducto = await this.productoRepo.save(producto);
+    if (accessoryStock && !savedProducto.codigoInventario) {
+      savedProducto.codigoInventario = savedProducto.id;
+      await this.productoRepo.save(savedProducto);
+    }
 
     // 5) Prorratear envío si corresponde
     if (envioGrupoId && valor) {
@@ -168,12 +182,17 @@ export class ProductoService {
       await this.valorRepo.save(valor);
     }
 
-    // 6) Crear tracking inicial: "Comprado (Sin Tracking)"
-    await this.trackingRepo.save(
-      this.trackingRepo.create({
+    // Todos los productos pueden llevar tracking. Los accesorios, además, entran
+    // inmediatamente a Inventario para administrar su stock por unidades.
+    if (accessoryStock) {
+      await this.inventarioRepo.save(this.inventarioRepo.create({
         productoId: savedProducto.id,
-        estado: 'comprado_sin_tracking',
-      }),
+        enAlmacen: true,
+        accesorios: [],
+      }));
+    }
+    await this.trackingRepo.save(
+      this.trackingRepo.create({ productoId: savedProducto.id, estado: 'comprado_sin_tracking' }),
     );
     if (envioGrupoId) {
       await this.syncTrackingEnGrupo(envioGrupoId);
@@ -186,6 +205,32 @@ export class ProductoService {
     });
     await this.invalidateListCache();
     return this.applyProrrateadoView(finalProd);
+  }
+
+  private normalizeAccessoryMatch(value: unknown): string {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  private async findAccessoryDisplayCode(
+    data: CreateProductoDto,
+    rawDetalle: Record<string, any> | null,
+  ): Promise<number | null> {
+    const model = this.normalizeAccessoryMatch(rawDetalle?.modelo);
+    if (!model) return null;
+
+    const candidates = (await this.productoRepo.find({
+      where: { tipo: data.tipo, stockActual: MoreThan(0) },
+      relations: ['detalle', 'valor', 'tracking'],
+      order: { id: 'ASC' },
+    })) || [];
+    const estado = this.normalizeAccessoryMatch(data.estado);
+    const existing = candidates.find((product) =>
+      Number(product.stockActual || 0) > 0
+      && this.normalizeAccessoryMatch(product.detalle?.modelo) === model
+      && this.normalizeAccessoryMatch(product.estado) === estado,
+    );
+    if (!existing) return null;
+    return Number(existing.codigoInventario || existing.id);
   }
 
   async createLote(data: CreateProductoLoteDto): Promise<Producto[]> {
@@ -510,25 +555,22 @@ export class ProductoService {
       }
     }
 
-    // Accesorios: si vienen en el DTO, normalizarlos y actualizar
+    // Accesorios incluidos: caja es obligatoria y las variantes son excluyentes.
     if ((dto as any).accesorios !== undefined) {
-      let acc: string[] = Array.isArray((dto as any).accesorios) ? ((dto as any).accesorios as string[]) : [];
-      const accNorm = (s: string) => s?.toString().trim().toLowerCase();
-      if (acc.map(accNorm).includes('todos')) acc = ['Caja', 'Cubo', 'Cable'];
-      if ((producto.estado || '').toLowerCase() === 'nuevo' && !acc.includes('Caja')) acc.push('Caja');
-      producto.accesorios = acc;
+      producto.accesorios = normalizeIncludedAccessories(
+        producto.tipo,
+        (dto as any).accesorios,
+        (dto.detalle as any)?.modelo ?? (producto.detalle as any)?.modelo,
+      );
       await this.productoRepo.save(producto);
-      // accesorios ya normalizados arriba
-    } else if (dto.estado !== undefined && (dto.estado || '').toLowerCase() === 'nuevo') {
-      const set = new Set<string>(producto.accesorios || []);
-      set.add('Caja');
-      producto.accesorios = Array.from(set);
-      // estado nuevo: accesorios ya forzados con Caja; agrega si faltaba
-      await this.productoRepo.save(producto)
     }
-    // Enforce 'Todos' cuando el estado es 'nuevo'
-    if ((producto.estado || '').toLowerCase() === 'nuevo') {
-      producto.accesorios = ['Caja','Cubo','Cable'];
+
+    if ((dto as any).cantidad !== undefined && isAccessoryStock(producto.tipo)) {
+      const nextInitial = Number((dto as any).cantidad);
+      const sold = Math.max(0, Number(producto.stockInicial || 0) - Number(producto.stockActual || 0));
+      if (nextInitial < sold) throw new BadRequestException(`La cantidad no puede ser menor que las ${sold} unidades ya vendidas.`);
+      producto.stockInicial = nextInitial;
+      producto.stockActual = nextInitial - sold;
       await this.productoRepo.save(producto);
     }
 
@@ -1067,6 +1109,9 @@ export class ProductoService {
       const pantalla = tam && tam !== modeloIpad ? tam : '';
       return ['iPad', linea, modeloIpad, pantalla].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
     }
+    if (tipo.toLowerCase() === 'accesorios') {
+      return modelo || gama || `Producto ${p.id}`;
+    }
     return [tipo, gama, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
   }
 
@@ -1106,7 +1151,7 @@ export class ProductoService {
       title: this.buildTitle(p),
       price: String(price ?? '0'),
       status: 'listed',
-      stock: 1,
+      stock: isAccessoryStock(p.tipo) ? Math.max(0, Number(p.stockActual || 0)) : 1,
       // Enviamos especificaciones completas para que el catÃ¡logo pueda mostrarlas
       specs: {
         tipo: p.tipo ?? null,
@@ -1239,10 +1284,24 @@ export class ProductoService {
       relations: ['detalle', 'valor', 'tracking'],
       order: { id: 'DESC' },
     });
+    const fichasListas = productos.length
+      ? await this.inventarioRepo.find({
+          where: {
+            productoId: In(productos.map((producto) => producto.id)),
+            enAlmacen: true,
+            fotosTomadas: true,
+          },
+          select: { productoId: true } as any,
+        })
+      : [];
+    const productosListos = new Set(fichasListas.map((ficha) => ficha.productoId));
 
     return productos
-      .filter((producto) => !vendidosSet.has(producto.id))
-      .filter((producto) => this.getUltimoTrackingEstado(producto) === 'recogido')
+      .filter((producto) => isAccessoryStock(producto.tipo)
+        ? Number(producto.stockActual || 0) > 0
+        : !vendidosSet.has(producto.id))
+      .filter((producto) => isAccessoryStock(producto.tipo) || this.getUltimoTrackingEstado(producto) === 'recogido')
+      .filter((producto) => productosListos.has(producto.id))
       .map((producto) => this.applyProrrateadoView(producto));
   }
 
@@ -1294,7 +1353,7 @@ export class ProductoService {
             title: this.buildTitle(p),
             price: String(price ?? '0'),
             status: 'listed',
-            stock: 1,
+            stock: isAccessoryStock(p.tipo) ? Math.max(0, Number(p.stockActual || 0)) : 1,
             saleType: minOfferPrice != null ? 'OFERTA' : 'VENTA_SIMPLE',
             minOfferPrice,
             color: ficha?.color ?? null,

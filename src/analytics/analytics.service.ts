@@ -9,6 +9,7 @@ import { ProductoDetalle } from '../producto/producto-detalle.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { aggregateProfitByPeriod, type GroupBy, type ProfitInput } from './profit.utils';
+import { formatAppleWatchModel, formatAppleWatchName } from '../common/product-name.util';
 import {
   buildInsights,
   computeDeltas,
@@ -152,7 +153,12 @@ function extractProductAttrs(p: Producto): ProductAttrs {
     if (numero && modelo) gama = `${numero} ${modelo}`.trim();
     else if (numero) gama = numero;
     else if (modelo && !gama) gama = modelo;
-  } else if (!gama && (tipoP === 'watch' || tipoP === 'ipad')) {
+  } else if (tipoP === 'watch') {
+    gama = formatAppleWatchModel(d);
+  } else if (tipoP === 'accesorios' && modelo) {
+    // La familia queda en detalle.gama; para análisis interesa el modelo exacto.
+    gama = modelo;
+  } else if (!gama && (tipoP === 'ipad' || tipoP === 'airpods')) {
     if (modelo) gama = modelo;
   }
 
@@ -208,7 +214,14 @@ function ym(d: string | Date): string {
 }
 
 const SPLIT_VENDOR = 'ambos';
-const normalizeSeller = (s?: string | null) => (s == null ? '' : String(s).trim().toLowerCase());
+export const normalizeSeller = (s?: string | null) => {
+  const normalized = s == null ? '' : String(s).trim().toLowerCase();
+  // Ganancias agrupa etiquetas como "Gonzalo (Jorge)" y
+  // "Gonzalo (Williams)" dentro de Gonzalo. Analytics debe aplicar
+  // exactamente la misma regla para no excluir esas ventas del periodo.
+  if (/^gonzalo\s*\([^)]+\)$/.test(normalized)) return 'gonzalo';
+  return normalized;
+};
 const SELLERS = ['gonzalo', 'renato'];
 const getProductoSeller = (producto?: Producto | null) => normalizeSeller((producto as any)?.vendedor as any);
 const getVentaSellerHistorico = (venta: Venta) => normalizeSeller((venta as any)?.vendedor as any);
@@ -311,6 +324,7 @@ const mapVentaForSeller = (venta: Venta, seller: string, source: 'producto' | 'v
 function productDisplayClean(p: Producto): string {
   const tipo = (p.tipo || '').toLowerCase();
   const d: any = p.detalle || {};
+  if (tipo === 'watch') return formatAppleWatchName(d);
 
   const sanitize = (s: string) =>
     s
@@ -439,7 +453,7 @@ export class AnalyticsService {
   }
 
   private async getAnalyticsUniverseCached(): Promise<AnalyticsUniverse> {
-    return this.rememberCached('analytics:universe:v1', 45, async () => {
+    return this.rememberCached('analytics:universe:v2', 45, async () => {
       const [productos, ventas] = await Promise.all([
         this.prodRepo.find({
           relations: ['valor', 'detalle', 'tracking'],
@@ -465,7 +479,7 @@ export class AnalyticsService {
 
   // Stale‑while‑revalidate wrapper for the heavy summary aggregation
   async summaryCached(params: Params) {
-    const key = this.buildKey('analytics:summary:v3', params);
+    const key = this.buildKey('analytics:summary:v5', params);
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 120_000; // recompute in background every 2 min if accessed
@@ -563,6 +577,12 @@ export class AnalyticsService {
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
     // Para stock activo, necesitamos saber todos los productos vendidos históricamente
     const vendidosHistoricos = new Set<number>(vendidosHistoricosIds);
+    const isAccessory = (p: Producto) => String(p.tipo || '').trim().toLowerCase() === 'accesorios';
+    const purchasedUnits = (p: Producto) => isAccessory(p) ? Math.max(0, Number((p as any).stockInicial || 0)) : 1;
+    const remainingUnits = (p: Producto) => isAccessory(p)
+      ? Math.max(0, Number((p as any).stockActual || 0))
+      : (vendidosHistoricos.has(p.id) ? 0 : 1);
+    const soldUnits = (v: Venta) => Math.max(1, Number((v as any).cantidad || 1));
 
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
@@ -606,13 +626,14 @@ export class AnalyticsService {
       productoShareById.set(p.id, productoShareForSeller(p, sellerTarget));
     }
     const inventoryHistoricalPurchasedUnits = +productosHistoricosComprados
-      .reduce((s, p) => s + productoShareForSeller(p, sellerTarget), 0)
+      .reduce((s, p) => s + purchasedUnits(p) * productoShareForSeller(p, sellerTarget), 0)
       .toFixed(2);
 
     // Helper to build a user-friendly display for each product
     const productDisplay = (p: Producto): string => {
       const tipo = (p.tipo || '').toLowerCase();
       const d: any = p.detalle || {};
+      if (tipo === 'watch') return formatAppleWatchName(d);
 
       const sanitize = (s: string) =>
         s
@@ -737,18 +758,22 @@ export class AnalyticsService {
       return { baseSoles, envioSoles };
     };
 
-    const unsold = productosFiltered.filter((p) => !vendidosHistoricos.has(p.id));
+    const unsold = productosFiltered.filter((p) => remainingUnits(p) > 0);
     const unsoldValuation = unsold.map((p) => {
       const estadoActual = latestTrackingEstado(p);
       const { baseSoles, envioSoles } = productCostParts(p);
-      const share = productoShareById.get(p.id) ?? 1;
+      const ownerShare = productoShareById.get(p.id) ?? 1;
+      const initialUnits = Math.max(1, purchasedUnits(p));
+      const units = remainingUnits(p);
+      const share = units * ownerShare;
+      const costFraction = (units / initialUnits) * ownerShare;
       // Solo incluir envio para unidades recogidas (listas para venta).
-      const envioIncluido = estadoActual === 'recogido' ? envioSoles * share : 0;
+      const envioIncluido = estadoActual === 'recogido' ? envioSoles * costFraction : 0;
       return {
         p,
         share,
         estadoActual,
-        baseSoles: baseSoles * share,
+        baseSoles: baseSoles * costFraction,
         envioIncluido,
         total: baseSoles * share + envioIncluido,
       };
@@ -770,7 +795,7 @@ export class AnalyticsService {
 
     // Compras del período (filtradas por fecha de compra)
     const comprasPeriodoUnidades = +productosFiltered
-      .reduce((s, p) => s + (productoShareById.get(p.id) ?? 1), 0)
+      .reduce((s, p) => s + purchasedUnits(p) * (productoShareById.get(p.id) ?? 1), 0)
       .toFixed(2);
     const comprasPeriodoCapital = +(
       productosFiltered.reduce(
@@ -787,7 +812,7 @@ export class AnalyticsService {
       fechaCompra: p.valor?.fechaCompra,
       precioUSD: +(Number(p.valor?.valorProducto ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
       costoTotal: +(Number(p.valor?.costoTotal ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
-      participacion: productoShareById.get(p.id) ?? 1,
+      participacion: purchasedUnits(p) * (productoShareById.get(p.id) ?? 1),
     }));
 
     // SUNAT: gasto del periodo con envio solo para productos recogidos.
@@ -807,12 +832,16 @@ export class AnalyticsService {
     const sunatGastoEnvio = +sunatRows.reduce((s, x) => s + x.envioIncluido, 0).toFixed(2);
     const sunatGastoTotal = +(sunatGastoProductos + sunatGastoEnvio).toFixed(2);
     const sunatValorDecTotal = +sunatRows.reduce((s, x) => s + x.valorDec, 0).toFixed(2);
+    const sunatTotalVendidoPeriodo = +ventas.reduce(
+      (s, v) => s + (Number(v.precioVenta) || 0),
+      0,
+    ).toFixed(2);
     const sunatGananciaTotal = +(ventas.reduce((s, v) => s + (Number(v.ganancia) || 0), 0)).toFixed(2);
 
     // No vendidos del período (comprados en el período y aún sin vender)
     const nowForNoVendidos = new Date();
     const noVendidosDelPeriodo = productosFiltered
-      .filter((p) => !vendidosHistoricos.has(p.id))
+      .filter((p) => remainingUnits(p) > 0)
       .map((p) => {
         const recogidos = (p.tracking || [])
           .map((t) => t.fechaRecogido)
@@ -824,8 +853,8 @@ export class AnalyticsService {
           productoId: p.id,
           tipo: p.tipo,
           display: productDisplayClean(p),
-          costoTotal: +(Number(p.valor?.costoTotal ?? 0) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
-          participacion: productoShareById.get(p.id) ?? 1,
+          costoTotal: +(Number(p.valor?.costoTotal ?? 0) * (remainingUnits(p) / Math.max(1, purchasedUnits(p))) * (productoShareById.get(p.id) ?? 1) || 0).toFixed(2),
+          participacion: remainingUnits(p) * (productoShareById.get(p.id) ?? 1),
           fechaCompra: p.valor?.fechaCompra,
           fechaRecogido: frg || null,
           diasDesdeRecogido: dias,
@@ -1062,7 +1091,7 @@ export class AnalyticsService {
     }));
     // Detalle por tipo: vendidos (en el período filtrado) y stock actual (sin ventas históricas)
     // Ventas en período (ya filtradas por from/to venta)
-    const vendidosPeriodoByTipo = new Map<string, { productoId: number; display: string; fechaVenta?: string | null; precioVenta?: number | null; margen?: number | null }[]>();
+    const vendidosPeriodoByTipo = new Map<string, { productoId: number; display: string; cantidad: number; fechaVenta?: string | null; precioVenta?: number | null; margen?: number | null }[]>();
     for (const v of ventas) {
       const t = v.producto?.tipo || 'otro';
       const arr = vendidosPeriodoByTipo.get(t) || [];
@@ -1070,6 +1099,7 @@ export class AnalyticsService {
         arr.push({
           productoId: v.productoId,
           display: productDisplayClean(v.producto as any),
+          cantidad: soldUnits(v),
           fechaVenta: v.fechaVenta,
           precioVenta: Number(v.precioVenta),
           margen: Number(v.porcentajeGanancia),
@@ -1080,16 +1110,16 @@ export class AnalyticsService {
     // Stock actual independiente del filtro de ventas (productos sin ninguna venta histórica)
     const stockActual = productos.filter(
       (p) =>
-        !vendidosHistoricos.has(p.id) &&
+        remainingUnits(p) > 0 &&
         matchesProductFilters(p) &&
         (!sellerTarget || matchesProductoSeller(p, sellerTarget)),
     );
-    const stockByTipo = new Map<string, { productoId: number; display: string }[]>();
+    const stockByTipo = new Map<string, { productoId: number; display: string; cantidad: number }[]>();
     for (const p of stockActual) {
       if (tipo && p.tipo !== tipo) continue;
       const t = p.tipo || 'otro';
       const arr = stockByTipo.get(t) || [];
-      arr.push({ productoId: p.id, display: productDisplayClean(p) });
+      arr.push({ productoId: p.id, display: productDisplayClean(p), cantidad: remainingUnits(p) });
       stockByTipo.set(t, arr);
     }
     const tiposUnion = new Set<string>([
@@ -1101,12 +1131,15 @@ export class AnalyticsService {
       const stk = stockByTipo.get(t) || [];
       return {
         tipo: t,
-        vendidos: { total: ven.length, items: ven },
-        stock: { total: stk.length, items: stk },
+        vendidos: { total: ven.reduce((sum, item) => sum + item.cantidad, 0), items: ven },
+        stock: { total: stk.reduce((sum, item) => sum + item.cantidad, 0), items: stk },
       };
     });
     const comprasByTipo = groupBy(productosFiltered, (p) => p.tipo || 'otro');
-    const totalProductosFiltrados = productosFiltered.length;
+    const totalProductosFiltrados = productosFiltered.reduce(
+      (sum, p) => sum + purchasedUnits(p) * (productoShareById.get(p.id) ?? 1),
+      0,
+    );
     const financialByType = Array.from(
       new Set<string>([
         ...Array.from(comprasByTipo.keys()),
@@ -1116,8 +1149,11 @@ export class AnalyticsService {
       .map((tipoKey) => {
         const comprasTipo = comprasByTipo.get(tipoKey) || [];
         const ventasTipo = ventasByTipo.get(tipoKey) || [];
-        const unidadesCompradas = comprasTipo.length;
-        const unidadesVendidas = ventasTipo.length;
+        const unidadesCompradas = comprasTipo.reduce(
+          (sum, p) => sum + purchasedUnits(p) * (productoShareById.get(p.id) ?? 1),
+          0,
+        );
+        const unidadesVendidas = ventasTipo.reduce((sum, v) => sum + soldUnits(v), 0);
         const compradoTotal = comprasTipo.reduce(
           (s, p) => s + ((Number(p.valor?.costoTotal ?? 0) || 0) * (productoShareById.get(p.id) ?? 1)),
           0,
@@ -1240,12 +1276,15 @@ export class AnalyticsService {
       const ssd = a.ssd || '';
       const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-', estado, ram || '-', ssd || '-'].join('|');
       const g: Group = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', estado, ram, ssd, compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
-      g.compras.push(Number(p.valor?.costoTotal ?? 0) || 0);
+      const compraUnits = Math.max(1, purchasedUnits(p));
+      const compraUnitCost = (Number(p.valor?.costoTotal ?? 0) || 0) / compraUnits;
+      const compraUnitUsd = (Number(p.valor?.valorProducto ?? 0) || 0) / compraUnits;
+      for (let unit = 0; unit < compraUnits; unit += 1) g.compras.push(compraUnitCost);
       g.comprasDet.push({
         productoId: p.id,
         fechaCompra: p.valor?.fechaCompra || null,
-        precioUSD: Number(p.valor?.valorProducto ?? 0) || null,
-        costoTotal: Number(p.valor?.costoTotal ?? 0) || null,
+        precioUSD: compraUnitUsd || null,
+        costoTotal: compraUnitCost || null,
         estado: p.estado || null,
         ram: a.ram || null,
         ssd: a.ssd || null,
@@ -1266,8 +1305,13 @@ export class AnalyticsService {
       const ssd = a.ssd || '';
       const k: GroupKey = [a.tipo || 'otro', a.gama || '-', a.proc || '-', a.pantalla || '-', estado, ram || '-', ssd || '-'].join('|');
       const g: Group = groups.get(k) || { tipo: a.tipo || 'otro', gama: a.gama || '', proc: a.proc || '', pantalla: a.pantalla || '', estado, ram, ssd, compras: [], ventas: [], margenes: [], comprasDet: [], ventasDet: [], ramSet: new Set(), ssdSet: new Set() };
-      g.ventas.push(Number(v.precioVenta) || 0);
-      g.margenes.push(Number(v.porcentajeGanancia) || 0);
+      const ventaUnits = soldUnits(v);
+      const ventaUnitPrice = (Number(v.precioVenta) || 0) / ventaUnits;
+      const ventaUnitGain = (Number(v.ganancia) || 0) / ventaUnits;
+      for (let unit = 0; unit < ventaUnits; unit += 1) {
+        g.ventas.push(ventaUnitPrice);
+        g.margenes.push(Number(v.porcentajeGanancia) || 0);
+      }
       const tracking = productoFull?.tracking || [];
       const fechasRecogido = tracking
         .map((t) => t?.fechaRecogido)
@@ -1278,8 +1322,8 @@ export class AnalyticsService {
         ventaId: v.id,
         productoId: v.productoId,
         fechaVenta: v.fechaVenta,
-        precioVenta: Number(v.precioVenta) || null,
-        ganancia: Number(v.ganancia) || null,
+        precioVenta: ventaUnitPrice || null,
+        ganancia: ventaUnitGain || null,
         porcentaje: Number(v.porcentajeGanancia) || null,
         dias: fechaRecogido ? daysBetween(fechaRecogido, v.fechaVenta) : null,
         estado: p.estado || null,
@@ -1319,6 +1363,18 @@ export class AnalyticsService {
         if (g.proc) labelParts.push(g.proc);
       } else if (tipoKey === 'watch') {
         labelParts.push('Apple Watch');
+        if (g.gama) labelParts.push(g.gama);
+      } else if (tipoKey === 'macmini') {
+        labelParts.push('Mac mini');
+        if (g.proc) labelParts.push(g.proc);
+      } else if (tipoKey === 'imac') {
+        labelParts.push('iMac');
+        if (g.pantalla) labelParts.push(`${g.pantalla}\"`);
+        if (g.proc) labelParts.push(g.proc);
+      } else if (tipoKey === 'airpods') {
+        labelParts.push(g.gama || 'AirPods');
+      } else if (tipoKey === 'accesorios') {
+        labelParts.push('Accesorios');
         if (g.gama) labelParts.push(g.gama);
       } else {
         labelParts.push(g.tipo || 'Producto');
@@ -1422,6 +1478,7 @@ export class AnalyticsService {
           gastoPeriodo: sunatGastoProductos,
           enviosRecogidos: sunatGastoEnvio,
           valorDecPeriodoTotal: sunatValorDecTotal,
+          totalVendidoPeriodo: sunatTotalVendidoPeriodo,
           gastoTotal: sunatGastoTotal,
           gastoProductos: sunatGastoProductos,
           gastoEnvio: sunatGastoEnvio,

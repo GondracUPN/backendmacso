@@ -6,6 +6,8 @@ import {
   ValidateNested,
   IsArray,
   IsBoolean,
+  IsInt,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -37,6 +39,8 @@ export class CreateProductoDto {
   @IsOptional() @IsString() vendedor?: string;
   // Nuevo: accesorios para usado; para 'nuevo' se fuerza Caja internamente
   @IsOptional() @IsArray() accesorios?: string[]; // ['Caja','Cubo','Cable'] o ['Todos']
+
+  @IsOptional() @IsInt() @Min(1) cantidad?: number;
 
   @IsOptional()
   @IsBoolean()

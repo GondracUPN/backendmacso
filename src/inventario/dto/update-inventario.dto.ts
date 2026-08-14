@@ -14,6 +14,7 @@ import {
 } from 'class-validator';
 
 export class UpdateInventarioDto {
+  @IsOptional() @IsInt() @Min(1) @Max(1000000) cantidadStock?: number;
   @IsOptional() @IsBoolean() enAlmacen?: boolean;
   @IsOptional() @IsString() @MaxLength(80) color?: string | null;
   @IsOptional() @IsInt() @Min(0) @Max(100000) ciclosBateria?: number | null;

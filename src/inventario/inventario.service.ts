@@ -11,6 +11,7 @@ import { In, Repository } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
 import { UpdateInventarioDto } from './dto/update-inventario.dto';
 import { Inventario } from './inventario.entity';
+import { isAccessoryStock, normalizeIncludedAccessories } from '../producto/accessory-rules';
 
 @Injectable()
 export class InventarioService {
@@ -44,16 +45,15 @@ export class InventarioService {
       .leftJoinAndSelect('p.valor', 'valor')
       .leftJoinAndSelect('p.tracking', 'tracking')
       .where(
+        `(LOWER(p.tipo) = 'accesorios' AND p."stockActual" > 0) OR (` +
         `EXISTS (
           SELECT 1 FROM tracking t
           WHERE t."productoId" = p.id
             AND (t.estado = :recogido OR t."fechaRecogido" IS NOT NULL)
-        )`,
+        ))`,
         { recogido: 'recogido' },
       )
-      .andWhere(
-        'NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)',
-      )
+      .andWhere(`(LOWER(p.tipo) = 'accesorios' OR NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id))`)
       .andWhere(
         `NOT EXISTS (
           SELECT 1 FROM venta_adelanto va
@@ -88,7 +88,7 @@ export class InventarioService {
   }
 
   async upsert(productoId: number, data: UpdateInventarioDto) {
-    await this.assertProducto(productoId);
+    const producto = await this.assertProducto(productoId);
     let ficha = await this.inventarioRepo.findOne({ where: { productoId } });
     if (!ficha) {
       ficha = this.inventarioRepo.create({ productoId, accesorios: [] });
@@ -99,6 +99,13 @@ export class InventarioService {
       return cleaned || null;
     };
     const patch: Partial<Inventario> = {};
+    if (data.cantidadStock !== undefined && isAccessoryStock(producto.tipo)) {
+      const sold = Math.max(0, Number(producto.stockInicial || 0) - Number(producto.stockActual || 0));
+      if (data.cantidadStock < sold) throw new BadRequestException(`No puedes bajar el total por debajo de ${sold} unidades vendidas.`);
+      producto.stockInicial = data.cantidadStock;
+      producto.stockActual = data.cantidadStock - sold;
+      await this.productoRepo.save(producto);
+    }
     if (data.enAlmacen !== undefined) patch.enAlmacen = data.enAlmacen;
     if (data.color !== undefined) patch.color = cleanText(data.color, 80);
     if (data.ciclosBateria !== undefined) patch.ciclosBateria = data.ciclosBateria;
@@ -133,9 +140,9 @@ export class InventarioService {
       const accesorios = Array.from(
         new Set(data.accesorios.map((item) => cleanText(item, 80)).filter(Boolean)),
       ) as string[];
-      patch.accesorios = accesorios.some((item) => item.toLowerCase() === 'ninguno')
+      patch.accesorios = isAccessoryStock(producto.tipo) ? [] : accesorios.some((item) => item.toLowerCase() === 'ninguno')
         ? ['Ninguno']
-        : accesorios;
+        : normalizeIncludedAccessories(producto.tipo, accesorios, (producto.detalle as any)?.modelo);
     }
 
     Object.assign(ficha, patch);
@@ -238,8 +245,14 @@ export class InventarioService {
     return this.inventarioRepo.save(ficha);
   }
 
-  private async assertProducto(productoId: number) {
-    const exists = await this.productoRepo.exist({ where: { id: productoId } });
-    if (!exists) throw new NotFoundException(`Producto ${productoId} no encontrado.`);
+  private async assertProducto(productoId: number): Promise<Producto> {
+    if (typeof (this.productoRepo as any).findOne !== 'function') {
+      const exists = await this.productoRepo.exist({ where: { id: productoId } });
+      if (!exists) throw new NotFoundException(`Producto ${productoId} no encontrado.`);
+      return { id: productoId } as Producto;
+    }
+    const producto = await this.productoRepo.findOne({ where: { id: productoId }, relations: ['detalle'] });
+    if (!producto) throw new NotFoundException(`Producto ${productoId} no encontrado.`);
+    return producto;
   }
 }

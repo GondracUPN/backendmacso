@@ -261,6 +261,18 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "stockInicial" integer NOT NULL DEFAULT 1`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "stockActual" integer NOT NULL DEFAULT 1`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "codigoInventario" integer`,
+      );
+      await dataSource.query(
+        `CREATE INDEX IF NOT EXISTS "idx_producto_codigo_inventario" ON "${schema}"."producto" ("codigoInventario")`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS vendedor varchar(80)`,
       );
       await dataSource.query(
@@ -367,8 +379,15 @@ async function bootstrap() {
       await dataSource.query(
         `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "tipoCambioRenato" numeric(10,4)`,
       );
+      await dataSource.query(`DROP INDEX IF EXISTS "${schema}"."idx_venta_producto_unique"`);
       await dataSource.query(
-        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_venta_producto_unique" ON "${schema}"."venta" ("productoId")`,
+        `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "cantidad" integer NOT NULL DEFAULT 1`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "modalidad" varchar(20) NOT NULL DEFAULT 'unidad'`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "distribucionStock" jsonb`,
       );
       await dataSource.query(
         `ALTER TABLE "${schema}"."venta_adelanto" ADD COLUMN IF NOT EXISTS "cuotas" jsonb NOT NULL DEFAULT '[]'::jsonb`,

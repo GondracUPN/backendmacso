@@ -15,6 +15,7 @@ const repositoryMock = () => ({
   save: jest.fn(),
   find: jest.fn(),
   findOne: jest.fn(),
+  findOneOrFail: jest.fn(),
   delete: jest.fn(),
   update: jest.fn(),
   createQueryBuilder: jest.fn(),
@@ -25,6 +26,9 @@ describe('ProductoService', () => {
   let productoRepo: ReturnType<typeof repositoryMock>;
   let ventaRepo: ReturnType<typeof repositoryMock>;
   let inventarioRepo: ReturnType<typeof repositoryMock>;
+  let detalleRepo: ReturnType<typeof repositoryMock>;
+  let valorRepo: ReturnType<typeof repositoryMock>;
+  let trackingRepo: ReturnType<typeof repositoryMock>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -52,10 +56,103 @@ describe('ProductoService', () => {
     productoRepo = module.get(getRepositoryToken(Producto));
     ventaRepo = module.get(getRepositoryToken(Venta));
     inventarioRepo = module.get(getRepositoryToken(Inventario));
+    detalleRepo = module.get(getRepositoryToken(ProductoDetalle));
+    valorRepo = module.get(getRepositoryToken(ProductoValor));
+    trackingRepo = module.get(getRepositoryToken(Tracking));
   });
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('crea accesorios en inventario con stock por unidades y tracking inicial', async () => {
+    detalleRepo.save.mockImplementation(async (value) => ({ id: 10, ...value }));
+    valorRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));
+    productoRepo.save.mockImplementation(async (value) => ({ id: 30, ...value }));
+    inventarioRepo.save.mockImplementation(async (value) => value);
+    trackingRepo.save.mockImplementation(async (value) => ({ id: 40, ...value }));
+    productoRepo.findOneOrFail.mockResolvedValue({
+      id: 30,
+      tipo: 'accesorios',
+      stockInicial: 5,
+      stockActual: 5,
+      detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
+      tracking: [{ id: 40, estado: 'comprado_sin_tracking' }],
+    });
+
+    const result = await service.create({
+      tipo: 'accesorios',
+      estado: 'nuevo',
+      cantidad: 5,
+      detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
+      valor: { valorProducto: 100, fechaCompra: '2026-08-13' },
+    } as any);
+
+    expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ stockInicial: 5, stockActual: 5 }));
+    expect(inventarioRepo.save).toHaveBeenCalledWith(expect.objectContaining({ productoId: 30, enAlmacen: true }));
+    expect(trackingRepo.save).toHaveBeenCalledWith(expect.objectContaining({ productoId: 30, estado: 'comprado_sin_tracking' }));
+    expect(result.tracking).toEqual([expect.objectContaining({ estado: 'comprado_sin_tracking' })]);
+  });
+
+  it('crea una recompra separada con el mismo código visible mientras quede stock', async () => {
+    const existing = {
+      id: 12,
+      tipo: 'accesorios',
+      estado: 'nuevo',
+      vendedor: 'Gonzalo',
+      accesorios: [],
+      stockInicial: 5,
+      stockActual: 2,
+      codigoInventario: 12,
+      detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
+      valor: {
+        id: 7,
+        valorProducto: 100,
+        valorDec: 10,
+        peso: 1,
+        fechaCompra: '2026-08-01',
+        valorSoles: 370,
+        costoEnvio: 20,
+        costoTotal: 390,
+      },
+      tracking: [{ id: 1, estado: 'recogido' }],
+    } as any;
+    productoRepo.find.mockResolvedValue([existing]);
+    detalleRepo.save.mockImplementation(async (value) => ({ id: 21, ...value }));
+    valorRepo.save.mockImplementation(async (value) => ({ id: 22, ...value }));
+    productoRepo.save.mockImplementation(async (value) => ({ id: 40, ...value }));
+    inventarioRepo.save.mockImplementation(async (value) => value);
+    trackingRepo.save.mockImplementation(async (value) => ({ id: 2, ...value }));
+    productoRepo.findOneOrFail.mockResolvedValue({
+      id: 40,
+      tipo: 'accesorios',
+      estado: 'nuevo',
+      vendedor: 'Renato',
+      stockInicial: 3,
+      stockActual: 3,
+      codigoInventario: 12,
+      detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
+      valor: { valorProducto: 60 },
+      tracking: [{ id: 2, estado: 'comprado_sin_tracking' }],
+    });
+
+    const result = await service.create({
+      tipo: 'accesorios',
+      estado: 'nuevo',
+      vendedor: 'Renato',
+      cantidad: 3,
+      detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
+      valor: { valorProducto: 60, valorDec: 5, peso: 0.5, fechaCompra: '2026-08-13' },
+    } as any);
+
+    expect(result).toEqual(expect.objectContaining({ id: 40, codigoInventario: 12, stockActual: 3 }));
+    expect(existing).toEqual(expect.objectContaining({ id: 12, stockInicial: 5, stockActual: 2 }));
+    expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ codigoInventario: 12, stockInicial: 3, stockActual: 3 }));
+    expect(trackingRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      productoId: 40,
+      estado: 'comprado_sin_tracking',
+    }));
+    expect(detalleRepo.save).toHaveBeenCalled();
   });
 
   it('rechaza un lote cuya distribución no coincide con la cantidad', async () => {
@@ -183,20 +280,45 @@ describe('ProductoService', () => {
     expect((service as any).getHonorarios(1500, '2026-05-02')).toBe(60.16);
   });
 
-  it('lista para catalogo solo disponibles que todavia no fueron enviados', async () => {
+  it('lista para catalogo solo recogidos, en almacen, con fotos y no vendidos', async () => {
     ventaRepo.find.mockResolvedValue([{ productoId: 2 }]);
     productoRepo.find.mockResolvedValue([
       { id: 1, catalogoEnviado: false, tracking: [{ id: 3, estado: 'recogido' }] },
       { id: 2, catalogoEnviado: false, tracking: [{ id: 2, estado: 'recogido' }] },
       { id: 3, catalogoEnviado: false, tracking: [{ id: 1, estado: 'en_eshopex' }] },
+      { id: 4, catalogoEnviado: false, tracking: [{ id: 4, estado: 'recogido' }] },
     ]);
+    inventarioRepo.find.mockResolvedValue([{ productoId: 1, enAlmacen: true, fotosTomadas: true }]);
 
     const result = await service.findPendientesCatalogo();
 
     expect(productoRepo.find).toHaveBeenCalledWith(expect.objectContaining({
       where: { catalogoEnviado: false },
     }));
+    expect(inventarioRepo.find).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ enAlmacen: true, fotosTomadas: true }),
+    }));
     expect(result.map((producto) => producto.id)).toEqual([1]);
+  });
+
+  it('mantiene en catálogo un accesorio con venta parcial y publica su stock restante', async () => {
+    ventaRepo.find.mockResolvedValue([{ productoId: 9 }]);
+    productoRepo.find.mockResolvedValue([{
+      id: 9,
+      tipo: 'accesorios',
+      stockInicial: 10,
+      stockActual: 6,
+      catalogoEnviado: false,
+      detalle: { gama: 'Cargador', modelo: 'Cargador 20W' },
+      tracking: [],
+    }]);
+    inventarioRepo.find.mockResolvedValue([{ productoId: 9, enAlmacen: true, fotosTomadas: true }]);
+
+    const result = await service.findPendientesCatalogo();
+    const payload = (service as any).buildPayload(result[0]);
+
+    expect(result.map((producto) => producto.id)).toEqual([9]);
+    expect(payload).toEqual(expect.objectContaining({ title: 'Cargador 20W', stock: 6 }));
   });
 
   it('envía al catálogo la información comercial y de inventario', async () => {

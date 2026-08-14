@@ -1,6 +1,5 @@
 import {
   Entity,
-  Index,
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
@@ -10,7 +9,6 @@ import {
 import { Producto } from '../producto/producto.entity';
 
 @Entity()
-@Index('idx_venta_producto_unique', ['productoId'], { unique: true })
 export class Venta {
   @PrimaryGeneratedColumn()
   id: number;
@@ -42,6 +40,17 @@ export class Venta {
 
   @Column('decimal', { precision: 12, scale: 2 })
   precioVenta: number; // en S/
+
+  @Column({ type: 'int', default: 1 })
+  cantidad: number;
+
+  @Column({ type: 'varchar', length: 20, default: 'unidad' })
+  modalidad: 'unidad' | 'mayor';
+
+  // Lotes internos de los que salieron las unidades de un accesorio agrupado.
+  // Permite mostrar un solo stock en Inventario sin perder la trazabilidad.
+  @Column({ type: 'jsonb', nullable: true })
+  distribucionStock?: Array<{ productoId: number; cantidad: number }> | null;
 
   // — Campos calculados —
   @Column('decimal', { precision: 12, scale: 2 })

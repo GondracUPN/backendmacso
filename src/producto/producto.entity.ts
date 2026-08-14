@@ -27,6 +27,17 @@ export class Producto {
   @Column({ type: 'text', array: true, default: '{}' })
   accesorios: string[];
 
+  @Column({ type: 'int', default: 1 })
+  stockInicial: number;
+
+  @Column({ type: 'int', default: 1 })
+  stockActual: number;
+
+  // Código comercial compartido entre lotes del mismo accesorio. Cada lote
+  // conserva su id real para costos, fechas y tracking independientes.
+  @Column({ type: 'int', nullable: true })
+  codigoInventario?: number | null;
+
   // Control interno para saber si el HTML/DEC ya marcó factura subida
   @Column({ type: 'boolean', default: false })
   facturaDecSubida: boolean;

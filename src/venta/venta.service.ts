@@ -16,11 +16,13 @@ import { UpdateVentaDto } from './dto/update-venta.dto';
 import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
 import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
+import { isAccessoryStock } from '../producto/accessory-rules';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 import { calculateProfitPercentage } from './venta-profit.utils';
 import { Gasto } from '../gastos/entities/gasto.entity';
 import { User } from '../auth/entities/user.entity';
+import { formatAppleWatchName } from '../common/product-name.util';
 
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
@@ -87,15 +89,7 @@ const buildProductoNombre = (producto?: Producto | null) => {
     return ['iPhone', detalle.numero, detalle.modelo].filter(Boolean).join(' ');
   }
   if (tipoLower === 'watch') {
-    return [
-      'Apple Watch',
-      detalle.gama,
-      detalle.generacion,
-      detalle.tamano || detalle['tamaño'] || detalle.tamanio,
-      detalle.conexion,
-    ]
-      .filter(Boolean)
-      .join(' ');
+    return formatAppleWatchName(detalle);
   }
   return [
     tipo,
@@ -212,7 +206,15 @@ export class VentaService {
           : [];
     if (!owners.length) return;
 
-    const reference = `__SALE_INCOME__:${venta.productoId}`;
+    let accessorySale = isAccessoryStock(venta.producto?.tipo);
+    if (!accessorySale && typeof (this.productoRepo as any).findOne === 'function') {
+      const productType = await this.productoRepo.findOne({ where: { id: venta.productoId }, select: ['id', 'tipo'] });
+      accessorySale = isAccessoryStock(productType?.tipo);
+    }
+    // Cada salida de stock es una venta distinta y necesita su propio ingreso.
+    const reference = accessorySale
+      ? `__SALE_INCOME__:${venta.productoId}:${venta.id}`
+      : `__SALE_INCOME__:${venta.productoId}`;
     const linked = await this.gastoRepo.find({
       where: {
         concepto: 'ingreso',
@@ -256,6 +258,7 @@ export class VentaService {
   private async findExistingByProducto(productoId: number): Promise<Venta | null> {
     return this.ventaRepo.findOne({
       where: { productoId },
+      relations: ['producto'],
       order: { id: 'DESC' },
     });
   }
@@ -788,9 +791,8 @@ export class VentaService {
   }
 
   async create(dto: CreateVentaDto): Promise<Venta> {
-    // Una venta completa por producto. Los reintentos deben devolver la misma fila.
     const existing = await this.findExistingByProducto(dto.productoId);
-    if (existing) {
+    if (existing && !isAccessoryStock(existing.producto?.tipo)) {
       await this.syncSaleIncome(existing, dto.incomeBank);
       return existing;
     }
@@ -807,6 +809,88 @@ export class VentaService {
         'El producto no tiene sección de valor asociada',
       );
 
+    if (isAccessoryStock(producto.tipo)) {
+      const cantidad = Number(dto.cantidad || 1);
+      const modalidad = dto.modalidad === 'mayor' || cantidad > 1 ? 'mayor' : 'unidad';
+      const saved = await this.productoRepo.manager.transaction(async (manager) => {
+        const locked = await manager.getRepository(Producto).findOne({
+          where: { id: producto.id },
+          relations: ['valor'],
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!locked?.valor) throw new BadRequestException('El accesorio no tiene costo asociado.');
+        const tipoCambio = Number(dto.tipoCambio);
+        if (!tipoCambio) throw new BadRequestException('Tipo de cambio invalido.');
+        const visibleCode = Number(locked.codigoInventario || locked.id);
+        const groupCandidates = await manager.getRepository(Producto).find({
+          where: [{ id: visibleCode }, { codigoInventario: visibleCode }],
+          relations: ['valor'],
+        });
+        const groupLots: Producto[] = [];
+        for (const candidate of [...groupCandidates].sort((a, b) => a.id - b.id)) {
+          if (!isAccessoryStock(candidate.tipo)) continue;
+          if (candidate.id === locked.id) {
+            groupLots.push(locked);
+            continue;
+          }
+          const lot = await manager.getRepository(Producto).findOne({
+            where: { id: candidate.id },
+            relations: ['valor'],
+            lock: { mode: 'pessimistic_write' },
+          });
+          if (lot) groupLots.push(lot);
+        }
+        const availableStock = groupLots.reduce(
+          (sum, lot) => sum + Math.max(0, Number(lot.stockActual || 0)),
+          0,
+        );
+        if (availableStock < cantidad) {
+          throw new BadRequestException(`Stock insuficiente. Quedan ${availableStock} unidades.`);
+        }
+        const costLots = groupLots.filter((lot) => isAccessoryStock(lot.tipo) && lot.valor);
+        const stockBase = Math.max(1, costLots.reduce(
+          (sum, lot) => sum + Math.max(0, Number(lot.stockInicial || 0)),
+          0,
+        ));
+        const totalCostPen = costLots.reduce(
+          (sum, lot) => sum
+            + Number(lot.valor?.valorProducto || 0) * tipoCambio
+            + Number((lot.valor as any)?.costoEnvioProrrateado ?? lot.valor?.costoEnvio ?? 0),
+          0,
+        );
+        const costoVendido = +((totalCostPen / stockBase) * cantidad).toFixed(2);
+        const precioVenta = Number(dto.precioVenta);
+        const ganancia = +(precioVenta - costoVendido).toFixed(2);
+        let pending = cantidad;
+        const distribucionStock: Array<{ productoId: number; cantidad: number }> = [];
+        for (const lot of groupLots) {
+          if (pending <= 0) break;
+          const taken = Math.min(Math.max(0, Number(lot.stockActual || 0)), pending);
+          if (!taken) continue;
+          lot.stockActual = Number(lot.stockActual) - taken;
+          pending -= taken;
+          distribucionStock.push({ productoId: lot.id, cantidad: taken });
+          await manager.getRepository(Producto).save(lot);
+        }
+        return manager.getRepository(Venta).save(manager.getRepository(Venta).create({
+          productoId: locked.id,
+          tipoCambio,
+          fechaVenta: dto.fechaVenta,
+          precioVenta,
+          cantidad,
+          modalidad,
+          distribucionStock,
+          ganancia,
+          porcentajeGanancia: calculateProfitPercentage(ganancia, costoVendido),
+          vendedor: normalizeSellerLabel(dto.vendedor) ?? sellerFromProducto(locked, null),
+        }));
+      });
+      await this.syncSaleIncome(saved, dto.incomeBank);
+      await this.cache.del?.('productos:stats').catch?.(() => {});
+      return saved;
+    }
+
+    // Los equipos son unidades únicas; los reintentos devuelven la misma fila.
     const v = producto.valor;
     const resolvedSeller =
       normalizeSellerLabel((dto as any).vendedor) ?? sellerFromProducto(producto, null);
@@ -861,6 +945,8 @@ export class VentaService {
         precioVenta,
         ganancia,
         porcentajeGanancia,
+        cantidad: 1,
+        modalidad: 'unidad',
         vendedor:
           normalizeSellerLabel((dto as any).vendedor) ??
           sellerFromProducto(producto, 'ambos'),
@@ -897,6 +983,8 @@ export class VentaService {
       precioVenta,
       ganancia,
       porcentajeGanancia,
+      cantidad: 1,
+      modalidad: 'unidad',
       vendedor: resolvedSeller,
     });
     const saved = await this.saveIdempotent(venta);
@@ -1027,8 +1115,30 @@ export class VentaService {
   }
 
   async remove(id: number): Promise<void> {
-    const venta = await this.ventaRepo.findOne({ where: { id } });
+    const venta = await this.ventaRepo.findOne({ where: { id }, relations: ['producto'] });
     if (!venta) throw new NotFoundException(`Venta ${id} no encontrada`);
+    if (isAccessoryStock(venta.producto?.tipo)) {
+      const distribution = Array.isArray(venta.distribucionStock)
+        ? venta.distribucionStock.filter((row) => Number(row?.productoId) && Number(row?.cantidad) > 0)
+        : [];
+      if (distribution.length) {
+        for (const row of distribution) {
+          const lot = await this.productoRepo.findOne({ where: { id: Number(row.productoId) } });
+          if (!lot) continue;
+          lot.stockActual = Math.min(
+            Number(lot.stockInicial || 0),
+            Number(lot.stockActual || 0) + Number(row.cantidad),
+          );
+          await this.productoRepo.save(lot);
+        }
+      } else {
+        venta.producto.stockActual = Math.min(
+          Number(venta.producto.stockInicial || 0),
+          Number(venta.producto.stockActual || 0) + Number(venta.cantidad || 1),
+        );
+        await this.productoRepo.save(venta.producto);
+      }
+    }
     await this.ventaRepo.remove(venta);
     await this.cache.del?.('productos:stats').catch?.(() => {});
   }

@@ -1,6 +1,72 @@
 import { VentaService } from './venta.service';
+import { Producto } from '../producto/producto.entity';
 
 describe('VentaService.create', () => {
+  it('usa el costo promedio de todos los lotes que comparten código', async () => {
+    const locked = {
+      id: 40,
+      tipo: 'accesorios',
+      codigoInventario: 12,
+      stockInicial: 3,
+      stockActual: 3,
+      vendedor: 'Gonzalo',
+      valor: { valorProducto: 90, costoEnvio: 10 },
+    };
+    const firstLot = { id: 12, tipo: 'accesorios', codigoInventario: 12, stockInicial: 5, stockActual: 5, valor: { valorProducto: 100, costoEnvio: 20 } };
+    const lots = [
+      firstLot,
+      locked,
+    ];
+    const transactionProductRepo = {
+      findOne: jest.fn(async ({ where }) => Number(where.id) === 12 ? firstLot : locked),
+      find: jest.fn(async () => lots),
+      save: jest.fn(async (value) => value),
+    };
+    const transactionVentaRepo = {
+      create: jest.fn((value) => value),
+      save: jest.fn(async (value) => ({ id: 81, ...value })),
+    };
+    const manager = {
+      getRepository: jest.fn((entity) => entity === Producto
+        ? transactionProductRepo
+        : transactionVentaRepo),
+    };
+    const productoRepo = {
+      findOne: jest.fn(async () => locked),
+      manager: { transaction: jest.fn(async (callback) => callback(manager)) },
+    };
+    const ventaRepo = { findOne: jest.fn(async () => null) };
+    const cache = { del: jest.fn(async () => undefined) };
+    const service = new VentaService(
+      ventaRepo as any,
+      {} as any,
+      productoRepo as any,
+      {} as any,
+      cache as any,
+    );
+
+    const result = await service.create({
+      productoId: 40,
+      tipoCambio: 4,
+      fechaVenta: '2026-08-13',
+      precioVenta: 300,
+      cantidad: 2,
+      vendedor: 'Gonzalo',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      productoId: 40,
+      cantidad: 2,
+      ganancia: 102.5,
+      distribucionStock: [{ productoId: 12, cantidad: 2 }],
+    }));
+    expect(firstLot.stockActual).toBe(3);
+    expect(locked.stockActual).toBe(3);
+    expect(transactionProductRepo.find).toHaveBeenCalledWith(expect.objectContaining({
+      where: [{ id: 12 }, { codigoInventario: 12 }],
+    }));
+  });
+
   it('registra el ingreso de Gonzalo desde el backend sin sesión de Gastos', async () => {
     const existing = {
       id: 93,
