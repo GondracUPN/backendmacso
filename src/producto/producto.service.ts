@@ -292,7 +292,10 @@ export class ProductoService {
     }
 
     if (data.vincularTodos && productos.length > 1) {
-      const envioGrupoId = `grp-${crypto.randomUUID()}`;
+      // Si el lote se vinculó a un producto existente, conserva ese grupo.
+      // Solo crea uno nuevo cuando el lote todavía no pertenece a ninguno.
+      const envioGrupoId = productos.find((producto) => producto.envioGrupoId)?.envioGrupoId
+        || `grp-${crypto.randomUUID()}`;
       productos.forEach((producto) => {
         producto.envioGrupoId = envioGrupoId;
       });
@@ -555,7 +558,7 @@ export class ProductoService {
       }
     }
 
-    // Accesorios incluidos: caja es obligatoria y las variantes son excluyentes.
+    // Accesorios incluidos seleccionados; las variantes son excluyentes.
     if ((dto as any).accesorios !== undefined) {
       producto.accesorios = normalizeIncludedAccessories(
         producto.tipo,
@@ -1109,6 +1112,13 @@ export class ProductoService {
       const pantalla = tam && tam !== modeloIpad ? tam : '';
       return ['iPad', linea, modeloIpad, pantalla].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
     }
+    if (tipo.toLowerCase() === 'watch') {
+      const linea = gama || (/ultra/i.test(generacion) ? 'Ultra' : 'Series');
+      const serie = generacion.replace(/^(?:series|ultra|se)\s*/i, '').trim();
+      const tamano = tam ? (/mm$/i.test(tam.trim()) ? tam.trim() : `${tam.trim()} mm`) : '';
+      const conexion = String(d?.conexion || '').trim();
+      return ['Apple Watch', linea, serie, tamano, conexion].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
+    }
     if (tipo.toLowerCase() === 'accesorios') {
       return modelo || gama || `Producto ${p.id}`;
     }
@@ -1162,10 +1172,6 @@ export class ProductoService {
         tracking_last: last,
       },
     };
-  }
-
-  private hmac(body: string, secret: string) {
-    return crypto.createHmac('sha256', secret || '').update(body).digest('hex');
   }
 
   /** Cuando se vincula un producto, replica el tracking mÃ¡s completo del grupo hacia todos */
@@ -1276,11 +1282,11 @@ export class ProductoService {
     );
   }
 
-  async findPendientesCatalogo(): Promise<Producto[]> {
+  async findPendientesCatalogo(includeAlreadySent = false): Promise<Producto[]> {
     const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
     const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
     const productos = await this.productoRepo.find({
-      where: { catalogoEnviado: false },
+      ...(includeAlreadySent ? {} : { where: { catalogoEnviado: false } }),
       relations: ['detalle', 'valor', 'tracking'],
       order: { id: 'DESC' },
     });
@@ -1305,15 +1311,14 @@ export class ProductoService {
       .map((producto) => this.applyProrrateadoView(producto));
   }
 
-  async syncDisponiblesConCatalogo() {
+  async syncDisponiblesConCatalogo(recalculateExisting = false) {
     const url = process.env.CATALOG_SYNC_URL;
-    const secret = process.env.SYNC_SECRET || '';
     if (!url) {
       return { ok: false, message: 'CATALOG_SYNC_URL no configurado' };
     }
     const apiBase = (() => { try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; } })();
 
-    const prods = await this.findPendientesCatalogo();
+    const prods = await this.findPendientesCatalogo(recalculateExisting);
     const fichas = prods.length
       ? await this.inventarioRepo.find({ where: { productoId: In(prods.map((p) => p.id)) } })
       : [];
@@ -1321,6 +1326,7 @@ export class ProductoService {
 
     let enviados = 0;
     let marcados = 0;
+    let omitidosProtegidos = 0;
     const candidatos = prods.map((producto) => producto.id);
     const errores: Array<{ id: number; error: string }> = [];
 
@@ -1332,21 +1338,65 @@ export class ProductoService {
           try {
             const r = await fetch(`${apiBase}/api/sync/exists?sku=${encodeURIComponent(sku)}`);
             const j = await r.json().catch(() => ({} as any));
-            if (j && j.exists) {
+            if (j && j.exists && (!recalculateExisting || !j.canRecalculate)) {
               await this.productoRepo.update(
                 { id: p.id },
                 { catalogoEnviado: true, catalogoEnviadoAt: new Date() } as any,
               );
               marcados++;
+              if (recalculateExisting) omitidosProtegidos++;
               continue;
             }
           } catch {}
         }
         const payload = ((): any => {
           const ficha = fichaByProducto.get(p.id);
-          const price = ficha?.primerPrecioSoles ?? p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0;
-          const minOfferPrice = ficha?.ultimoPrecioSoles ?? null;
+          const inventoryPrices = [ficha?.primerPrecioSoles, ficha?.ultimoPrecioSoles]
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value) && value >= 0);
+          const basePrice = inventoryPrices.length
+            ? Math.max(...inventoryPrices)
+            : (p?.valor?.costoTotal ?? p?.valor?.valorSoles ?? 0);
+          const price = Math.max(0, Number((Number(basePrice) - 0.01).toFixed(2)));
+          const minOfferPrice = null;
           const d: any = (p as any).detalle || {};
+          const isNew = String(p?.estado || '').trim().toLowerCase() === 'nuevo';
+          const selectedIncludes = Array.from(new Set([
+            ...(Array.isArray(p?.accesorios) ? p.accesorios : []),
+            ...(Array.isArray(ficha?.accesorios) ? ficha.accesorios : []),
+          ].map((value) => String(value || '').trim()).filter(Boolean)));
+          const includes = (() => {
+            if (!isNew) return selectedIncludes;
+            const type = String(p?.tipo || '').trim().toLowerCase();
+            if (type === 'watch') {
+              const hasCableFake = selectedIncludes.some((value) => /cable\s*(?:fake|gen[eé]rico)/i.test(value));
+              const hasStrapFake = selectedIncludes.some((value) => /correa\s*(?:fake|gen[eé]rica)/i.test(value));
+              return ['Caja', hasCableFake ? 'Cable fake' : 'Cable', hasStrapFake ? 'Correa fake' : 'Correa'];
+            }
+            if (['macbook', 'ipad', 'iphone'].includes(type)) return ['Caja', 'Cubo original', 'Cable original'];
+            if (type === 'macmini') return ['Caja', 'Cable de poder original'];
+            if (type === 'airpods') return ['Caja', 'Cable'];
+            return ['Caja'];
+          })();
+          const warrantyEnabled = isNew ? true : Boolean(ficha?.tieneGarantia);
+          const warrantyType = warrantyEnabled
+            ? (String(ficha?.tipoGarantia || '').toLowerCase() === 'applecare'
+              ? 'AppleCare'
+              : 'Garantía limitada de Apple')
+            : null;
+          const warrantyDate = warrantyEnabled
+            ? (isNew
+              ? '1 año de garantía'
+              : (ficha?.garantiaHasta ?? null))
+            : null;
+          const isWatch = String(p?.tipo || '').toLowerCase() === 'watch';
+          const watchLine = String(d?.gama || '').trim();
+          const watchGeneration = String(d?.generacion || '').replace(/^(?:series|ultra|se)\s*/i, '').trim() || null;
+          const watchType = isWatch ? (/ultra/i.test(watchLine) ? 'Ultra' : 'Normal') : null;
+          const watchConnection = isWatch
+            ? (/cel/i.test(String(d?.conexion || '')) ? 'GPS + Cellular' : (d?.conexion ? 'GPS' : null))
+            : null;
+          const watchSize = isWatch ? (String(d?.tamano || '').match(/\b(\d+(?:\.\d+)?)\b/)?.[1] ?? null) : null;
           return {
             id: p.id,
             sku: `svc-${p.id}`,
@@ -1354,30 +1404,48 @@ export class ProductoService {
             price: String(price ?? '0'),
             status: 'listed',
             stock: isAccessoryStock(p.tipo) ? Math.max(0, Number(p.stockActual || 0)) : 1,
-            saleType: minOfferPrice != null ? 'OFERTA' : 'VENTA_SIMPLE',
+            saleType: 'VENTA_SIMPLE',
             minOfferPrice,
             color: ficha?.color ?? null,
             batteryCycles: ficha?.ciclosBateria ?? null,
             batteryHealth: ficha?.saludBateria ?? null,
             productCondition: p.estado ?? null,
+            includes,
+            includesExtra: ficha?.observaciones ?? null,
+            warrantyEnabled,
+            warrantyType,
+            warrantyDate,
+            watchType,
+            watchSeries: watchType === 'Normal' ? watchGeneration : null,
+            watchVersion: watchType === 'Ultra' ? watchGeneration : null,
+            watchConnection,
+            watchSize,
+            warranty: {
+              enabled: warrantyEnabled,
+              type: warrantyType,
+              date: warrantyDate,
+              detail: ficha?.garantiaDetalle ?? null,
+            },
             specs: {
               tipo: p.tipo ?? null,
               estado: p.estado ?? null,
-              accesorios: p.accesorios ?? null,
+              accesorios: includes,
+              includes,
+              warrantyEnabled,
+              warrantyType,
+              warrantyDate,
               detalle: this.buildCatalogDetalle(d),
               valor: { costoTotal: p?.valor?.costoTotal ?? null },
             },
           };
         })();
         const body = JSON.stringify({ event: 'product.listed', product: payload });
-        const signature = this.hmac(body, secret);
         const idem = crypto.randomUUID();
 
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-signature': signature,
             'x-idempotency-key': idem,
           },
           body,
@@ -1385,10 +1453,18 @@ export class ProductoService {
         if (!response.ok) {
           throw new Error(`Catalog sync HTTP ${response.status}`);
         }
+        const syncResult = typeof (response as any).json === 'function'
+          ? await (response as any).json().catch(() => ({} as any))
+          : {};
         await this.productoRepo.update(
           { id: p.id },
           { catalogoEnviado: true, catalogoEnviadoAt: new Date() } as any,
         );
+        if (syncResult?.skipped === 'protected') {
+          omitidosProtegidos++;
+          marcados++;
+          continue;
+        }
         enviados++;
         marcados++;
       } catch (e: any) {
@@ -1397,6 +1473,6 @@ export class ProductoService {
     }
 
     if (marcados > 0) await this.invalidateListCache();
-    return { ok: true, total: candidatos.length, enviados, marcados, candidatos, errores };
+    return { ok: true, total: candidatos.length, enviados, marcados, omitidosProtegidos, candidatos, errores };
   }
 }

@@ -259,6 +259,32 @@ describe('ProductoService', () => {
     expect(result[0].envioGrupoId).toBe(result[1].envioGrupoId);
   });
 
+  it('conserva el grupo existente al vincular un lote nuevo', async () => {
+    const productos = [
+      { id: 11, envioGrupoId: 'grp-existente', valor: { valorProducto: 50 } },
+      { id: 12, envioGrupoId: 'grp-existente', valor: { valorProducto: 50 } },
+    ] as Producto[];
+    jest.spyOn(service, 'create')
+      .mockResolvedValueOnce(productos[0])
+      .mockResolvedValueOnce(productos[1]);
+    jest.spyOn(service as any, 'recalcEnvioGrupo').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'syncTrackingEnGrupo').mockResolvedValue(undefined);
+    productoRepo.save.mockResolvedValue(productos);
+    productoRepo.find.mockResolvedValue(productos);
+
+    await service.createLote({
+      producto: { tipo: 'watch', estado: 'usado', vincularCon: 5 } as any,
+      cantidad: 2,
+      distribucion: [{ vendedor: 'Gonzalo', cantidad: 2 }],
+      vincularTodos: true,
+    });
+
+    expect(productoRepo.save).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ envioGrupoId: 'grp-existente' }),
+      expect.objectContaining({ envioGrupoId: 'grp-existente' }),
+    ]));
+  });
+
   it('suma tarifa adicional cuando el peso supera 10 kg', () => {
     expect((service as any).getTarifa(10)).toBe(267.22);
     expect((service as any).getTarifa(11)).toBeCloseTo(288.26, 2);
@@ -337,10 +363,14 @@ describe('ProductoService', () => {
     inventarioRepo.find.mockResolvedValue([{
       productoId: 42,
       color: 'Space Black',
-      primerPrecioSoles: 2500,
-      ultimoPrecioSoles: 2300,
+      primerPrecioSoles: 2300,
+      ultimoPrecioSoles: 2500,
       ciclosBateria: 5,
       saludBateria: 100,
+      accesorios: ['Cable'],
+      tieneGarantia: true,
+      tipoGarantia: 'limitada',
+      garantiaHasta: '2027-05-10',
     }]);
     const fetchMock = jest.fn()
       .mockResolvedValueOnce({ json: async () => ({ exists: false }) })
@@ -353,18 +383,66 @@ describe('ProductoService', () => {
       const sent = JSON.parse(request.body).product;
 
       expect(sent).toEqual(expect.objectContaining({
-        price: '2500',
-        saleType: 'OFERTA',
-        minOfferPrice: 2300,
+        price: '2499.99',
+        saleType: 'VENTA_SIMPLE',
+        minOfferPrice: null,
         color: 'Space Black',
         batteryCycles: 5,
         batteryHealth: 100,
+        includes: ['Caja', 'Cable'],
+        warrantyEnabled: true,
+        warrantyType: 'Garantía limitada de Apple',
+        warrantyDate: '2027-05-10',
       }));
       expect(result).toEqual(expect.objectContaining({ total: 1, enviados: 1, marcados: 1 }));
       expect(productoRepo.update).toHaveBeenCalledWith(
         { id: 42 },
         expect.objectContaining({ catalogoEnviado: true }),
       );
+    } finally {
+      global.fetch = originalFetch;
+      if (originalUrl === undefined) delete process.env.CATALOG_SYNC_URL;
+      else process.env.CATALOG_SYNC_URL = originalUrl;
+    }
+  });
+
+  it('envia sellados con un ano de garantia y solo accesorios basicos del Apple Watch', async () => {
+    const originalFetch = global.fetch;
+    const originalUrl = process.env.CATALOG_SYNC_URL;
+    process.env.CATALOG_SYNC_URL = 'https://catalog.example/api/sync/product';
+    jest.spyOn(service, 'findPendientesCatalogo').mockResolvedValue([{
+      id: 77,
+      tipo: 'watch',
+      estado: 'nuevo',
+      accesorios: ['Caja', 'Cable fake', 'Correa fake', 'Case'],
+      detalle: { gama: 'Ultra', generacion: '2', tamano: '49 mm', conexion: 'GPS + Cel' },
+      valor: { costoTotal: 1800 },
+      tracking: [{ id: 1, estado: 'recogido' }],
+    } as any]);
+    inventarioRepo.find.mockResolvedValue([{
+      productoId: 77,
+      color: 'Natural',
+      enAlmacen: true,
+      fotosTomadas: true,
+      accesorios: ['Case'],
+    }]);
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({ json: async () => ({ exists: false }) })
+      .mockResolvedValueOnce({ ok: true });
+    global.fetch = fetchMock as any;
+
+    try {
+      await service.syncDisponiblesConCatalogo();
+      const sent = JSON.parse(fetchMock.mock.calls[1][1].body).product;
+      expect(sent).toEqual(expect.objectContaining({
+        title: 'Apple Watch Ultra 2 49 mm GPS + Cel',
+        warrantyDate: '1 año de garantía',
+        includes: ['Caja', 'Cable fake', 'Correa fake'],
+        watchType: 'Ultra',
+        watchVersion: '2',
+        watchConnection: 'GPS + Cellular',
+        watchSize: '49',
+      }));
     } finally {
       global.fetch = originalFetch;
       if (originalUrl === undefined) delete process.env.CATALOG_SYNC_URL;

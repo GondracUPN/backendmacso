@@ -59,6 +59,11 @@ export class ProductoController {
     return this.productoService.syncDisponiblesConCatalogo();
   }
 
+  @Post('catalog-sync/recalculate')
+  async recalculateCatalogInventory() {
+    return this.productoService.syncDisponiblesConCatalogo(true);
+  }
+
   @Get('catalog-pending')
   catalogPending() {
     return this.productoService.findPendientesCatalogo();

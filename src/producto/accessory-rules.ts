@@ -7,6 +7,7 @@ const GROUPS: Record<string, string[][]> = {
   macbook: [['Cubo original', 'Cubo fake'], ['Cable original', 'Cable fake']],
   ipad: [['Cubo original', 'Cubo fake'], ['Cable original', 'Cable fake'], ['Magic Keyboard', 'Keyboard Logitech', 'Keyboard otros']],
   iphone: [['Cubo original', 'Cubo fake'], ['Cable original', 'Cable fake']],
+  watch: [['Cable', 'Cable fake'], ['Correa', 'Correa fake']],
   macmini: [['Cable de poder original', 'Cable de poder generico']],
 };
 
@@ -14,7 +15,7 @@ const ALLOWED: Record<string, string[]> = {
   macbook: ['Caja', 'Cubo original', 'Cubo fake', 'Cable original', 'Cable fake', 'Case', 'Mica'],
   ipad: ['Caja', 'Cubo original', 'Cubo fake', 'Cable original', 'Cable fake', 'Case', 'Mica', 'Magic Keyboard', 'Keyboard Logitech', 'Keyboard otros'],
   iphone: ['Caja', 'Cubo original', 'Cubo fake', 'Cable original', 'Cable fake', 'Funda', 'Mica'],
-  watch: ['Caja', 'Cable', 'Case', 'Correa'],
+  watch: ['Caja', 'Cable', 'Cable fake', 'Case', 'Correa', 'Correa fake'],
   macmini: ['Caja', 'Cable de poder original', 'Cable de poder generico'],
   airpods: ['Caja', 'Cable', 'Case', 'Eartips'],
 };
@@ -33,10 +34,10 @@ export function normalizeIncludedAccessories(tipo: unknown, values: unknown, air
   }
   const canonical = new Map(allowed.map((item) => [slug(item), item]));
   const requested = Array.isArray(values) ? values.map(clean).filter(Boolean) : [];
-  const selected: string[] = ['Caja'];
+  const selected: string[] = [];
   for (const item of requested) {
     const normalized = canonical.get(slug(item));
-    if (normalized && normalized !== 'Caja' && !selected.includes(normalized)) selected.push(normalized);
+    if (normalized && !selected.includes(normalized)) selected.push(normalized);
   }
   for (const group of GROUPS[type] || []) {
     const matches = selected.filter((item) => group.includes(item));
