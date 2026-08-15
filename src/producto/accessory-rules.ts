@@ -17,6 +17,7 @@ const ALLOWED: Record<string, string[]> = {
   iphone: ['Caja', 'Cubo original', 'Cubo fake', 'Cable original', 'Cable fake', 'Funda', 'Mica'],
   watch: ['Caja', 'Cable', 'Cable fake', 'Case', 'Correa', 'Correa fake'],
   macmini: ['Caja', 'Cable de poder original', 'Cable de poder generico'],
+  imac: ['Caja', 'Cargador fake', 'Cable fake', 'Teclado', 'Mouse'],
   airpods: ['Caja', 'Cable', 'Case', 'Eartips'],
 };
 
@@ -33,7 +34,13 @@ export function normalizeIncludedAccessories(tipo: unknown, values: unknown, air
     else allowed = ['Caja'];
   }
   const canonical = new Map(allowed.map((item) => [slug(item), item]));
-  const requested = Array.isArray(values) ? values.map(clean).filter(Boolean) : [];
+  const requested = Array.isArray(values) ? values.map(clean).filter(Boolean).map((item) => {
+    if (type !== 'imac') return item;
+    const value = slug(item);
+    if (value === 'cargador' || value === 'cargador original') return 'Cargador fake';
+    if (value === 'cable' || value === 'cable original') return 'Cable fake';
+    return item;
+  }) : [];
   const selected: string[] = [];
   for (const item of requested) {
     const normalized = canonical.get(slug(item));

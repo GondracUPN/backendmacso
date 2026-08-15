@@ -18,6 +18,7 @@ const repositoryMock = () => ({
   findOneOrFail: jest.fn(),
   delete: jest.fn(),
   update: jest.fn(),
+  count: jest.fn(),
   createQueryBuilder: jest.fn(),
 });
 
@@ -283,6 +284,23 @@ describe('ProductoService', () => {
       expect.objectContaining({ envioGrupoId: 'grp-existente' }),
       expect.objectContaining({ envioGrupoId: 'grp-existente' }),
     ]));
+  });
+
+  it('permite agregar productos a un grupo de envío sin límite fijo', async () => {
+    productoRepo.findOne.mockResolvedValue({
+      id: 80,
+      envioGrupoId: null,
+      tracking: [{ id: 1, estado: 'comprado_en_camino', casillero: 'Alex' }],
+      valor: { valorProducto: 100 },
+    });
+    productoRepo.save.mockImplementation(async (value) => value);
+    productoRepo.count.mockResolvedValue(50);
+
+    const groupId = await (service as any).ensureEnvioGrupo(80, 'Alex', 'grp-grande');
+
+    expect(groupId).toBe('grp-grande');
+    expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ envioGrupoId: 'grp-grande' }));
+    expect(productoRepo.count).not.toHaveBeenCalled();
   });
 
   it('suma tarifa adicional cuando el peso supera 10 kg', () => {

@@ -879,10 +879,6 @@ export class ProductoService {
       target.envioGrupoId = envioGrupoId;
       await this.productoRepo.save(target);
     }
-    const count = await this.productoRepo.count({ where: { envioGrupoId } });
-    if (count >= 7) {
-      throw new BadRequestException('El grupo de envío ya tiene 7 productos');
-    }
     return envioGrupoId;
   }
 
