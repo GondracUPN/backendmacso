@@ -31,6 +31,8 @@ export class CreateProductoValorDto {
   @IsNumber() valorDec: number;
   @IsNumber() peso: number;
   @IsDateString() fechaCompra: string;
+  @IsOptional() @IsNumber() @Min(0) costoEnvio?: number;
+  @IsOptional() @IsNumber() @Min(0) costoEnvioProrrateado?: number;
 }
 
 export class CreateProductoDto {

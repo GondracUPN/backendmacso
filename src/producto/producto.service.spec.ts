@@ -66,6 +66,48 @@ describe('ProductoService', () => {
     expect(service).toBeDefined();
   });
 
+  it('permite editar manualmente el costo de envío del producto', async () => {
+    const producto = {
+      id: 50,
+      tipo: 'iphone',
+      estado: 'usado',
+      envioGrupoId: null,
+      accesorios: [],
+      detalle: {},
+      valor: {
+        valorProducto: 100,
+        valorDec: 20,
+        peso: 1,
+        fechaCompra: '2026-08-01',
+        valorSoles: 370,
+        costoEnvio: 40,
+        costoTotal: 410,
+      },
+      tracking: [],
+    } as any;
+    productoRepo.findOne.mockResolvedValue(producto);
+    productoRepo.findOneOrFail.mockImplementation(async () => producto);
+    productoRepo.save.mockImplementation(async (value) => value);
+    valorRepo.save.mockImplementation(async (value) => value);
+
+    await service.update(50, {
+      valor: {
+        valorProducto: 100,
+        valorDec: 20,
+        peso: 1,
+        fechaCompra: '2026-08-01',
+        costoEnvio: 75,
+      },
+    });
+
+    expect(valorRepo.save).toHaveBeenLastCalledWith(expect.objectContaining({
+      costoEnvio: 75,
+      costoTotal: 445,
+      costoEnvioProrrateado: 75,
+      costoTotalProrrateado: 445,
+    }));
+  });
+
   it('crea accesorios en inventario con stock por unidades y tracking inicial', async () => {
     detalleRepo.save.mockImplementation(async (value) => ({ id: 10, ...value }));
     valorRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));

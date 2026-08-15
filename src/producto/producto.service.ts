@@ -523,6 +523,12 @@ export class ProductoService {
       envioGrupoId = null;
     }
     const justLinkedToGroup = !!envioGrupoId && envioGrupoId !== oldEnvioGrupo;
+    const manualCostoEnvio = dto.valor?.costoEnvio !== undefined
+      ? Number(dto.valor.costoEnvio)
+      : undefined;
+    const manualCostoEnvioProrrateado = dto.valor?.costoEnvioProrrateado !== undefined
+      ? Number(dto.valor.costoEnvioProrrateado)
+      : undefined;
 
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
@@ -597,7 +603,9 @@ export class ProductoService {
       Object.assign(v, dto.valor);
 
       v.valorSoles = Number((v.valorProducto * 3.7).toFixed(2));
-      v.costoEnvio = this.getCostoEnvio(v.peso, v.valorDec, v.fechaCompra);
+      v.costoEnvio = manualCostoEnvio !== undefined
+        ? manualCostoEnvio
+        : this.getCostoEnvio(v.peso, v.valorDec, v.fechaCompra);
       v.costoTotal = Number((v.valorSoles + v.costoEnvio).toFixed(2));
 
       await this.valorRepo.save(v);
@@ -636,8 +644,17 @@ export class ProductoService {
       }
     }
 
-    if (producto.envioGrupoId) {
+    if (producto.envioGrupoId && manualCostoEnvioProrrateado !== undefined && producto.valor) {
+      producto.valor.costoEnvioProrrateado = manualCostoEnvioProrrateado;
+      producto.valor.costoTotalProrrateado = Number(
+        (Number(producto.valor.valorSoles || 0) + manualCostoEnvioProrrateado).toFixed(2),
+      );
+      await this.valorRepo.save(producto.valor);
+    } else if (producto.envioGrupoId && manualCostoEnvio === undefined) {
       await this.recalcEnvioGrupo(producto.envioGrupoId);
+    } else if (producto.envioGrupoId && manualCostoEnvio !== undefined) {
+      // Conserva la edición manual del envío base. El prorrateado actual solo
+      // cambia cuando se envía explícitamente costoEnvioProrrateado.
     } else if (oldEnvioGrupo) {
       await this.recalcEnvioGrupo(oldEnvioGrupo);
       if (producto.valor) {
@@ -646,8 +663,10 @@ export class ProductoService {
         await this.valorRepo.save(producto.valor);
       }
     } else if (producto.valor) {
-      producto.valor.costoEnvioProrrateado = producto.valor.costoEnvio;
-      producto.valor.costoTotalProrrateado = producto.valor.costoTotal;
+      producto.valor.costoEnvioProrrateado = manualCostoEnvioProrrateado ?? producto.valor.costoEnvio;
+      producto.valor.costoTotalProrrateado = Number(
+        (Number(producto.valor.valorSoles || 0) + Number(producto.valor.costoEnvioProrrateado || 0)).toFixed(2),
+      );
       await this.valorRepo.save(producto.valor);
     }
     if (justLinkedToGroup && producto.envioGrupoId) {
