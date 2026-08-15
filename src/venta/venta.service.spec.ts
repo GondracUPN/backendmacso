@@ -2,7 +2,7 @@ import { VentaService } from './venta.service';
 import { Producto } from '../producto/producto.entity';
 
 describe('VentaService.create', () => {
-  it('usa el costo promedio de todos los lotes que comparten código', async () => {
+  it('usa el costo unitario fijo del lote con la compra más antigua', async () => {
     const locked = {
       id: 40,
       tipo: 'accesorios',
@@ -10,17 +10,28 @@ describe('VentaService.create', () => {
       stockInicial: 3,
       stockActual: 3,
       vendedor: 'Gonzalo',
-      valor: { valorProducto: 90, costoEnvio: 10 },
+      valor: { valorProducto: 90, costoEnvio: 10, fechaCompra: '2026-07-01' },
+      tracking: [{ fechaRecogido: '2026-06-15' }],
     };
-    const firstLot = { id: 12, tipo: 'accesorios', codigoInventario: 12, stockInicial: 5, stockActual: 5, valor: { valorProducto: 100, costoEnvio: 20 } };
+    const firstLot = { id: 12, tipo: 'accesorios', codigoInventario: 12, stockInicial: 5, stockActual: 5, valor: { valorProducto: 100, costoEnvio: 20, fechaCompra: '2026-05-01' }, tracking: [{ fechaRecogido: '2026-07-10' }] };
     const lots = [
       firstLot,
       locked,
     ];
     const transactionProductRepo = {
-      findOne: jest.fn(async ({ where }) => Number(where.id) === 12 ? firstLot : locked),
       find: jest.fn(async () => lots),
       save: jest.fn(async (value) => value),
+      createQueryBuilder: jest.fn(() => {
+        const builder: any = {
+          where: jest.fn(() => builder),
+          select: jest.fn(() => builder),
+          orderBy: jest.fn(() => builder),
+          setLock: jest.fn(() => builder),
+          getOne: jest.fn(async () => locked),
+          getRawMany: jest.fn(async () => [{ id: 12 }, { id: 40 }]),
+        };
+        return builder;
+      }),
     };
     const transactionVentaRepo = {
       create: jest.fn((value) => value),
@@ -57,13 +68,13 @@ describe('VentaService.create', () => {
     expect(result).toEqual(expect.objectContaining({
       productoId: 40,
       cantidad: 2,
-      ganancia: 102.5,
+      ganancia: 132,
       distribucionStock: [{ productoId: 12, cantidad: 2 }],
     }));
     expect(firstLot.stockActual).toBe(3);
     expect(locked.stockActual).toBe(3);
     expect(transactionProductRepo.find).toHaveBeenCalledWith(expect.objectContaining({
-      where: [{ id: 12 }, { codigoInventario: 12 }],
+      where: { id: expect.anything() },
     }));
   });
 

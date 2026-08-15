@@ -79,6 +79,37 @@ const getProductCost = (producto?: Producto | null) => {
     valor.costoTotalProrrateado ?? valor.costoTotal ?? valor.valorSoles,
   );
 };
+const getAccessoryLotUnitCost = (producto?: Producto | null, fallbackTc = 0) => {
+  const valor = (producto as any)?.valor || {};
+  const units = Math.max(1, Number((producto as any)?.stockInicial || 1));
+  const shipping = toMoneyNumber(
+    valor.costoEnvioProrrateado ?? valor.costoEnvio,
+  );
+  const storedTotal = toMoneyNumber(
+    valor.costoTotalProrrateado ?? valor.costoTotal,
+  );
+  const total = storedTotal > 0
+    ? storedTotal
+    : toMoneyNumber(valor.valorSoles) > 0
+      ? toMoneyNumber(valor.valorSoles) + shipping
+      : toMoneyNumber(valor.valorProducto) * fallbackTc + shipping;
+  return +(total / units).toFixed(6);
+};
+const getAccessoryLotDate = (producto?: Producto | null) => {
+  const purchase = (producto as any)?.valor?.fechaCompra;
+  const purchaseTime = purchase ? new Date(purchase).getTime() : NaN;
+  if (Number.isFinite(purchaseTime)) return purchaseTime;
+  const tracking = Array.isArray((producto as any)?.tracking)
+    ? (producto as any).tracking
+    : [];
+  const pickupDates = tracking
+    .map((row: any) => row?.fechaRecogido || (String(row?.estado || '').toLowerCase() === 'recogido' ? row?.createdAt : null))
+    .filter(Boolean)
+    .map((value: any) => new Date(value).getTime())
+    .filter(Number.isFinite);
+  if (pickupDates.length) return Math.min(...pickupDates);
+  return Number((producto as any)?.id || 0);
+};
 const buildProductoNombre = (producto?: Producto | null) => {
   if (!producto) return '-';
   const detalle = (producto as any).detalle || {};
@@ -790,6 +821,73 @@ export class VentaService {
     return v;
   }
 
+  async getAccessorySalesSummary(productoId: number) {
+    const requested = await this.productoRepo.findOne({
+      where: { id: productoId },
+      relations: ['valor', 'tracking'],
+    });
+    if (!requested || !isAccessoryStock(requested.tipo)) {
+      throw new NotFoundException(`Accesorio ${productoId} no encontrado`);
+    }
+    const visibleCode = Number(requested.codigoInventario || requested.id);
+    const lots = await this.productoRepo.find({
+      where: [{ id: visibleCode }, { codigoInventario: visibleCode }],
+      relations: ['valor', 'tracking'],
+    });
+    const validLots = lots.filter((lot) => isAccessoryStock(lot.tipo));
+    const lotById = new Map(validLots.map((lot) => [lot.id, lot]));
+    const lotIds = validLots.map((lot) => lot.id);
+    const sales = lotIds.length
+      ? await this.ventaRepo.find({
+          where: { productoId: In(lotIds) },
+          order: { fechaVenta: 'ASC', id: 'ASC' },
+        })
+      : [];
+
+    let unidadesVendidas = 0;
+    let ventaBruta = 0;
+    let costoVendido = 0;
+    let weightedTc = 0;
+    const detalleVentas = sales.map((sale) => {
+      const cantidad = Math.max(1, Number(sale.cantidad || 1));
+      const distribution = Array.isArray(sale.distribucionStock) && sale.distribucionStock.length
+        ? sale.distribucionStock
+        : [{ productoId: sale.productoId, cantidad }];
+      const costo = distribution.reduce((sum, row) => {
+        const lot = lotById.get(Number(row.productoId));
+        return sum + getAccessoryLotUnitCost(lot, Number(sale.tipoCambio || 0)) * Number(row.cantidad || 0);
+      }, 0);
+      const bruto = Number(sale.precioVenta || 0);
+      unidadesVendidas += cantidad;
+      ventaBruta += bruto;
+      costoVendido += costo;
+      weightedTc += Number(sale.tipoCambio || 0) * cantidad;
+      return {
+        id: sale.id,
+        fechaVenta: sale.fechaVenta,
+        cantidad,
+        precioUnitario: +(bruto / cantidad).toFixed(2),
+        ventaBruta: +bruto.toFixed(2),
+        costo: +costo.toFixed(2),
+        gananciaNeta: +(bruto - costo).toFixed(2),
+        tipoCambio: Number(sale.tipoCambio || 0),
+        distribucionStock: distribution,
+      };
+    });
+
+    return {
+      codigoInventario: visibleCode,
+      unidadesCompradas: validLots.reduce((sum, lot) => sum + Number(lot.stockInicial || 0), 0),
+      unidadesDisponibles: validLots.reduce((sum, lot) => sum + Number(lot.stockActual || 0), 0),
+      unidadesVendidas,
+      ventaBruta: +ventaBruta.toFixed(2),
+      costoVendido: +costoVendido.toFixed(2),
+      gananciaNeta: +(ventaBruta - costoVendido).toFixed(2),
+      tipoCambioPromedio: unidadesVendidas ? +(weightedTc / unidadesVendidas).toFixed(4) : null,
+      ventas: detalleVentas.reverse(),
+    };
+  }
+
   async create(dto: CreateVentaDto): Promise<Venta> {
     const existing = await this.findExistingByProducto(dto.productoId);
     if (existing && !isAccessoryStock(existing.producto?.tipo)) {
@@ -813,33 +911,37 @@ export class VentaService {
       const cantidad = Number(dto.cantidad || 1);
       const modalidad = dto.modalidad === 'mayor' || cantidad > 1 ? 'mayor' : 'unidad';
       const saved = await this.productoRepo.manager.transaction(async (manager) => {
-        const locked = await manager.getRepository(Producto).findOne({
-          where: { id: producto.id },
-          relations: ['valor'],
-          lock: { mode: 'pessimistic_write' },
-        });
-        if (!locked?.valor) throw new BadRequestException('El accesorio no tiene costo asociado.');
+        const transactionProductRepo = manager.getRepository(Producto);
+        // PostgreSQL no permite FOR UPDATE sobre los LEFT JOIN que TypeORM crea
+        // para las relaciones eager. Primero bloqueamos solo las filas base y,
+        // manteniendo la misma transaccion, cargamos luego costo y tracking.
+        const lockedBase = await transactionProductRepo
+          .createQueryBuilder('producto')
+          .where('producto.id = :id', { id: producto.id })
+          .setLock('pessimistic_write')
+          .getOne();
+        if (!lockedBase) throw new NotFoundException(`Producto ${producto.id} no encontrado`);
         const tipoCambio = Number(dto.tipoCambio);
         if (!tipoCambio) throw new BadRequestException('Tipo de cambio invalido.');
-        const visibleCode = Number(locked.codigoInventario || locked.id);
-        const groupCandidates = await manager.getRepository(Producto).find({
-          where: [{ id: visibleCode }, { codigoInventario: visibleCode }],
-          relations: ['valor'],
-        });
-        const groupLots: Producto[] = [];
-        for (const candidate of [...groupCandidates].sort((a, b) => a.id - b.id)) {
-          if (!isAccessoryStock(candidate.tipo)) continue;
-          if (candidate.id === locked.id) {
-            groupLots.push(locked);
-            continue;
-          }
-          const lot = await manager.getRepository(Producto).findOne({
-            where: { id: candidate.id },
-            relations: ['valor'],
-            lock: { mode: 'pessimistic_write' },
-          });
-          if (lot) groupLots.push(lot);
-        }
+        const visibleCode = Number(lockedBase.codigoInventario || lockedBase.id);
+        const lockedIdRows = await transactionProductRepo
+          .createQueryBuilder('producto')
+          .select('producto.id', 'id')
+          .where('(producto.id = :visibleCode OR producto.codigoInventario = :visibleCode)', { visibleCode })
+          .orderBy('producto.id', 'ASC')
+          .setLock('pessimistic_write')
+          .getRawMany();
+        const lockedIds = lockedIdRows.map((row) => Number(row.id)).filter(Boolean);
+        const groupCandidates = lockedIds.length
+          ? await transactionProductRepo.find({
+              where: { id: In(lockedIds) },
+              relations: ['valor', 'tracking'],
+            })
+          : [];
+        const groupLots = groupCandidates.filter((candidate) => isAccessoryStock(candidate.tipo));
+        const locked = groupLots.find((lot) => lot.id === producto.id);
+        if (!locked?.valor) throw new BadRequestException('El accesorio no tiene costo asociado.');
+        groupLots.sort((a, b) => getAccessoryLotDate(a) - getAccessoryLotDate(b) || a.id - b.id);
         const availableStock = groupLots.reduce(
           (sum, lot) => sum + Math.max(0, Number(lot.stockActual || 0)),
           0,
@@ -847,21 +949,9 @@ export class VentaService {
         if (availableStock < cantidad) {
           throw new BadRequestException(`Stock insuficiente. Quedan ${availableStock} unidades.`);
         }
-        const costLots = groupLots.filter((lot) => isAccessoryStock(lot.tipo) && lot.valor);
-        const stockBase = Math.max(1, costLots.reduce(
-          (sum, lot) => sum + Math.max(0, Number(lot.stockInicial || 0)),
-          0,
-        ));
-        const totalCostPen = costLots.reduce(
-          (sum, lot) => sum
-            + Number(lot.valor?.valorProducto || 0) * tipoCambio
-            + Number((lot.valor as any)?.costoEnvioProrrateado ?? lot.valor?.costoEnvio ?? 0),
-          0,
-        );
-        const costoVendido = +((totalCostPen / stockBase) * cantidad).toFixed(2);
         const precioVenta = Number(dto.precioVenta);
-        const ganancia = +(precioVenta - costoVendido).toFixed(2);
         let pending = cantidad;
+        let costoVendido = 0;
         const distribucionStock: Array<{ productoId: number; cantidad: number }> = [];
         for (const lot of groupLots) {
           if (pending <= 0) break;
@@ -870,8 +960,11 @@ export class VentaService {
           lot.stockActual = Number(lot.stockActual) - taken;
           pending -= taken;
           distribucionStock.push({ productoId: lot.id, cantidad: taken });
+          costoVendido += getAccessoryLotUnitCost(lot, tipoCambio) * taken;
           await manager.getRepository(Producto).save(lot);
         }
+        costoVendido = +costoVendido.toFixed(2);
+        const ganancia = +(precioVenta - costoVendido).toFixed(2);
         return manager.getRepository(Venta).save(manager.getRepository(Venta).create({
           productoId: locked.id,
           tipoCambio,

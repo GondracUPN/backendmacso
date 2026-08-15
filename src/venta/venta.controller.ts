@@ -93,6 +93,15 @@ export class VentaController {
     return this.svc.findSimilarSold(parsedProductId, Number(limit) || 8);
   }
 
+  @Get('accesorio-resumen')
+  accessorySummary(@Query('productoId') productoId?: string) {
+    const parsedProductId = Number(productoId);
+    if (!Number.isInteger(parsedProductId) || parsedProductId <= 0) {
+      throw new BadRequestException('productoId invalido');
+    }
+    return this.svc.getAccessorySalesSummary(parsedProductId);
+  }
+
   @Get('adelantos/ultimos')
   latestAdelantosByProducto(@Query('ids') ids?: string) {
     const parsedIds =
