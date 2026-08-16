@@ -31,8 +31,10 @@ describe('reglas de accesorios incluidos', () => {
       .toEqual(['Cable fake', 'Correa fake']);
   });
 
-  it('normaliza el cargador y cable de iMac como fake', () => {
-    expect(normalizeIncludedAccessories('imac', ['Caja', 'Cargador', 'Cable', 'Teclado', 'Mouse']))
+  it('permite variantes normales y fake de cargador y cable para iMac', () => {
+    expect(normalizeIncludedAccessories('imac', ['Caja', 'Cargador', 'Cargador fake', 'Cable', 'Cable fake', 'Teclado', 'Mouse']))
       .toEqual(['Caja', 'Cargador fake', 'Cable fake', 'Teclado', 'Mouse']);
+    expect(normalizeIncludedAccessories('imac', ['Caja', 'Cargador', 'Cable', 'Teclado', 'Mouse']))
+      .toEqual(['Caja', 'Cargador', 'Cable', 'Teclado', 'Mouse']);
   });
 });
