@@ -11,6 +11,6 @@ export class SickwCheckDto {
   type?: 'sn' | 'imei' | 'imei2';
 
   @IsOptional()
-  @IsIn(['8', '30', '81', '30+81', '30+8', 'ifreeicloud-238'])
-  serviceId?: '8' | '30' | '81' | '30+81' | '30+8' | 'ifreeicloud-238';
+  @IsIn(['8', '30', '81', '30+81', '30+8', 'ifreeicloud-205', 'ifreeicloud-281'])
+  serviceId?: '8' | '30' | '81' | '30+81' | '30+8' | 'ifreeicloud-205' | 'ifreeicloud-281';
 }

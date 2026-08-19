@@ -12,6 +12,7 @@ describe('InventarioService photos', () => {
   };
   const productoRepo = {
     exist: jest.fn(),
+    createQueryBuilder: jest.fn(),
   };
   const configService = {
     get: jest.fn(),
@@ -33,6 +34,31 @@ describe('InventarioService photos', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it('excludes accessory stock that has not been picked up yet', async () => {
+    const queryBuilder = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
+    };
+    productoRepo.createQueryBuilder.mockReturnValue(queryBuilder);
+    inventarioRepo.find.mockResolvedValue([]);
+
+    await service.findDisponibles();
+
+    expect(queryBuilder.where).toHaveBeenCalledWith(
+      expect.stringContaining('t.estado = :recogido'),
+      { recogido: 'recogido' },
+    );
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+      `(LOWER(p.tipo) <> 'accesorios' OR p."stockActual" > 0)`,
+    );
+    expect(queryBuilder.where.mock.calls[0][0]).not.toContain(
+      `LOWER(p.tipo) = 'accesorios' AND p."stockActual" > 0`,
+    );
   });
 
   it('marks the product in storage without completing the photo session', async () => {

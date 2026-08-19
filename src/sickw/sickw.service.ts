@@ -5,9 +5,11 @@ import { Repository } from 'typeorm';
 import { SickwCheckHistory } from './sickw-check-history.entity';
 
 type SickwApiResponse = {
+  success?: boolean;
   status?: string;
   result?: string;
   response?: string;
+  object?: any;
   message?: string;
   error?: string;
   [key: string]: any;
@@ -35,8 +37,10 @@ const COMBINED_SICKW_SERVICES: Record<
   },
 };
 
-const IFREEICLOUD_SERVICE_ID = '238';
-const IFREEICLOUD_MODAL_SERVICE_ID = 'ifreeicloud-238';
+const IFREEICLOUD_SERVICES: Record<string, { id: '205' | '281'; name: string; costUSD: number }> = {
+  'ifreeicloud-205': { id: '205', name: 'iFreeCheck Mini', costUSD: 0.05 },
+  'ifreeicloud-281': { id: '281', name: 'iFreeCheck Ultimate', costUSD: 0.40 },
+};
 
 @Injectable()
 export class SickwService {
@@ -47,8 +51,9 @@ export class SickwService {
   ) {}
 
   async appleBasicInfo(identifier: string, type?: string, serviceId?: string) {
-    if (serviceId === IFREEICLOUD_MODAL_SERVICE_ID) {
-      const result = await this.ifreeIcloudCheck(identifier, type);
+    const ifreeService = IFREEICLOUD_SERVICES[String(serviceId || '')];
+    if (ifreeService) {
+      const result = await this.ifreeIcloudCheck(identifier, type, String(serviceId), ifreeService);
       return this.saveHistory(result);
     }
 
@@ -457,9 +462,9 @@ export class SickwService {
 
   private async saveHistory(result: any) {
     const fields = Array.isArray(result?.fields) ? result.fields : [];
-    const serial = this.findFieldValue(fields, [/^serial number$/i, /^serial$/i, /^s\/n$/i]);
-    const imei = this.findFieldValue(fields, [/^imei number$/i, /^imei$/i]);
-    const imei2 = this.findFieldValue(fields, [/^imei2 number$/i, /^imei2$/i]);
+    const serial = this.findFieldValue(fields, [/^serial number$/i, /^n[uú]mero de serie$/i, /^serial$/i, /^s\/n$/i]);
+    const imei = this.findFieldValue(fields, [/^imei number$/i, /^imei(?: 1)?$/i]);
+    const imei2 = this.findFieldValue(fields, [/^imei2 number$/i, /^imei ?2$/i]);
     const record = this.historyRepo.create({
       serviceId: String(result.serviceId || ''),
       serviceName: String(result.serviceName || ''),
@@ -476,6 +481,7 @@ export class SickwService {
     const saved = await this.historyRepo.save(record);
     return {
       ...result,
+      provider: result.provider || (String(result.serviceId || '').startsWith('ifreeicloud-') ? 'ifreeicloud' : 'sickw'),
       historyRecord: this.toHistoryResponse(saved),
     };
   }
@@ -484,11 +490,24 @@ export class SickwService {
     const identifiers = Array.from(
       new Set([record.identifier, record.serial, record.imei, record.imei2].filter(Boolean)),
     );
+    let displayFields = Array.isArray(record.fields) ? record.fields : [];
+    const raw = record.raw || '';
+    if (String(record.serviceId || '').startsWith('ifreeicloud-') && raw.includes('--- JSON ---')) {
+      const markerIndex = raw.indexOf('--- JSON ---');
+      const responseText = raw.slice(0, markerIndex).trim();
+      const jsonText = raw.slice(markerIndex + '--- JSON ---'.length).trim();
+      try {
+        displayFields = this.parseIfreeIcloudFields({ object: JSON.parse(jsonText) }, responseText);
+      } catch {
+        // Conserva los campos almacenados si una respuesta historica no contiene JSON valido.
+      }
+    }
     return {
       id: record.id,
       checkedAt: record.checkedAt,
       serviceId: record.serviceId,
       serviceName: record.serviceName,
+      provider: String(record.serviceId || '').startsWith('ifreeicloud-') ? 'ifreeicloud' : 'sickw',
       costUSD: Number(record.costUSD),
       identifier: record.identifier,
       type: record.type || '',
@@ -496,8 +515,8 @@ export class SickwService {
       imei1: record.imei || '',
       imei2: record.imei2 || '',
       identifiers,
-      fields: Array.isArray(record.fields) ? record.fields : [],
-      raw: record.raw || '',
+      fields: displayFields,
+      raw,
     };
   }
 
@@ -512,12 +531,19 @@ export class SickwService {
   }
 
   async balance() {
-    const sickw = await this.getSickwBalance().catch((err) => ({
-      provider: 'sickw',
-      available: false,
-      error: err?.message || 'No se pudo leer saldo SICKW.',
-    }));
-    return { sickw };
+    const [sickw, ifreeicloud] = await Promise.all([
+      this.getSickwBalance().catch((err) => ({
+        provider: 'sickw',
+        available: false,
+        error: err?.message || 'No se pudo leer saldo SICKW.',
+      })),
+      this.getIfreeIcloudBalance().catch((err) => ({
+        provider: 'ifreeicloud',
+        available: false,
+        error: err?.message || 'No se pudo leer saldo iFreeiCloud.',
+      })),
+    ]);
+    return { sickw, ifreeicloud };
   }
 
   private async getSickwBalance() {
@@ -580,7 +606,7 @@ export class SickwService {
     return null;
   }
 
-  private async ifreeIcloudCheck(identifier: string, type?: string) {
+  private getIfreeIcloudConfig() {
     const key =
       this.config.get<string>('IFREEICLOUD_API_KEY') ||
       process.env.IFREEICLOUD_API_KEY;
@@ -589,9 +615,48 @@ export class SickwService {
       process.env.IFREEICLOUD_API_URL ||
       'https://api.ifreeicloud.co.uk';
 
-    if (!key) {
+    if (!key) throw new Error('Falta configurar IFREEICLOUD_API_KEY en el backend.');
+    return { key, apiUrl };
+  }
+
+  private async getIfreeIcloudBalance() {
+    const { key, apiUrl } = this.getIfreeIcloudConfig();
+    const body = new URLSearchParams({ accountinfo: 'balance', key });
+    const response = await fetch(new URL(apiUrl).toString(), {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json,text/plain,*/*',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'macsomenos-servicios/1.0',
+      },
+      body,
+    });
+    const rawBody = await response.text();
+    const payload = this.parseApiBody(rawBody);
+    const balance = Number(payload?.object?.account_balance ?? payload?.balance);
+    if (!response.ok || payload.success === false || !Number.isFinite(balance)) {
+      throw new Error(payload.error || payload.message || 'Saldo iFreeiCloud no disponible.');
+    }
+    return {
+      provider: 'ifreeicloud',
+      available: true,
+      balanceUSD: balance,
+      label: `$${balance.toFixed(2)}`,
+    };
+  }
+
+  private async ifreeIcloudCheck(
+    identifier: string,
+    type: string | undefined,
+    modalServiceId: string,
+    service: { id: '205' | '281'; name: string; costUSD: number },
+  ) {
+    let config: { key: string; apiUrl: string };
+    try {
+      config = this.getIfreeIcloudConfig();
+    } catch (err) {
       throw new HttpException(
-        { message: 'Falta configurar IFREEICLOUD_API_KEY en el backend.' },
+        { message: (err as any)?.message || 'Falta configurar iFreeiCloud.' },
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
@@ -601,11 +666,11 @@ export class SickwService {
       throw new HttpException({ message: 'SN/IMEI invalido para consultar iFreeiCloud.' }, HttpStatus.BAD_REQUEST);
     }
 
-    const url = new URL(apiUrl);
+    const url = new URL(config.apiUrl);
     const body = new URLSearchParams();
-    body.set('service', IFREEICLOUD_SERVICE_ID);
+    body.set('service', service.id);
     body.set('imei', cleanIdentifier);
-    body.set('key', key);
+    body.set('key', config.key);
 
     const response = await fetch(url.toString(), {
       method: 'POST',
@@ -628,10 +693,11 @@ export class SickwService {
     }
 
     const rawResult = this.extractResultText(payload, rawBody);
-    const fields = this.parseResultFields(rawResult);
+    const fields = this.parseIfreeIcloudFields(payload, rawResult);
     const status = String(payload.status || '').toLowerCase();
     const hasResultFields = fields.length > 0;
     const failed =
+      payload.success === false ||
       (!hasResultFields && ['error', 'failed', 'fail', 'rejected'].includes(status)) ||
       (!hasResultFields && /invalid|wrong|insufficient|balance|not found|api key|service unavailable/i.test(rawResult || payload.message || payload.error || ''));
 
@@ -643,15 +709,142 @@ export class SickwService {
     }
 
     return {
-      serviceId: IFREEICLOUD_MODAL_SERVICE_ID,
-      serviceName: 'iFreeiCloud Free Check',
+      serviceId: modalServiceId,
+      serviceName: service.name,
       provider: 'ifreeicloud',
-      costUSD: 0,
+      costUSD: service.costUSD,
+      balance: await this.getIfreeIcloudBalance().catch(() => null),
       identifier: cleanIdentifier,
       type: type || null,
-      raw: rawResult,
+      raw: payload.object
+        ? `${rawResult}\n\n--- JSON ---\n${JSON.stringify(payload.object, null, 2)}`
+        : rawResult,
       fields,
     };
+  }
+
+  private parseIfreeIcloudFields(payload: SickwApiResponse, rawResult: string) {
+    type Field = { label: string; value: string; tone?: 'good' | 'warn' | 'bad' };
+    type Entry = { path: string[]; key: string; value: any };
+    const entries: Entry[] = [];
+    const normalizeKey = (value: string) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const visit = (value: any, path: string[] = [], depth = 0) => {
+      if (value == null || depth > 6) return;
+      if (Array.isArray(value)) {
+        if (value.every((item) => item == null || ['string', 'number', 'boolean'].includes(typeof item))) {
+          const joined = value.filter((item) => item != null).join(', ');
+          if (joined) entries.push({ path, key: normalizeKey(path[path.length - 1]), value: joined });
+        } else {
+          value.forEach((item, index) => visit(item, [...path, String(index + 1)], depth + 1));
+        }
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.entries(value).forEach(([key, nested]) => visit(nested, [...path, key], depth + 1));
+        return;
+      }
+      if (path.length) entries.push({ path, key: normalizeKey(path[path.length - 1]), value });
+    };
+
+    visit(payload.object);
+    const rawFields = this.parseResultFields(rawResult);
+    const consumed = new Set<Entry>();
+    const output: Field[] = [];
+    const seenLabels = new Set<string>();
+    const findEntry = (...aliases: string[]) => {
+      const keys = aliases.map(normalizeKey);
+      let entry: Entry | undefined;
+      for (const key of keys) {
+        entry = entries.find((candidate) => !consumed.has(candidate) && candidate.key === key);
+        if (entry) break;
+      }
+      entries
+        .filter((candidate) => !consumed.has(candidate) && keys.includes(candidate.key))
+        .forEach((candidate) => consumed.add(candidate));
+      return entry;
+    };
+    const findRaw = (...labels: string[]) => {
+      const keys = labels.map(normalizeKey);
+      return rawFields.find((field) => keys.includes(normalizeKey(field.label)))?.value;
+    };
+    const add = (label: string, value: any, tone?: Field['tone']) => {
+      const text = this.htmlToText(String(value ?? '')).trim();
+      const labelKey = normalizeKey(label);
+      if (!text || seenLabels.has(labelKey)) return;
+      seenLabels.add(labelKey);
+      output.push({ label, value: text, tone: tone ?? this.toneForValue(label, text) });
+    };
+    const booleanValue = (value: any) => {
+      if (typeof value === 'boolean') return value;
+      const normalized = String(value ?? '').trim().toLowerCase();
+      if (['true', '1', 'yes', 'si', 'sí', 'on', 'locked', 'active'].includes(normalized)) return true;
+      if (['false', '0', 'no', 'off', 'unlocked', 'inactive'].includes(normalized)) return false;
+      return null;
+    };
+    const addBoolean = (
+      label: string,
+      entry: Entry | undefined,
+      trueText = 'Sí',
+      falseText = 'No',
+      trueIsBad = true,
+    ) => {
+      if (!entry) return;
+      const parsed = booleanValue(entry.value);
+      if (parsed == null) {
+        add(label, entry.value);
+        return;
+      }
+      add(label, parsed ? trueText : falseText, parsed === trueIsBad ? 'bad' : 'good');
+    };
+
+    const product = findEntry('model_desc', 'model_description', 'description', 'model');
+    const appleModel = findEntry('model_name');
+    add('Producto', product?.value || appleModel?.value || findRaw('Description', 'Model Description'));
+    if (appleModel && product && normalizeKey(String(appleModel.value)) !== normalizeKey(String(product.value))) {
+      add('Modelo', appleModel.value);
+    }
+    add('Número de serie', findEntry('serial', 'serial_number')?.value || findRaw('Serial Number', 'Serial'));
+    add('IMEI', findEntry('imei', 'imei_number')?.value || findRaw('IMEI Number', 'IMEI'));
+    add('IMEI 2', findEntry('imei2', 'imei_2', 'imei2_number')?.value || findRaw('IMEI2 Number', 'IMEI2'));
+
+    const purchaseDate = findEntry('est_purchase_date', 'estimated_purchase_date', 'purchase_date');
+    const parsedPurchaseDate = purchaseDate ? this.parseLooseDate(String(purchaseDate.value)) : null;
+    add('Fecha estimada de compra', parsedPurchaseDate ? this.formatDateLongEs(parsedPurchaseDate) : purchaseDate?.value);
+
+    addBoolean('Find My', findEntry('fmi_on', 'find_my_iphone', 'find_my'), 'ON', 'OFF');
+    addBoolean('SIM Lock', findEntry('sim_lock', 'simlock'), 'Locked', 'Unlocked');
+    addBoolean('MDM', findEntry('mdm_status', 'mdm_on', 'mdm'), 'ON', 'OFF');
+    addBoolean('Modo perdido', findEntry('lost_mode'), 'Sí', 'No');
+    addBoolean('Reemplazado por Apple', findEntry('replaced', 'replaced_by_apple'));
+    addBoolean('Dispositivo de reemplazo', findEntry('replacement', 'replacement_device'));
+    addBoolean('Reacondicionado', findEntry('refurbished'));
+    addBoolean('Unidad de demostración', findEntry('demo', 'demo_unit'));
+    addBoolean('Equipo de préstamo', findEntry('loaner', 'loaner_device'));
+
+    add('Cobertura', findRaw('Coverage Status', 'Warranty Status'));
+    addBoolean('Cobertura de reparaciones', findEntry('repair_coverage'), 'Activa', 'No activa', false);
+    const purchaseCountry = findEntry('purchase_country');
+    const region = findEntry('region');
+    add('País de compra', purchaseCountry?.value || region?.value);
+    add('Bloqueo en EE. UU.', findEntry('usa_block_status', 'us_block_status')?.value);
+
+    for (const entry of entries) {
+      if (consumed.has(entry)) continue;
+      if (['thumbnail', 'thumbnailurl', 'image', 'imageurl'].includes(entry.key)) continue;
+      const text = this.htmlToText(String(entry.value ?? '')).trim();
+      if (!text) continue;
+      const leaf = entry.path[entry.path.length - 1]
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/[_-]+/g, ' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+      const parent = entry.path.length > 1
+        ? entry.path[entry.path.length - 2].replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+        : '';
+      const label = seenLabels.has(normalizeKey(leaf)) && parent ? `${parent} - ${leaf}` : leaf;
+      add(label, text);
+    }
+
+    return output;
   }
 
   private parseApiBody(rawBody: string): SickwApiResponse {
@@ -807,6 +1000,14 @@ export class SickwService {
     return `${day}-${month}-${year}`;
   }
 
+  private formatDateLongEs(date: Date) {
+    const months = [
+      'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+    ];
+    return `${date.getDate()} de ${months[date.getMonth()]} de ${date.getFullYear()}`;
+  }
+
   private htmlToText(value: string) {
     return String(value || '')
       .replace(/<[^>]*>/g, '')
@@ -842,7 +1043,7 @@ export class SickwService {
     if (/mdm/.test(cleanLabel) && /\bon\b|locked|\byes\b/.test(cleanValue)) return 'bad';
     if (/sim-lock/.test(cleanLabel) && /locked/.test(cleanValue) && !/unlocked/.test(cleanValue)) return 'bad';
     if (/blacklist/.test(cleanLabel) && /blacklist|lost|stolen/.test(cleanValue)) return 'bad';
-    if (/replaced|replacement|refurbished|demo|loaner/.test(cleanLabel) && /\byes\b/.test(cleanValue)) return 'bad';
+    if (/replaced|replacement|refurbished|demo|loaner|reemplaz|reacondicionado|demostraci[oó]n|pr[eé]stamo|modo perdido/.test(cleanLabel) && /\byes\b|\bs[ií]\b|\btrue\b|\bon\b/.test(cleanValue)) return 'bad';
     if (/orange|expired|unknown/i.test(value)) return 'warn';
     return undefined;
   }

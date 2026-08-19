@@ -45,14 +45,14 @@ export class InventarioService {
       .leftJoinAndSelect('p.valor', 'valor')
       .leftJoinAndSelect('p.tracking', 'tracking')
       .where(
-        `(LOWER(p.tipo) = 'accesorios' AND p."stockActual" > 0) OR (` +
         `EXISTS (
           SELECT 1 FROM tracking t
           WHERE t."productoId" = p.id
             AND (t.estado = :recogido OR t."fechaRecogido" IS NOT NULL)
-        ))`,
+        )`,
         { recogido: 'recogido' },
       )
+      .andWhere(`(LOWER(p.tipo) <> 'accesorios' OR p."stockActual" > 0)`)
       .andWhere(`(LOWER(p.tipo) = 'accesorios' OR NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id))`)
       .andWhere(
         `NOT EXISTS (

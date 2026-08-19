@@ -1259,7 +1259,9 @@ const buildEbayConditionFilter = (rawCondition?: string) => {
   if (condition === 'full') return 'conditionIds:{1000|1500|3000}';
   if (condition === 'new') return 'conditionIds:{1000}';
   if (condition === 'open_box') return 'conditionIds:{1500}';
-  if (condition === 'for_parts') return 'conditionIds:{7000}';
+  // Muchos vendedores publican repuestos como New/Used. Para esta vista se
+  // consulta sin limitar la condicion declarada y se clasifica por titulo.
+  if (condition === 'for_parts') return '';
   if (condition === 'auction_normal') return 'conditionIds:{1000|1500|2000|2010|2020|2030|2500|2750|2990|3000|3010|4000|5000|6000}';
   if (condition === 'auction_for_parts') return 'conditionIds:{7000}';
   return '';
@@ -1269,6 +1271,26 @@ const buildEbayBuyingOptionsFilter = (rawBuyingOptions?: string) => {
   const buyingOptions = String(rawBuyingOptions || '').trim().toUpperCase();
   if (!buyingOptions) return '';
   return `buyingOptions:{${buyingOptions}}`;
+};
+
+const normalizeEbayPrice = (value?: number | string) => {
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? Math.round(price * 100) / 100 : undefined;
+};
+
+export const buildEbayPriceFilters = (rawMinPrice?: number | string, rawMaxPrice?: number | string) => {
+  let minPrice = normalizeEbayPrice(rawMinPrice);
+  let maxPrice = normalizeEbayPrice(rawMaxPrice);
+  if (minPrice == null && maxPrice == null) return [];
+  if (minPrice != null && maxPrice != null && minPrice > maxPrice) {
+    [minPrice, maxPrice] = [maxPrice, minPrice];
+  }
+  const range = minPrice != null && maxPrice != null
+    ? `${minPrice}..${maxPrice}`
+    : minPrice != null
+      ? `${minPrice}`
+      : `..${maxPrice}`;
+  return [`price:[${range}]`, 'priceCurrency:USD'];
 };
 
 const normalizeLookupText = (val: string) =>
@@ -1655,10 +1677,17 @@ const collectPreferredStoreItems = async (params: {
   return accepted;
 };
 
-export const matchesAppleProductTitle = (item: any) => {
+export const matchesAppleProductTitle = (
+  item: any,
+  options: { allowParts?: boolean } = {},
+) => {
   const titleText = normalizeLookupText(item?.title || '');
 
   if (/\b(?:samsung|galaxy|google\s+pixel|motorola|moto|xiaomi|huawei|oneplus|oppo|vivo|dell|lenovo|thinkpad|hp|hewlett\s+packard|asus|acer|microsoft|surface|sony|nokia|lg)\b/.test(titleText)) return false;
+  if (isApplePartTitle(titleText)) {
+    if (!options.allowParts) return false;
+    return /\b(?:apple|macbook|ipad|iphone|imac|mac\s*mini|apple\s*watch|a\d{4})\b/.test(titleText);
+  }
   if (isExcludedAppleProductTitle(titleText)) return false;
   if (isAccessoryTitle(titleText)) return false;
   return hasModernAppleChipWithoutFamily(titleText) ||
@@ -1723,6 +1752,8 @@ const buildEbaySearchCacheKey = (params?: {
   query?: string;
   condition?: string;
   buyingOptions?: string;
+  minPrice?: number;
+  maxPrice?: number;
   sort?: string;
   pawnOnly?: boolean;
   minSellerReviews?: number;
@@ -1738,6 +1769,8 @@ const buildEbaySearchCacheKey = (params?: {
     sort: normalizeLookupText(String(params?.sort || 'newlyListed')),
     pawnOnly: Boolean(params?.pawnOnly),
     minSellerReviews,
+    minPrice: normalizeEbayPrice(params?.minPrice),
+    maxPrice: normalizeEbayPrice(params?.maxPrice),
     sourceRule: params?.pawnOnly || minSellerReviews > 0 ? filteredSourceRule : 'default',
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
@@ -1976,6 +2009,15 @@ const EXCLUDED_APPLE_PRODUCT_TITLE_PATTERNS = [
   /\b(?:station|stand|dock|base|holder|mount|cradle)\b.{0,100}\b(?:iphone|ipad|apple\s+watch|watch|airpods?)\b/,
   /\b(?:3\s*-?\s*in\s*-?\s*1|2\s*-?\s*in\s*-?\s*1|multi\s*device)\b.{0,100}\b(?:charger|charging|station|stand|dock)\b/,
   /\b(?:logic\s+board|motherboard|display\s+assembly|screen\s+replacement|battery\s+replacement|camera\s+module|charging\s+port|flex\s+cable|parts?\s+only)\b/,
+  /\b(?:user\s+guide|study\s+guide|instruction\s+manual|repair\s+manual|handbook|textbook|e-?book|paperback|hardcover|kindle\s+edition|for\s+adults|for\s+seniors|for\s+beginners)\b/,
+  /\bharper\s+veyland\b/,
+  /\b(?:adhesive|adhesive\s+strip|adhesive\s+tape|double\s+side(?:d)?\s+tape|sticker|tape\s+set|glue|seal\s+strip)\b/,
+  /\b(?:lcd|display|screen|keyboard|keycap|trackpad|touchpad|top\s+case|bottom\s+case|palmrest|bezel|hinge|speaker|fan|heatsink|antenna|webcam|camera|battery|connector|cable|ribbon|flex|housing|chassis)\b.{0,60}\b(?:replacement|repair|part|parts|assembly|only|for)\b/,
+  /\b(?:replacement|repair|spare|oem)\b.{0,60}\b(?:lcd|display|screen|keyboard|keycap|trackpad|touchpad|case|palmrest|bezel|hinge|speaker|fan|heatsink|antenna|webcam|camera|battery|connector|cable|ribbon|flex|housing|chassis)\b/,
+  /(?:\b(?:case|cover|shell|skin|sleeve|hardshell|hard\s+shell)\b.{0,120}\b(?:macbook|a\d{4})\b|\b(?:macbook|a\d{4})\b.{0,120}\b(?:case|cover|shell|skin|sleeve|hardshell|hard\s+shell)\b)/,
+  /\b(?:speakers?|antennas?|fans?|hinges?|keycaps?|connectors?|ribbons?)\b.{0,100}\b(?:oem|replacement|repair|parts?|assembly|left|right)\b/,
+  /\b(?:left|right)\b.{0,100}\b(?:speakers?|antennas?|fans?|hinges?|connectors?)\b/,
+  /\bmcover\b/,
 ] as const;
 
 const isExcludedAppleProductTitle = (title: string) => {
@@ -1983,23 +2025,48 @@ const isExcludedAppleProductTitle = (title: string) => {
   return EXCLUDED_APPLE_PRODUCT_TITLE_PATTERNS.some((pattern) => pattern.test(normalized));
 };
 
+const APPLE_PART_COMPONENT_PATTERN = /\b(?:trackpads?|touchpads?|keyboards?|keycaps?|type\s*c\s+ports?|usb[\s-]*c\s+ports?|thunderbolt\s+ports?|charging\s+ports?|earphone\s+jacks?|headphone\s+(?:audio\s+)?jacks?|audio\s+jacks?|dc\s+jacks?|magsafe\s+(?:jacks?|boards?)|microphone\s+flex|flex\s+cables?|ribbon\s+cables?|speakers?|antennas?|fans?|heatsinks?|hinges?|connectors?|cameras?|webcams?|daughterboards?|logic\s+boards?|motherboards?|jack\s+boards?|usb[\s-]*c\s+boards?|lcds?|displays?|screens?|display\s+assembl(?:y|ies)|screen\s+assembl(?:y|ies)|batter(?:y|ies)|palmrests?|bezels?|housings?|chassis)\b/;
+
+export const isApplePartTitle = (title: string) => {
+  const normalized = normalizeLookupText(title);
+  if (!APPLE_PART_COMPONENT_PATTERN.test(normalized)) return false;
+
+  // Un equipo completo puede mencionar teclado/bateria en su descripcion.
+  // Dos capacidades (p. ej. 16GB + 512GB) son una senal fuerte de equipo.
+  const capacities = normalized.match(/\b\d+(?:gb|tb)\b/g) || [];
+  const explicitPartSignal = /\b(?:for\s+(?:apple\s+)?(?:macbook|ipad|iphone|imac)|oem|genuine|replacement|repair|spare|parts?|assembly|left|right)\b/.test(normalized);
+  return explicitPartSignal || capacities.length < 2;
+};
+
+const matchesRequestedAppleProductKind = (item: any, rawCondition?: string) => {
+  const condition = normalizeLookupText(String(rawCondition || ''));
+  const isPart = isApplePartTitle(item?.title || '');
+  if (condition === 'for_parts') {
+    return isPart || String(item?.conditionId || '').trim() === '7000';
+  }
+  return !isPart;
+};
+
 const TARGET_MACBOOK_MODEL_NUMBERS = [
-  // EveryMac: Macs introducidas desde 2020 (Intel 2020 y Apple Silicon).
-  'a2179', 'a2251', 'a2289', 'a2336', 'a3404',
+  // EveryMac: only Apple-silicon Macs introduced since 2020 (no Intel models).
+  'a2336', 'a3404',
   'a2337', 'a2681', 'a2941', 'a3113', 'a3114', 'a3240', 'a3241', 'a3448', 'a3449',
   'a2338', 'a2442', 'a2485', 'a2779', 'a2780', 'a2918', 'a2991', 'a2992', 'a3112',
   'a3185', 'a3186', 'a3401', 'a3403', 'a3426', 'a3427', 'a3428', 'a3429', 'a3434',
 ] as const;
 
 const TARGET_MACBOOK_ORDER_CODES = [
-  'mwtj2', 'mvh22', 'mxk62', 'mwp72', 'myd82',
+  'myd82',
   // MacBook Neo 13-inch (2026), 256 GB y 512 GB en sus cuatro colores.
   'mhfa4', 'mhfd4', 'mhff4', 'mhfh4', 'mhfc4', 'mhfe4', 'mhfg4', 'mhfj4',
   'mgn63', 'mgn73', 'mly33', 'mly43', 'mqkw3', 'mrxv3', 'mrxw3', 'mryu3', 'mc6t4',
-  'mc6u4', 'mc7a4', 'mdhh4', 'mdhj4', 'mdvq4', 'myda2', 'mkgr3', 'mkgt3', 'mk1e3',
+  'mw123', 'mw0y3', 'mw0w3', 'mc6u4', 'mc6v4', 'mw133', 'mc6c4', 'mw103', 'mc6a4',
+  'mw0x3', 'mc654', 'mc7a4', 'mc7c4', 'mc7d4', 'mw1l3', 'mw1m3', 'mc6l4',
+  'mc6k4', 'mw1j3', 'mw1k3', 'mw1g3', 'mw1h3', 'mc6j4', 'mdhh4', 'mdhj4',
+  'mdvq4', 'myda2', 'mkgr3', 'mkgt3', 'mk1e3',
   'mk1h3', 'mneh3', 'mphe3', 'mphf3', 'mphg3', 'mnw83', 'mnwa3', 'mtl73', 'mrx33',
   'mrx43', 'mrx53', 'mrw13', 'mrw33', 'muw63', 'mw2w3', 'mx2e3', 'mx2f3', 'mx2g3',
-  'mx2t3', 'mx2v3', 'mx2w3', 'mde44', 'mgdn4', 'mgdp4', 'mgdq4', 'mge44', 'mge74',
+  'mx2t3', 'mx2v3', 'mx2w3', 'mx2k3', 'mde44', 'mgdn4', 'mgdp4', 'mgdq4', 'mge44', 'mge74',
   'mge94',
 ] as const;
 
@@ -2129,7 +2196,7 @@ const isAccessoryTitle = (
 };
 
 const MACBOOK_CHIP_PATTERN = /\b(?:m[1-6](?:\s+(?:pro|max|ultra))?|a18\s*pro)\b/;
-const MACBOOK_MODEL_NUMBER_PATTERN = /\ba(?:2179|2251|2289|2336|2337|2338|2442|2485|2681|2779|2780|2918|2941|2991|2992|3112|3113|3114|3185|3186|3240|3241|3401|3403|3404|3426|3427|3428|3429|3434|3448|3449)\b/;
+const MACBOOK_MODEL_NUMBER_PATTERN = /\ba(?:2336|2337|2338|2442|2485|2681|2779|2780|2918|2941|2991|2992|3112|3113|3114|3185|3186|3240|3241|3401|3403|3404|3426|3427|3428|3429|3434|3448|3449)\b/;
 const MACBOOK_INTEL_PATTERN = /\b(?:intel|core\s+i[3579]|i[3579][-\s]?\d{3,5})\b/;
 
 const hasTargetMacBookSignal = (normalized: string) => {
@@ -2421,6 +2488,8 @@ const searchEbayItems = async (params?: {
   offset?: number;
   condition?: string;
   buyingOptions?: string;
+  minPrice?: number;
+  maxPrice?: number;
   sort?: string;
   storeEntries?: ReadonlyArray<EbayStoreEntry>;
 }) => {
@@ -2444,6 +2513,7 @@ const searchEbayItems = async (params?: {
   if (conditionFilter) filters.push(conditionFilter);
   const buyingOptionsFilter = buildEbayBuyingOptionsFilter(params?.buyingOptions);
   if (buyingOptionsFilter) filters.push(buyingOptionsFilter);
+  filters.push(...buildEbayPriceFilters(params?.minPrice, params?.maxPrice));
   if (filters.length > 0) {
     url.searchParams.set('filter', filters.join(','));
   }
@@ -2512,6 +2582,8 @@ const fetchEbayStoreFeed = async (params?: {
   offset?: number;
   condition?: string;
   buyingOptions?: string;
+  minPrice?: number;
+  maxPrice?: number;
   storeEntries?: ReadonlyArray<EbayStoreEntry>;
 }) => {
   const targetLimitRaw = Number(params?.limit || 140);
@@ -2539,6 +2611,8 @@ const fetchEbayStoreFeed = async (params?: {
           offset: pageOffset,
           condition: params?.condition,
           buyingOptions: params?.buyingOptions,
+          minPrice: params?.minPrice,
+          maxPrice: params?.maxPrice,
           storeEntries: params?.storeEntries || [],
         }),
       ),
@@ -2552,6 +2626,7 @@ const fetchEbayStoreFeed = async (params?: {
     const pageItems = results.flatMap((result) => (Array.isArray(result?.items) ? result.items : []));
     for (const item of pageItems) {
       if (!matchesTitleKeywordQuery(item?.title || '', params?.query)) continue;
+      if (!matchesRequestedAppleProductKind(item, params?.condition)) continue;
       const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
       if (!key || seen.has(key)) continue;
       seen.add(key);
@@ -2599,6 +2674,8 @@ const fetchEbayCatalogSearch = async (params?: {
   preferCache?: boolean;
   condition?: string;
   buyingOptions?: string;
+  minPrice?: number;
+  maxPrice?: number;
   sort?: string;
   pawnOnly?: boolean;
   minSellerReviews?: number;
@@ -2647,6 +2724,8 @@ const fetchEbayCatalogSearch = async (params?: {
       offset: params?.offset,
       condition: params?.condition,
       buyingOptions: params?.buyingOptions,
+      minPrice: params?.minPrice,
+      maxPrice: params?.maxPrice,
       sort: params?.sort,
     });
     const saved = await saveEbaySearchItemsToCache(cacheRepo, {
@@ -2709,6 +2788,8 @@ const fetchEbayCatalogSearch = async (params?: {
         offset: 0,
         condition: params?.condition,
         buyingOptions: params?.buyingOptions,
+        minPrice: params?.minPrice,
+        maxPrice: params?.maxPrice,
         sort: 'newlyListed',
       });
       sort = initial?.sort || 'newlyListed';
@@ -2741,6 +2822,8 @@ const fetchEbayCatalogSearch = async (params?: {
         offset: pageOffset,
         condition: params?.condition,
         buyingOptions: params?.buyingOptions,
+        minPrice: params?.minPrice,
+        maxPrice: params?.maxPrice,
         sort: 'newlyListed',
       });
     } catch (err) {
@@ -2759,9 +2842,12 @@ const fetchEbayCatalogSearch = async (params?: {
 
     const pageItems = Array.isArray(data?.items) ? data.items : [];
     const rawCount = Number(data?.rawCount ?? pageItems.length);
+    const allowParts = normalizeLookupText(String(params?.condition || '')) === 'for_parts';
     const pageTargetItems = shouldRestrictScanToApple
-      ? pageItems.filter((item: any) => matchesAppleProductTitle(item))
-      : pageItems;
+      ? pageItems.filter((item: any) =>
+          matchesRequestedAppleProductKind(item, params?.condition) &&
+          matchesAppleProductTitle(item, { allowParts }))
+      : pageItems.filter((item: any) => matchesRequestedAppleProductKind(item, params?.condition));
     let pageCandidates: any[] = [];
     if (params?.pawnOnly) {
       pageCandidates = await collectPreferredStoreItems({
@@ -3148,6 +3234,8 @@ const fetchEbayAppleCollection = async (params?: {
       family: item?.family,
       key: item?.familyEntryKey || '',
     }))
+    .filter((item: any) => !isExcludedAppleProductTitle(item?.title || ''))
+    .filter((item: any) => !isAuctionSort || matchesAppleProductTitle(item))
     .filter((item: any) => !params?.pawnOnly || matchesPawnSource(item))
     .filter((item: any) => !params?.pawnOnly || matchesAppleProductTitle(item))
     .filter((item: any) => {
@@ -3621,6 +3709,8 @@ export class AppController {
     @Query('offset') offset?: string,
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
   ) {
     const storeEntries = await this.loadEbayStoreFeedFromDb();
     return fetchEbayStoreFeed({
@@ -3629,6 +3719,8 @@ export class AppController {
       offset: offset ? Number(offset) : undefined,
       condition,
       buyingOptions,
+      minPrice: normalizeEbayPrice(minPrice),
+      maxPrice: normalizeEbayPrice(maxPrice),
       storeEntries,
     });
   }
@@ -3904,6 +3996,8 @@ export class AppController {
     @Query('preferCache') preferCache?: string,
     @Query('condition') condition?: string,
     @Query('buyingOptions') buyingOptions?: string,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
     @Query('sort') sort?: string,
     @Query('pawnOnly') pawnOnly?: string,
     @Query('minSellerReviews') minSellerReviews?: string,
@@ -3919,6 +4013,8 @@ export class AppController {
       preferCache: isTruthyQueryFlag(preferCache),
       condition,
       buyingOptions,
+      minPrice: normalizeEbayPrice(minPrice),
+      maxPrice: normalizeEbayPrice(maxPrice),
       sort,
       pawnOnly: pawnOnlyFlag,
       minSellerReviews: normalizeMinSellerReviews(minSellerReviews),
