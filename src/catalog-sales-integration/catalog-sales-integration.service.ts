@@ -65,8 +65,11 @@ export class CatalogSalesIntegrationService {
     if (!eventId || !catalogSaleId || !sku || !Number.isFinite(amount) || amount < 0) {
       throw new BadRequestException('Datos de venta incompletos');
     }
-    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0 || Number.isNaN(soldAt.getTime())) {
-      throw new BadRequestException('Tipo de cambio o fecha invalida');
+    if (Number.isNaN(soldAt.getTime())) {
+      throw new BadRequestException('Fecha invalida');
+    }
+    if (eventType === 'sale.created' && (!Number.isFinite(exchangeRate) || exchangeRate <= 0)) {
+      throw new BadRequestException('Tipo de cambio invalido');
     }
 
     const schema = process.env.DB_SCHEMA || 'public';
@@ -105,7 +108,7 @@ export class CatalogSalesIntegrationService {
       `INSERT INTO "${schema}"."catalog_sale_events"
        ("eventId", "catalogSaleId", "eventType", "sku", "title", "amount", "exchangeRate", "soldAt", "status", "remoteVentaId", "payload")
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
-      [eventId, catalogSaleId, eventType, sku, payload?.title || null, amount, exchangeRate, soldAt, status, remoteVentaId, JSON.stringify(payload)],
+      [eventId, catalogSaleId, eventType, sku, payload?.title || null, amount, Number.isFinite(exchangeRate) ? exchangeRate : 0, soldAt, status, remoteVentaId, JSON.stringify(payload)],
     );
     return { ok: true, status };
   }
