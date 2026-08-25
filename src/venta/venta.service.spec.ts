@@ -68,7 +68,8 @@ describe('VentaService.create', () => {
     expect(result).toEqual(expect.objectContaining({
       productoId: 40,
       cantidad: 2,
-      ganancia: 132,
+      ganancia: 0,
+      porcentajeGanancia: 0,
       distribucionStock: [{ productoId: 12, cantidad: 2 }],
     }));
     expect(firstLot.stockActual).toBe(3);

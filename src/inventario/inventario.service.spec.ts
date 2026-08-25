@@ -36,7 +36,7 @@ describe('InventarioService photos', () => {
     jest.restoreAllMocks();
   });
 
-  it('excludes accessory stock that has not been picked up yet', async () => {
+  it('includes every accessory while keeping the normal inventory restrictions for equipment', async () => {
     const queryBuilder = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
@@ -53,12 +53,8 @@ describe('InventarioService photos', () => {
       expect.stringContaining('t.estado = :recogido'),
       { recogido: 'recogido' },
     );
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-      `(LOWER(p.tipo) <> 'accesorios' OR p."stockActual" > 0)`,
-    );
-    expect(queryBuilder.where.mock.calls[0][0]).not.toContain(
-      `LOWER(p.tipo) = 'accesorios' AND p."stockActual" > 0`,
-    );
+    expect(queryBuilder.where.mock.calls[0][0]).toContain("LOWER(p.tipo) = 'accesorios' OR");
+    expect(queryBuilder.where.mock.calls[0][0]).not.toContain('p."stockActual" > 0');
   });
 
   it('marks the product in storage without completing the photo session', async () => {

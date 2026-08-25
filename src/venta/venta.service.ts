@@ -79,22 +79,6 @@ const getProductCost = (producto?: Producto | null) => {
     valor.costoTotalProrrateado ?? valor.costoTotal ?? valor.valorSoles,
   );
 };
-const getAccessoryLotUnitCost = (producto?: Producto | null, fallbackTc = 0) => {
-  const valor = (producto as any)?.valor || {};
-  const units = Math.max(1, Number((producto as any)?.stockInicial || 1));
-  const shipping = toMoneyNumber(
-    valor.costoEnvioProrrateado ?? valor.costoEnvio,
-  );
-  const storedTotal = toMoneyNumber(
-    valor.costoTotalProrrateado ?? valor.costoTotal,
-  );
-  const total = storedTotal > 0
-    ? storedTotal
-    : toMoneyNumber(valor.valorSoles) > 0
-      ? toMoneyNumber(valor.valorSoles) + shipping
-      : toMoneyNumber(valor.valorProducto) * fallbackTc + shipping;
-  return +(total / units).toFixed(6);
-};
 const getAccessoryLotDate = (producto?: Producto | null) => {
   const purchase = (producto as any)?.valor?.fechaCompra;
   const purchaseTime = purchase ? new Date(purchase).getTime() : NaN;
@@ -835,7 +819,6 @@ export class VentaService {
       relations: ['valor', 'tracking'],
     });
     const validLots = lots.filter((lot) => isAccessoryStock(lot.tipo));
-    const lotById = new Map(validLots.map((lot) => [lot.id, lot]));
     const lotIds = validLots.map((lot) => lot.id);
     const sales = lotIds.length
       ? await this.ventaRepo.find({
@@ -846,21 +829,15 @@ export class VentaService {
 
     let unidadesVendidas = 0;
     let ventaBruta = 0;
-    let costoVendido = 0;
     let weightedTc = 0;
     const detalleVentas = sales.map((sale) => {
       const cantidad = Math.max(1, Number(sale.cantidad || 1));
       const distribution = Array.isArray(sale.distribucionStock) && sale.distribucionStock.length
         ? sale.distribucionStock
         : [{ productoId: sale.productoId, cantidad }];
-      const costo = distribution.reduce((sum, row) => {
-        const lot = lotById.get(Number(row.productoId));
-        return sum + getAccessoryLotUnitCost(lot, Number(sale.tipoCambio || 0)) * Number(row.cantidad || 0);
-      }, 0);
       const bruto = Number(sale.precioVenta || 0);
       unidadesVendidas += cantidad;
       ventaBruta += bruto;
-      costoVendido += costo;
       weightedTc += Number(sale.tipoCambio || 0) * cantidad;
       return {
         id: sale.id,
@@ -868,8 +845,8 @@ export class VentaService {
         cantidad,
         precioUnitario: +(bruto / cantidad).toFixed(2),
         ventaBruta: +bruto.toFixed(2),
-        costo: +costo.toFixed(2),
-        gananciaNeta: +(bruto - costo).toFixed(2),
+        costo: 0,
+        gananciaNeta: 0,
         tipoCambio: Number(sale.tipoCambio || 0),
         distribucionStock: distribution,
       };
@@ -881,8 +858,8 @@ export class VentaService {
       unidadesDisponibles: validLots.reduce((sum, lot) => sum + Number(lot.stockActual || 0), 0),
       unidadesVendidas,
       ventaBruta: +ventaBruta.toFixed(2),
-      costoVendido: +costoVendido.toFixed(2),
-      gananciaNeta: +(ventaBruta - costoVendido).toFixed(2),
+      costoVendido: 0,
+      gananciaNeta: 0,
       tipoCambioPromedio: unidadesVendidas ? +(weightedTc / unidadesVendidas).toFixed(4) : null,
       ventas: detalleVentas.reverse(),
     };
@@ -951,7 +928,6 @@ export class VentaService {
         }
         const precioVenta = Number(dto.precioVenta);
         let pending = cantidad;
-        let costoVendido = 0;
         const distribucionStock: Array<{ productoId: number; cantidad: number }> = [];
         for (const lot of groupLots) {
           if (pending <= 0) break;
@@ -960,11 +936,8 @@ export class VentaService {
           lot.stockActual = Number(lot.stockActual) - taken;
           pending -= taken;
           distribucionStock.push({ productoId: lot.id, cantidad: taken });
-          costoVendido += getAccessoryLotUnitCost(lot, tipoCambio) * taken;
           await manager.getRepository(Producto).save(lot);
         }
-        costoVendido = +costoVendido.toFixed(2);
-        const ganancia = +(precioVenta - costoVendido).toFixed(2);
         return manager.getRepository(Venta).save(manager.getRepository(Venta).create({
           productoId: locked.id,
           tipoCambio,
@@ -973,13 +946,14 @@ export class VentaService {
           cantidad,
           modalidad,
           distribucionStock,
-          ganancia,
-          porcentajeGanancia: calculateProfitPercentage(ganancia, costoVendido),
+          ganancia: 0,
+          porcentajeGanancia: 0,
           vendedor: normalizeSellerLabel(dto.vendedor) ?? sellerFromProducto(locked, null),
         }));
       });
       await this.syncSaleIncome(saved, dto.incomeBank);
       await this.cache.del?.('productos:stats').catch?.(() => {});
+      await this.cache.del?.('productos:resumen').catch?.(() => {});
       return saved;
     }
 
@@ -1084,6 +1058,7 @@ export class VentaService {
     await this.syncSaleIncome(saved, dto.incomeBank);
     // invalidar KPIs de productos
     await this.cache.del?.('productos:stats').catch?.(() => {});
+    await this.cache.del?.('productos:resumen').catch?.(() => {});
     return saved;
   }
 
@@ -1097,6 +1072,23 @@ export class VentaService {
       throw new BadRequestException(
         'El producto no tiene seccion de valor asociada',
       );
+    if (isAccessoryStock(producto.tipo)) {
+      if (dto.tipoCambio !== undefined) venta.tipoCambio = Number(dto.tipoCambio);
+      if (dto.precioVenta !== undefined) venta.precioVenta = Number(dto.precioVenta);
+      if ((dto as any).vendedor !== undefined || producto.vendedor != null) {
+        venta.vendedor = (dto as any).vendedor !== undefined
+          ? normalizeSellerLabel((dto as any).vendedor)
+          : normalizeSellerLabel(venta.vendedor) ?? sellerFromProducto(producto, null);
+      }
+      if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;
+      venta.ganancia = 0;
+      venta.porcentajeGanancia = 0;
+      const saved = await this.ventaRepo.save(venta);
+      await this.syncSaleIncome(saved, dto.incomeBank);
+      await this.cache.del?.('productos:stats').catch?.(() => {});
+      await this.cache.del?.('productos:resumen').catch?.(() => {});
+      return saved;
+    }
     const resolvedSeller =
       (dto as any).vendedor !== undefined
         ? normalizeSellerLabel((dto as any).vendedor)
@@ -1204,6 +1196,7 @@ export class VentaService {
     const saved = await this.ventaRepo.save(venta);
     await this.syncSaleIncome(saved, dto.incomeBank);
     await this.cache.del?.('productos:stats').catch?.(() => {});
+    await this.cache.del?.('productos:resumen').catch?.(() => {});
     return saved;
   }
 
@@ -1234,6 +1227,7 @@ export class VentaService {
     }
     await this.ventaRepo.remove(venta);
     await this.cache.del?.('productos:stats').catch?.(() => {});
+    await this.cache.del?.('productos:resumen').catch?.(() => {});
   }
 }
 

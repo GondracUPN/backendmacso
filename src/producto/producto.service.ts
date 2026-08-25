@@ -987,22 +987,29 @@ export class ProductoService {
   async stats() {
     // vendidos y sumas de venta/ganancia
     const [vendidos, sumVentaRaw, sumGanRaw] = await Promise.all([
-      this.ventaRepo.count(),
+      this.ventaRepo
+        .createQueryBuilder('v')
+        .innerJoin('v.producto', 'p')
+        .where("LOWER(p.tipo) <> 'accesorios'")
+        .getCount(),
       this.ventaRepo
         .createQueryBuilder('v')
         .select('COALESCE(SUM(v.precioVenta),0)', 's')
         .getRawOne(),
       this.ventaRepo
         .createQueryBuilder('v')
+        .innerJoin('v.producto', 'p')
         .select('COALESCE(SUM(v.ganancia),0)', 's')
+        .where("LOWER(p.tipo) <> 'accesorios'")
         .getRawOne(),
     ]);
 
     // disponibles: tracking recogido o fechaRecogido y sin ventas
     const disponibles = await this.productoRepo
       .createQueryBuilder('p')
-      .where('EXISTS (SELECT 1 FROM tracking t WHERE t.productoId = p.id AND (t.estado = :rec OR t.fechaRecogido IS NOT NULL))', { rec: 'recogido' })
-      .andWhere('NOT EXISTS (SELECT 1 FROM venta v WHERE v.productoId = p.id)')
+      .where("LOWER(p.tipo) <> 'accesorios'")
+      .andWhere('EXISTS (SELECT 1 FROM tracking t WHERE t."productoId" = p.id AND (t.estado = :rec OR t."fechaRecogido" IS NOT NULL))', { rec: 'recogido' })
+      .andWhere('NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)')
       .getCount();
 
     const totalVentas = Number((sumVentaRaw as any)?.s ?? 0);
@@ -1047,7 +1054,9 @@ export class ProductoService {
         .getRawOne(),
       this.ventaRepo
         .createQueryBuilder('v')
+        .innerJoin('v.producto', 'p')
         .select('COALESCE(SUM(v.ganancia),0)', 's')
+        .where("LOWER(p.tipo) <> 'accesorios'")
         .getRawOne(),
     ]);
 
@@ -1074,6 +1083,7 @@ export class ProductoService {
     };
 
     for (const raw of productos) {
+      if (String(raw.tipo || '').trim().toLowerCase() === 'accesorios') continue;
       const p = this.applyProrrateadoView(raw);
       total += 1;
       const estado = latestEstado(p);
@@ -1098,7 +1108,7 @@ export class ProductoService {
       enCamino,
       enEshopex,
       disponible,
-      vendido: vendidosSet.size,
+      vendido: productos.filter((p) => String(p.tipo || '').trim().toLowerCase() !== 'accesorios' && vendidosSet.has(p.id)).length,
       totalGastadoUsd,
       totalEnvioPen,
       totalDecUsd,

@@ -22,6 +22,7 @@ import { EbayPawn } from './ebay-pawn.entity';
 import { EbaySearchItem } from './ebay-search-item.entity';
 import { EbaySearchState } from './ebay-search-state.entity';
 import { EbayViewedItem } from './ebay-viewed-item.entity';
+import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catalog-sales-integration.module';
 
 @Module({
   imports: [
@@ -78,6 +79,7 @@ import { EbayViewedItem } from './ebay-viewed-item.entity';
     SickwModule,
     CatalogModule,
     InventarioModule,
+    CatalogSalesIntegrationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

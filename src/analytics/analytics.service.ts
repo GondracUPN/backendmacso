@@ -547,6 +547,7 @@ export class AnalyticsService {
     // Map rápido para acceder al producto completo (incluye tracking)
     const productoById = new Map<number, Producto>();
     for (const p of productos) productoById.set(p.id, p);
+    const isAccessory = (p: Producto) => String(p.tipo || '').trim().toLowerCase() === 'accesorios';
 
     // Filtra ventas por filtros de producto (gama/proc/pantalla/tipo)
     ventas = ventas.filter((v) => {
@@ -556,6 +557,12 @@ export class AnalyticsService {
 
     // Ensure ganancia is available for analytics (fallback to precioVenta - costoTotal)
     for (const v of ventas) {
+      const saleProduct = v.producto || productoById.get(v.productoId);
+      if (saleProduct && isAccessory(saleProduct as Producto)) {
+        v.ganancia = 0 as any;
+        v.porcentajeGanancia = 0 as any;
+        continue;
+      }
       const curr = Number(v.ganancia);
       if (v.ganancia != null && isFinite(curr)) continue;
       const costoTotal =
@@ -577,7 +584,6 @@ export class AnalyticsService {
     const ventasByProducto = groupBy(ventas, (v) => v.productoId);
     // Para stock activo, necesitamos saber todos los productos vendidos históricamente
     const vendidosHistoricos = new Set<number>(vendidosHistoricosIds);
-    const isAccessory = (p: Producto) => String(p.tipo || '').trim().toLowerCase() === 'accesorios';
     const purchasedUnits = (p: Producto) => isAccessory(p) ? Math.max(0, Number((p as any).stockInicial || 0)) : 1;
     const remainingUnits = (p: Producto) => isAccessory(p)
       ? Math.max(0, Number((p as any).stockActual || 0))
@@ -586,6 +592,7 @@ export class AnalyticsService {
 
     // Filtered products view for inventory calculations
     const productosFiltered = productos.filter((p) => {
+      if (isAccessory(p)) return false;
       if (!matchesProductFilters(p)) return false;
       if (sellerTarget && !matchesProductoSeller(p, sellerTarget)) return false;
       if (dFromCompra && (!p.valor || new Date(p.valor.fechaCompra) < dFromCompra)) return false;
@@ -605,6 +612,7 @@ export class AnalyticsService {
       return true;
     });
     const productosHistoricosComprados = productos.filter((p) => {
+      if (isAccessory(p)) return false;
       if (!matchesProductFilters(p)) return false;
       if (sellerTarget && !matchesProductoSeller(p, sellerTarget)) return false;
       if (estadoTracking) {
@@ -1110,6 +1118,7 @@ export class AnalyticsService {
     // Stock actual independiente del filtro de ventas (productos sin ninguna venta histórica)
     const stockActual = productos.filter(
       (p) =>
+        !isAccessory(p) &&
         remainingUnits(p) > 0 &&
         matchesProductFilters(p) &&
         (!sellerTarget || matchesProductoSeller(p, sellerTarget)),

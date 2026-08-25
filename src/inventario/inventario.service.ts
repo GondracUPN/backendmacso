@@ -45,20 +45,19 @@ export class InventarioService {
       .leftJoinAndSelect('p.valor', 'valor')
       .leftJoinAndSelect('p.tracking', 'tracking')
       .where(
-        `EXISTS (
-          SELECT 1 FROM tracking t
-          WHERE t."productoId" = p.id
-            AND (t.estado = :recogido OR t."fechaRecogido" IS NOT NULL)
-        )`,
+        `(LOWER(p.tipo) = 'accesorios' OR (
+          EXISTS (
+            SELECT 1 FROM tracking t
+            WHERE t."productoId" = p.id
+              AND (t.estado = :recogido OR t."fechaRecogido" IS NOT NULL)
+          )
+          AND NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM venta_adelanto va
+            WHERE va."productoId" = p.id AND va."completadoAt" IS NULL
+          )
+        ))`,
         { recogido: 'recogido' },
-      )
-      .andWhere(`(LOWER(p.tipo) <> 'accesorios' OR p."stockActual" > 0)`)
-      .andWhere(`(LOWER(p.tipo) = 'accesorios' OR NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id))`)
-      .andWhere(
-        `NOT EXISTS (
-          SELECT 1 FROM venta_adelanto va
-          WHERE va."productoId" = p.id AND va."completadoAt" IS NULL
-        )`,
       )
       .orderBy('p.id', 'DESC')
       .getMany();
