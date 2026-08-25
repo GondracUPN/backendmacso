@@ -80,13 +80,25 @@ export class CatalogSalesIntegrationService {
     let status = 'pending_confirmation';
     if (eventType === 'sale.cancelled') {
       const original = await this.dataSource.query(
-        `SELECT "remoteVentaId" FROM "${schema}"."catalog_sale_events"
+        `SELECT "id", "status", "remoteVentaId" FROM "${schema}"."catalog_sale_events"
          WHERE "catalogSaleId" = $1 AND "eventType" = 'sale.created'
          ORDER BY "createdAt" DESC LIMIT 1`,
         [catalogSaleId],
       );
       remoteVentaId = original[0]?.remoteVentaId ? Number(original[0].remoteVentaId) : null;
-      status = 'pending_cancellation_confirmation';
+      if (remoteVentaId) {
+        status = 'pending_cancellation_confirmation';
+      } else {
+        status = 'cancelled_without_confirmation';
+        if (original[0]?.id) {
+          await this.dataSource.query(
+            `UPDATE "${schema}"."catalog_sale_events"
+             SET "status" = 'superseded_by_cancellation', "updatedAt" = now()
+             WHERE "id" = $1`,
+            [original[0].id],
+          );
+        }
+      }
     }
 
     await this.dataSource.query(
@@ -101,6 +113,33 @@ export class CatalogSalesIntegrationService {
   async pending() {
     await this.ensureTable();
     const schema = process.env.DB_SCHEMA || 'public';
+    await this.dataSource.transaction(async (manager) => {
+      await manager.query(
+        `UPDATE "${schema}"."catalog_sale_events" original
+         SET "status" = 'superseded_by_cancellation', "updatedAt" = now()
+         WHERE original."eventType" = 'sale.created'
+           AND original."remoteVentaId" IS NULL
+           AND original."status" IN ('pending_confirmation', 'failed')
+           AND EXISTS (
+             SELECT 1 FROM "${schema}"."catalog_sale_events" cancellation
+             WHERE cancellation."catalogSaleId" = original."catalogSaleId"
+               AND cancellation."eventType" = 'sale.cancelled'
+               AND cancellation."status" = 'pending_cancellation_confirmation'
+           )`,
+      );
+      await manager.query(
+        `UPDATE "${schema}"."catalog_sale_events" cancellation
+         SET "status" = 'cancelled_without_confirmation', "updatedAt" = now()
+         WHERE cancellation."eventType" = 'sale.cancelled'
+           AND cancellation."status" = 'pending_cancellation_confirmation'
+           AND NOT EXISTS (
+             SELECT 1 FROM "${schema}"."catalog_sale_events" original
+             WHERE original."catalogSaleId" = cancellation."catalogSaleId"
+               AND original."eventType" = 'sale.created'
+               AND original."remoteVentaId" IS NOT NULL
+           )`,
+      );
+    });
     return this.dataSource.query(
       `SELECT * FROM "${schema}"."catalog_sale_events"
        WHERE "status" IN ('pending_confirmation', 'pending_cancellation_confirmation', 'failed')
