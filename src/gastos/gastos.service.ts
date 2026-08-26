@@ -402,6 +402,24 @@ export class GastosService {
   async remove(userId: number, role: Role, id: number) {
     const g = await this.getOrThrow(id);
     if (role !== 'admin' && g.userId !== userId) throw new ForbiddenException('No autorizado');
+    if (g.concepto === 'gastos_recurrentes' || g.concepto === 'gastos_mensuales') {
+      const query = this.schedulesRepo
+        .createQueryBuilder('schedule')
+        .where('schedule.userId = :targetUserId', { targetUserId: g.userId })
+        .andWhere('schedule.tipo = :tipo', { tipo: 'recurrente' })
+        .andWhere('schedule.metodoPago = :metodoPago', { metodoPago: g.metodoPago })
+        .andWhere('schedule.moneda = :moneda', { moneda: g.moneda })
+        .andWhere('schedule.monto = :monto', { monto: Number(g.monto).toFixed(2) })
+        .andWhere('schedule.lastDate = :lastDate', { lastDate: g.fecha });
+
+      if (g.metodoPago === 'credito') {
+        if (g.tarjeta) query.andWhere('schedule.tarjeta = :tarjeta', { tarjeta: g.tarjeta });
+        else query.andWhere('schedule.tarjeta IS NULL');
+      }
+
+      const schedules = await query.getMany();
+      if (schedules.length) await this.schedulesRepo.remove(schedules);
+    }
     await this.repo.remove(g);
     return { ok: true };
   }
