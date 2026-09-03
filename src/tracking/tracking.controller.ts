@@ -141,15 +141,23 @@ const parseEshopexCargaTable = (html: string, account: string): EshopexCargaRow[
       const guia = clean[0] || '';
       const guiaDigits = guia.replace(/\D+/g, '');
       if (guiaDigits.length < 6) continue;
+      // Las cargas "En Miami Sin/Procesando Factura" incluyen columnas visuales
+      // adicionales alrededor del estado y la factura. La fecha de recepcion es
+      // el ancla estable: tienda, descripcion, peso y valor siempre la preceden.
+      const dateIndex = clean.findIndex((cell) => (
+        /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[\s/.-]+\d{1,2}[\s,/.-]+\d{4}$/i.test(cell)
+        || /^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(cell)
+      ));
+      const commonStart = dateIndex >= 6 ? dateIndex - 4 : 2;
       items.push({
         guia,
         estado: clean[1] || '',
-        tienda: clean[2] || '',
-        descripcion: clean[3] || '',
-        peso: clean[4] || '',
-        valor: clean[5] || '',
-        fechaRecepcion: clean[6] || '',
-        factura: clean[7] || '',
+        tienda: clean[commonStart] || '',
+        descripcion: clean[commonStart + 1] || '',
+        peso: clean[commonStart + 2] || '',
+        valor: clean[commonStart + 3] || '',
+        fechaRecepcion: dateIndex >= 0 ? (clean[dateIndex] || '') : (clean[commonStart + 4] || ''),
+        factura: dateIndex >= 0 ? (clean[dateIndex + 1] || '') : (clean[commonStart + 5] || ''),
         fotos: [],
         account,
       });
