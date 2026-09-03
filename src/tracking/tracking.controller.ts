@@ -124,35 +124,36 @@ const normalizeCell = (input: string) => decodeHtml(stripTags(input)).replace(/\
 
 const parseEshopexCargaTable = (html: string, account: string): EshopexCargaRow[] => {
   const tables = html.match(/<table[\s\S]*?<\/table>/gi) || [];
-  const target = tables.find((t) => /No\.\s*de\s*Gu/i.test(t) || /Fecha\s*Recepci/i.test(t));
-  if (!target) return [];
-
-  const rows = target.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  const targets = tables.filter((table) => /No\.\s*de\s*Gu/i.test(table) || /Fecha\s*Recepci/i.test(table));
   const items: EshopexCargaRow[] = [];
-  for (const row of rows) {
-    const cells: string[] = [];
-    const cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
-    let match;
-    while ((match = cellRe.exec(row)) !== null) {
-      cells.push(match[1] || '');
+  for (const target of targets) {
+    const rows = target.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+    for (const row of rows) {
+      const cells: string[] = [];
+      const cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+      let match;
+      while ((match = cellRe.exec(row)) !== null) {
+        cells.push(match[1] || '');
+      }
+      if (!cells.length) continue;
+      const clean = cells.map((c) => normalizeCell(c));
+      if (clean.some((c) => /No\.\s*de\s*Gu/i.test(c))) continue;
+      const guia = clean[0] || '';
+      const guiaDigits = guia.replace(/\D+/g, '');
+      if (guiaDigits.length < 6) continue;
+      items.push({
+        guia,
+        estado: clean[1] || '',
+        tienda: clean[2] || '',
+        descripcion: clean[3] || '',
+        peso: clean[4] || '',
+        valor: clean[5] || '',
+        fechaRecepcion: clean[6] || '',
+        factura: clean[7] || '',
+        fotos: [],
+        account,
+      });
     }
-    if (!cells.length) continue;
-    const clean = cells.map((c) => normalizeCell(c));
-    if (clean.some((c) => /No\.\s*de\s*Gu/i.test(c))) continue;
-    const guia = clean[0] || '';
-    if (!guia) continue;
-    items.push({
-      guia,
-      estado: clean[1] || '',
-      tienda: clean[2] || '',
-      descripcion: clean[3] || '',
-      peso: clean[4] || '',
-      valor: clean[5] || '',
-      fechaRecepcion: clean[6] || '',
-      factura: clean[7] || '',
-      fotos: [],
-      account,
-    });
   }
   return items;
 };
