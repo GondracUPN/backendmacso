@@ -7,6 +7,7 @@ import {
   Patch,
   Param,
   Body,
+  Query,
   ParseIntPipe,
   NotFoundException,
   BadRequestException,
@@ -156,6 +157,11 @@ const parseEshopexCargaTable = (html: string, account: string): EshopexCargaRow[
   return items;
 };
 
+const hasEshopexCargaTable = (html: string): boolean => {
+  const tables = html.match(/<table[\s\S]*?<\/table>/gi) || [];
+  return tables.some((table) => /No\.\s*de\s*Gu/i.test(table) || /Fecha\s*Recepci/i.test(table));
+};
+
 const readEnvVarFromFile = (key: string): { value: string | null; source: string | null } => {
   const candidates = [
     join(process.cwd(), 'backend', '.env'),
@@ -296,7 +302,7 @@ const fetchEshopexCarga = async (account: EshopexAccount): Promise<EshopexCargaR
     loginUrl: string,
     dashboardUrl: string,
     rastreoUrls: string[],
-  ): Promise<{ rows: EshopexCargaRow[]; rastreoLoc?: string | null; rastreoStatus: number }> => {
+  ): Promise<{ rows: EshopexCargaRow[]; loaded: boolean; rastreoLoc?: string | null; rastreoStatus: number }> => {
     const jar = new Map<string, string>();
     jar.set('userInfo', 'language=SP&country=PE');
     jar.set('Pais%5Fselected', 'PE');
@@ -357,7 +363,7 @@ const fetchEshopexCarga = async (account: EshopexAccount): Promise<EshopexCargaR
     const loginFailed = /ContentPlaceHolder1_txtClave/i.test(postHtml);
     if (loginFailed) {
       console.log('[Eshopex] Login failed for', account.email);
-      return { rows: [], rastreoStatus: 0 };
+      return { rows: [], loaded: false, rastreoStatus: 0 };
     }
 
     if (dashboardUrl) {
@@ -381,11 +387,11 @@ const fetchEshopexCarga = async (account: EshopexAccount): Promise<EshopexCargaR
       }
       const rows = parseEshopexCargaTable(rastreoHtml, account.email);
       console.log('[Eshopex] Rows parsed for', account.email, rows.length);
-      if (rows.length) {
-        return { rows, rastreoLoc, rastreoStatus: rastreoRes.status };
+      if (rows.length || hasEshopexCargaTable(rastreoHtml)) {
+        return { rows, loaded: true, rastreoLoc, rastreoStatus: rastreoRes.status };
       }
     }
-    return { rows: [], rastreoLoc: null, rastreoStatus: 0 };
+    return { rows: [], loaded: false, rastreoLoc: null, rastreoStatus: 0 };
   };
 
   const peFlow = {
@@ -415,7 +421,9 @@ const fetchEshopexCarga = async (account: EshopexAccount): Promise<EshopexCargaR
   }
 
   const second = await runFlow(usFlow.baseUrl, usFlow.loginUrl, usFlow.dashboardUrl, usFlow.rastreoUrls);
-  return second.rows;
+  if (second.loaded) return second.rows;
+  if (first.loaded) return first.rows;
+  throw new Error(`Eshopex no devolvio una pagina de carga valida para ${account.email}`);
 };
 
 const toAbsoluteUrl = (loc: string, base: string) => {
@@ -630,8 +638,9 @@ export class TrackingController {
   }
 
   @Get('eshopex-carga')
-  async getEshopexCarga() {
-    if (eshopexCargaCache && Date.now() - eshopexCargaCache.ts < ESHOPEX_CARGA_CACHE_TTL_MS) {
+  async getEshopexCarga(@Query('refresh') refresh?: string) {
+    const forceRefresh = ['1', 'true', 'yes'].includes(String(refresh || '').trim().toLowerCase());
+    if (!forceRefresh && eshopexCargaCache && Date.now() - eshopexCargaCache.ts < ESHOPEX_CARGA_CACHE_TTL_MS) {
       setEshopexCargaProgress({
         status: 'done',
         finishedAt: Date.now(),
@@ -686,6 +695,7 @@ export class TrackingController {
       });
 
       const rows: EshopexCargaRow[] = [];
+      const failedAccounts = new Set<string>();
       try {
         for (let i = 0; i < accounts.length; i += 1) {
           const account = accounts[i];
@@ -717,6 +727,7 @@ export class TrackingController {
             });
           } catch (err) {
             console.warn('[Eshopex] Error en cuenta', account.email, err);
+            failedAccounts.add(account.email.trim().toLowerCase());
             const completed = i + 1;
             setEshopexCargaProgress({
               status: 'running',
@@ -729,6 +740,20 @@ export class TrackingController {
               error: null,
             });
           }
+        }
+
+        // Un fallo temporal de una cuenta no debe borrar sus pendientes conocidos.
+        // Conservamos solo los datos anteriores de las cuentas que no respondieron;
+        // las cuentas consultadas correctamente (incluso si ahora vienen vacias) si se actualizan.
+        if (failedAccounts.size && eshopexCargaCache?.data?.length) {
+          for (const cachedRow of eshopexCargaCache.data) {
+            const cachedAccount = String(cachedRow?.account || '').trim().toLowerCase();
+            if (failedAccounts.has(cachedAccount)) rows.push(cachedRow);
+          }
+        }
+
+        if (failedAccounts.size === accounts.length && !eshopexCargaCache) {
+          throw new Error('No se pudo consultar ninguna cuenta de Eshopex.');
         }
 
         const unique = new Map<string, EshopexCargaRow>();
@@ -754,7 +779,9 @@ export class TrackingController {
           currentAccount: '',
           currentCasillero: '',
           finishedAt: Date.now(),
-          message: `Busqueda finalizada. ${data.length} guias encontradas.`,
+          message: failedAccounts.size
+            ? `Busqueda parcial. ${data.length} guias; ${failedAccounts.size} casillero(s) conservaron sus ultimos datos.`
+            : `Busqueda finalizada. ${data.length} guias encontradas.`,
           error: null,
         });
         return data;

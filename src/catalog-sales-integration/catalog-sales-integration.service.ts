@@ -179,11 +179,25 @@ export class CatalogSalesIntegrationService {
            )`,
       );
     });
-    return this.dataSource.query(
+    const events = await this.dataSource.query(
       `SELECT * FROM "${schema}"."catalog_sale_events"
        WHERE "status" IN ('pending_confirmation', 'pending_cancellation_confirmation', 'failed')
        ORDER BY "createdAt" DESC`,
     );
+    return Promise.all(events.map(async (event: any) => {
+      const codeMatch = String(event.sku || '').match(/(\d+)(?!.*\d)/);
+      const code = Number(codeMatch?.[1]);
+      if (!Number.isInteger(code) || code <= 0) return { ...event, costUsd: null };
+
+      const product = await this.productoRepo.findOne({
+        where: [{ id: code }, { codigoInventario: code }],
+      });
+      const costUsd = Number(product?.valor?.valorProducto);
+      return {
+        ...event,
+        costUsd: Number.isFinite(costUsd) ? costUsd : null,
+      };
+    }));
   }
 
   private async getEvent(id: string) {
