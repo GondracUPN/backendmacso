@@ -68,16 +68,38 @@ export class CatalogSalesIntegrationService {
     if (Number.isNaN(soldAt.getTime())) {
       throw new BadRequestException('Fecha invalida');
     }
-    if (eventType === 'sale.created' && (!Number.isFinite(exchangeRate) || exchangeRate <= 0)) {
-      throw new BadRequestException('Tipo de cambio invalido');
-    }
-
     const schema = process.env.DB_SCHEMA || 'public';
     const existing = await this.dataSource.query(
       `SELECT * FROM "${schema}"."catalog_sale_events" WHERE "eventId" = $1 LIMIT 1`,
       [eventId],
     );
-    if (existing[0]) return { ok: true, status: existing[0].status, duplicate: true };
+    if (existing[0]) {
+      const stored = existing[0];
+      if (eventType === 'sale.created' && stored.status === 'confirmed') {
+        const remoteSaleId = Number(stored.remoteVentaId);
+        const remoteSale = Number.isInteger(remoteSaleId) && remoteSaleId > 0
+          ? await this.dataSource.query(
+              `SELECT 1 FROM "${schema}"."venta" WHERE "id" = $1 LIMIT 1`,
+              [remoteSaleId],
+            )
+          : [];
+        // Puede ocurrir si se confirmo una reventa antes que su anulacion
+        // anterior: la anulacion borra luego la misma venta remota y deja el
+        // evento nuevo marcado falsamente como confirmado.
+        if (!remoteSale[0]) {
+          await this.dataSource.query(
+            `UPDATE "${schema}"."catalog_sale_events"
+                SET "status" = 'pending_confirmation', "remoteVentaId" = NULL,
+                    "error" = NULL, "confirmedAt" = NULL, "payload" = $2::jsonb,
+                    "updatedAt" = now()
+              WHERE "id" = $1`,
+            [stored.id, JSON.stringify(payload)],
+          );
+          return { ok: true, status: 'pending_confirmation', duplicate: true, reopened: true };
+        }
+      }
+      return { ok: true, status: stored.status, duplicate: true };
+    }
 
     let remoteVentaId: number | null = null;
     let status = 'pending_confirmation';
@@ -161,13 +183,45 @@ export class CatalogSalesIntegrationService {
     return rows[0];
   }
 
-  async confirm(id: string) {
+  private async findPendingCancellationBefore(schema: string, event: any) {
+    const rows = await this.dataSource.query(
+      `SELECT "id", "remoteVentaId"
+         FROM "${schema}"."catalog_sale_events"
+        WHERE "eventType" = 'sale.cancelled'
+          AND LOWER(TRIM("sku")) = LOWER(TRIM($1))
+          AND "createdAt" < $2
+          AND "status" IN ('pending_cancellation_confirmation', 'failed')
+          AND "remoteVentaId" IS NOT NULL
+        ORDER BY "createdAt" DESC
+        LIMIT 1`,
+      [event.sku, event.createdAt],
+    );
+    return rows[0] || null;
+  }
+
+  private async supersedePendingCancellationsBefore(schema: string, event: any) {
+    await this.dataSource.query(
+      `UPDATE "${schema}"."catalog_sale_events"
+          SET "status" = 'superseded_by_resale', "error" = NULL, "updatedAt" = now()
+        WHERE "eventType" = 'sale.cancelled'
+          AND LOWER(TRIM("sku")) = LOWER(TRIM($1))
+          AND "createdAt" < $2
+          AND "status" IN ('pending_cancellation_confirmation', 'failed')`,
+      [event.sku, event.createdAt],
+    );
+  }
+
+  async confirm(id: string, submittedExchangeRate?: unknown) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
     if (['confirmed', 'cancelled'].includes(event.status)) return event;
 
     try {
       if (event.eventType === 'sale.created') {
+        const exchangeRate = Number(submittedExchangeRate);
+        if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
+          throw new BadRequestException('Ingresa un tipo de cambio valido');
+        }
         const codeMatch = String(event.sku).match(/(\d+)(?!.*\d)/);
         const code = Number(codeMatch?.[1]);
         if (!Number.isInteger(code) || code <= 0) throw new BadRequestException(`SKU ${event.sku} no reconocido`);
@@ -175,18 +229,37 @@ export class CatalogSalesIntegrationService {
           where: [{ id: code }, { codigoInventario: code }],
         });
         if (!product) throw new NotFoundException(`No existe el producto compartido ${event.sku}`);
-        const sale = await this.ventaService.create({
+        const saleData = {
           productoId: product.id,
-          tipoCambio: Number(event.exchangeRate),
+          tipoCambio: exchangeRate,
           fechaVenta: new Date(event.soldAt).toISOString().slice(0, 10),
           precioVenta: Number(event.amount),
           vendedor: 'Catalogo',
-        });
+        };
+        const pendingCancellation = await this.findPendingCancellationBefore(schema, event);
+        let sale: any;
+        if (pendingCancellation?.remoteVentaId) {
+          try {
+            sale = await this.ventaService.update(
+              Number(pendingCancellation.remoteVentaId),
+              saleData,
+            );
+          } catch (error) {
+            // Si la anulacion alcanzo a borrar la venta pero no actualizo su
+            // evento, recreamos la venta para dejar el estado final correcto.
+            if (!(error instanceof NotFoundException)) throw error;
+            sale = await this.ventaService.create(saleData);
+          }
+          await this.supersedePendingCancellationsBefore(schema, event);
+        } else {
+          sale = await this.ventaService.create(saleData);
+        }
         await this.dataSource.query(
           `UPDATE "${schema}"."catalog_sale_events"
-           SET "status" = 'confirmed', "remoteVentaId" = $2, "error" = NULL, "confirmedAt" = now(), "updatedAt" = now()
+           SET "status" = 'confirmed', "remoteVentaId" = $2, "exchangeRate" = $3,
+               "error" = NULL, "confirmedAt" = now(), "updatedAt" = now()
            WHERE "id" = $1`,
-          [id, sale.id],
+          [id, sale.id, exchangeRate],
         );
       } else {
         let ventaId = event.remoteVentaId ? Number(event.remoteVentaId) : null;
