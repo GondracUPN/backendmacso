@@ -70,6 +70,35 @@ describe('CatalogSalesIntegrationService.confirm', () => {
 });
 
 describe('CatalogSalesIntegrationService.receive', () => {
+  it('vuelve a poner como pendiente una venta rechazada que se reenvia', async () => {
+    const dataSource = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'stored-event',
+          status: 'rejected',
+          exchangeRate: 0,
+        }])
+        .mockResolvedValueOnce([]),
+    };
+    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any);
+    jest.spyOn(service, 'ensureTable').mockResolvedValue();
+
+    const result = await service.receive('delivery-event', {
+      eventType: 'sale.created',
+      catalogSaleId: 'catalog-sale',
+      sku: 'MS-366',
+      amount: 2100,
+      soldAt: '2026-08-24T17:00:00.000Z',
+    });
+
+    expect(result).toMatchObject({ status: 'pending_confirmation', reopened: true });
+    expect(dataSource.query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("'pending_confirmation'"),
+      expect.arrayContaining(['stored-event']),
+    );
+  });
+
   it('reabre una venta confirmada si su venta remota fue eliminada despues', async () => {
     const dataSource = {
       query: jest.fn()
@@ -112,6 +141,33 @@ describe('CatalogSalesIntegrationService.receive', () => {
       3,
       expect.stringContaining("'pending_confirmation'"),
       expect.arrayContaining(['stored-event']),
+    );
+  });
+});
+
+describe('CatalogSalesIntegrationService.setExchangeRate', () => {
+  it('guarda el tipo de cambio sin confirmar la venta', async () => {
+    const event = {
+      id: 'event-id',
+      eventType: 'sale.created',
+      status: 'pending_confirmation',
+      payload: { sku: 'MS-366', exchangeRate: 0 },
+    };
+    const dataSource = {
+      query: jest.fn()
+        .mockResolvedValueOnce([event])
+        .mockResolvedValueOnce([]),
+    };
+    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any);
+    jest.spyOn(service, 'ensureTable').mockResolvedValue();
+
+    const result = await service.setExchangeRate(event.id, 3.75);
+
+    expect(result).toEqual({ ok: true, status: 'pending_confirmation', exchangeRate: 3.75 });
+    expect(dataSource.query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('"exchangeRate" = $2'),
+      expect.arrayContaining(['event-id', 3.75]),
     );
   });
 });

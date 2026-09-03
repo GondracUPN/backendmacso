@@ -23,6 +23,11 @@ export class CatalogSalesIntegrationController {
     return this.service.confirm(id, body?.exchangeRate);
   }
 
+  @Post(':id/exchange-rate')
+  setExchangeRate(@Param('id') id: string, @Body() body: any) {
+    return this.service.setExchangeRate(id, body?.exchangeRate);
+  }
+
   @Post(':id/reject')
   reject(@Param('id') id: string) {
     return this.service.reject(id);

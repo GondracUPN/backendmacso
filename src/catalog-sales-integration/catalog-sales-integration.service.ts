@@ -75,6 +75,20 @@ export class CatalogSalesIntegrationService {
     );
     if (existing[0]) {
       const stored = existing[0];
+      if (eventType === 'sale.created' && stored.status === 'rejected') {
+        await this.dataSource.query(
+          `UPDATE "${schema}"."catalog_sale_events"
+              SET "status" = 'pending_confirmation', "error" = NULL,
+                  "exchangeRate" = $2, "payload" = $3::jsonb, "updatedAt" = now()
+            WHERE "id" = $1`,
+          [
+            stored.id,
+            Number.isFinite(exchangeRate) ? exchangeRate : Number(stored.exchangeRate || 0),
+            JSON.stringify(payload),
+          ],
+        );
+        return { ok: true, status: 'pending_confirmation', duplicate: true, reopened: true };
+      }
       if (eventType === 'sale.created' && stored.status === 'confirmed') {
         const remoteSaleId = Number(stored.remoteVentaId);
         const remoteSale = Number.isInteger(remoteSaleId) && remoteSaleId > 0
@@ -302,6 +316,48 @@ export class CatalogSalesIntegrationService {
     return this.getEvent(id);
   }
 
+  async setExchangeRate(id: string, submittedExchangeRate?: unknown) {
+    const event = await this.getEvent(id);
+    if (event.eventType !== 'sale.created') {
+      throw new BadRequestException('El tipo de cambio solo corresponde a ventas');
+    }
+    const exchangeRate = Number(submittedExchangeRate);
+    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
+      throw new BadRequestException('Ingresa un tipo de cambio valido');
+    }
+    const schema = process.env.DB_SCHEMA || 'public';
+    await this.dataSource.query(
+      `UPDATE "${schema}"."catalog_sale_events"
+          SET "exchangeRate" = $2, "payload" = $3::jsonb, "error" = NULL, "updatedAt" = now()
+        WHERE "id" = $1`,
+      [id, exchangeRate, JSON.stringify({ ...(event.payload || {}), exchangeRate })],
+    );
+    return { ok: true, status: event.status, exchangeRate };
+  }
+
+  private async notifyCatalogStatus(eventId: string, status: string) {
+    const catalogSyncUrl = String(process.env.CATALOG_SYNC_URL || '').trim();
+    if (!catalogSyncUrl || !eventId) return false;
+    try {
+      const url = new URL(catalogSyncUrl);
+      url.pathname = '/admin/sales-sync/remote-status';
+      url.search = '';
+      url.hash = '';
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-macso-event-id': eventId,
+        },
+        body: JSON.stringify({ status }),
+        signal: AbortSignal.timeout(8000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async reject(id: string) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
@@ -309,6 +365,7 @@ export class CatalogSalesIntegrationService {
       `UPDATE "${schema}"."catalog_sale_events" SET "status" = 'rejected', "updatedAt" = now() WHERE "id" = $1`,
       [id],
     );
+    await this.notifyCatalogStatus(String(event.eventId || ''), 'rejected');
     return { ok: true, status: 'rejected', eventType: event.eventType };
   }
 }
