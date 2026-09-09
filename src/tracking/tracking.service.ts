@@ -6,6 +6,7 @@ import { Tracking, EstadoTracking } from './tracking.entity';
 import { CreateTrackingDto } from './dto/create-tracking.dto';
 import { UpdateTrackingDto } from './dto/update-tracking.dto';
 import { Producto } from '../producto/producto.entity';
+import { PersonalEshopex } from '../producto/personal-eshopex.entity';
 
 @Injectable()
 export class TrackingService {
@@ -14,6 +15,8 @@ export class TrackingService {
     private repo: Repository<Tracking>,
     @InjectRepository(Producto)
     private productoRepo: Repository<Producto>,
+    @InjectRepository(PersonalEshopex)
+    private personalEshopexRepo: Repository<PersonalEshopex>,
   ) {}
 
   /** Devuelve el tracking más reciente para un producto (si existieran varios) */
@@ -164,28 +167,45 @@ export class TrackingService {
        ORDER BY tracking_eshop, id DESC`,
       [codes],
     );
-    if (!rows.length) return;
-    const cases: string[] = [];
-    const params: any[] = [];
-    const ids: number[] = [];
-    rows.forEach((row) => {
-      const status = statusByCode[row.tracking_eshop];
-      if (!status) return;
-      const idParam = params.length + 1;
-      params.push(row.id);
-      const statusParam = params.length + 1;
-      params.push(status);
-      cases.push(`WHEN $${idParam} THEN $${statusParam}`);
-      ids.push(row.id);
+    if (rows.length) {
+      const cases: string[] = [];
+      const params: any[] = [];
+      const ids: number[] = [];
+      rows.forEach((row) => {
+        const status = statusByCode[row.tracking_eshop];
+        if (!status) return;
+        const idParam = params.length + 1;
+        params.push(row.id);
+        const statusParam = params.length + 1;
+        params.push(status);
+        cases.push(`WHEN $${idParam} THEN $${statusParam}`);
+        ids.push(row.id);
+      });
+      if (ids.length) {
+        const idsParams = ids.map((_, i) => `$${params.length + i + 1}`);
+        params.push(...ids);
+        await this.repo.query(
+          `UPDATE tracking
+           SET estatus_esho = CASE id ${cases.join(' ')} END
+           WHERE id IN (${idsParams.join(',')})
+             AND estatus_esho IS DISTINCT FROM CASE id ${cases.join(' ')} END`,
+          params,
+        );
+      }
+    }
+
+    // Los paquetes ya guardados como Personal no vuelven a pendientes, pero su
+    // estado visible debe avanzar cuando una busqueda manual trae un cambio.
+    const personalRows = await this.personalEshopexRepo.find({
+      where: codes.map((trackingEshop) => ({ trackingEshop })),
     });
-    if (!ids.length) return;
-    const idsParams = ids.map((_, i) => `$${params.length + i + 1}`);
-    params.push(...ids);
-    await this.repo.query(
-      `UPDATE tracking
-       SET estatus_esho = CASE id ${cases.join(' ')} END
-       WHERE id IN (${idsParams.join(',')})`,
-      params,
-    );
+    const changed = personalRows.filter((item) => {
+      const next = statusByCode[item.trackingEshop];
+      return next && next !== item.estatusEsho;
+    });
+    if (changed.length) {
+      changed.forEach((item) => { item.estatusEsho = statusByCode[item.trackingEshop]; });
+      await this.personalEshopexRepo.save(changed);
+    }
   }
 }
