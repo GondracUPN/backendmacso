@@ -39,8 +39,8 @@ export class CreateVentaDto {
   modalidad?: 'unidad' | 'mayor';
 
   @IsOptional()
-  @IsIn(['bcp', 'interbank', 'bbva'])
-  incomeBank?: 'bcp' | 'interbank' | 'bbva';
+  @IsIn(['bcp', 'interbank', 'bbva', 'bcp_amex', 'bcp_visa', 'visa_qore', 'io', 'saga'])
+  incomeBank?: 'bcp' | 'interbank' | 'bbva' | 'bcp_amex' | 'bcp_visa' | 'visa_qore' | 'io' | 'saga';
 
   @IsOptional()
   @IsString()

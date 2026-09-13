@@ -18,9 +18,14 @@ export class CatalogSalesIntegrationController {
     return this.service.pending();
   }
 
+  @Get(':id/payment-options')
+  paymentOptions(@Param('id') id: string) {
+    return this.service.paymentOptions(id);
+  }
+
   @Post(':id/confirm')
   confirm(@Param('id') id: string, @Body() body: any) {
-    return this.service.confirm(id, body?.exchangeRate);
+    return this.service.confirm(id, body?.exchangeRate, body?.incomeBank);
   }
 
   @Post(':id/exchange-rate')

@@ -4,9 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, ILike, Repository } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
 import { VentaService } from '../venta/venta.service';
+import { Card } from '../cards/card.entity';
+import { User } from '../auth/entities/user.entity';
 
 @Injectable()
 export class CatalogSalesIntegrationService {
@@ -15,8 +17,39 @@ export class CatalogSalesIntegrationService {
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(Producto) private readonly productoRepo: Repository<Producto>,
+    @InjectRepository(Card) private readonly cardRepo: Repository<Card>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly ventaService: VentaService,
   ) {}
+
+  private ownerFromSeller(value: unknown): 'gonzalo' | 'renato' | null {
+    const seller = String(value || '').trim().toLowerCase();
+    if (seller.includes('gonzalo')) return 'gonzalo';
+    if (seller.includes('renato')) return 'renato';
+    return null;
+  }
+
+  async paymentOptions(id: string) {
+    const event = await this.getEvent(id);
+    const codeMatch = String(event.sku || '').match(/(\d+)(?!.*\d)/);
+    const code = Number(codeMatch?.[1]);
+    const product = Number.isInteger(code) && code > 0
+      ? await this.productoRepo.findOne({ where: [{ id: code }, { codigoInventario: code }] })
+      : null;
+    const sellerText = String(product?.vendedor || '').trim();
+    const owners: Array<'gonzalo' | 'renato'> = sellerText.toLowerCase() === 'ambos'
+      ? ['gonzalo', 'renato']
+      : [this.ownerFromSeller(sellerText)].filter(Boolean) as Array<'gonzalo' | 'renato'>;
+    if (!owners.length) return { owner: null, seller: product?.vendedor || null, cards: [] };
+    const cardsByType = new Map<string, { tipo: string }>();
+    for (const owner of owners) {
+      let user = await this.userRepo.findOne({ where: { username: ILike(`%${owner}%`) } });
+      if (!user && owner === 'gonzalo') user = await this.userRepo.findOne({ where: { role: 'admin' } });
+      const cards = user?.id ? await this.cardRepo.find({ where: { userId: user.id }, order: { id: 'ASC' } }) : [];
+      cards.forEach((card) => cardsByType.set(card.tipo, { tipo: card.tipo }));
+    }
+    return { owner: owners.length === 2 ? 'ambos' : owners[0], seller: product?.vendedor || null, cards: [...cardsByType.values()] };
+  }
 
   async ensureTable() {
     if (!this.ready) {
@@ -239,7 +272,7 @@ export class CatalogSalesIntegrationService {
     );
   }
 
-  async confirm(id: string, submittedExchangeRate?: unknown) {
+  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
     if (['confirmed', 'cancelled'].includes(event.status)) return event;
@@ -257,12 +290,18 @@ export class CatalogSalesIntegrationService {
           where: [{ id: code }, { codigoInventario: code }],
         });
         if (!product) throw new NotFoundException(`No existe el producto compartido ${event.sku}`);
-        const saleData = {
+        const paymentOptions = await this.paymentOptions(id);
+        const incomeBank = String(submittedIncomeBank || '').trim();
+        if (!incomeBank || !paymentOptions.cards.some((card: any) => card.tipo === incomeBank)) {
+          throw new BadRequestException('Selecciona una tarjeta disponible del vendedor');
+        }
+        const saleData: any = {
           productoId: product.id,
           tipoCambio: exchangeRate,
           fechaVenta: new Date(event.soldAt).toISOString().slice(0, 10),
           precioVenta: Number(event.amount),
-          vendedor: 'Catalogo',
+          vendedor: product.vendedor || undefined,
+          incomeBank,
         };
         const pendingCancellation = await this.findPendingCancellationBefore(schema, event);
         let sale: any;

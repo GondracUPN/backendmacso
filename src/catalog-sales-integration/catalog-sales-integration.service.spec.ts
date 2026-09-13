@@ -25,7 +25,7 @@ describe('CatalogSalesIntegrationService.confirm', () => {
       }),
     };
     const productoRepo = {
-      findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366 })),
+      findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' })),
     };
     const ventaService = {
       update: options?.updateError
@@ -36,6 +36,8 @@ describe('CatalogSalesIntegrationService.confirm', () => {
     const service = new CatalogSalesIntegrationService(
       dataSource as any,
       productoRepo as any,
+      { find: jest.fn(async () => [{ tipo: 'bcp' }]) } as any,
+      { findOne: jest.fn(async () => ({ id: 1 })) } as any,
       ventaService as any,
     );
     return { service, dataSource, productoRepo, ventaService, queries };
@@ -44,7 +46,7 @@ describe('CatalogSalesIntegrationService.confirm', () => {
   it('reutiliza la venta existente y descarta la anulacion anterior al revender', async () => {
     const { service, ventaService, queries } = makeService();
 
-    await service.confirm(event.id, 3.75);
+    await service.confirm(event.id, 3.75, 'bcp');
 
     expect(ventaService.update).toHaveBeenCalledWith(91, expect.objectContaining({
       productoId: 366,
@@ -62,7 +64,7 @@ describe('CatalogSalesIntegrationService.confirm', () => {
       updateError: new NotFoundException('Venta 91 no encontrada'),
     });
 
-    await service.confirm(event.id, 3.75);
+    await service.confirm(event.id, 3.75, 'bcp');
 
     expect(ventaService.create).toHaveBeenCalledWith(expect.objectContaining({ productoId: 366 }));
     expect(queries.some(({ sql, params }) => sql.includes("'confirmed'") && params[1] === 92)).toBe(true);
@@ -80,7 +82,7 @@ describe('CatalogSalesIntegrationService.receive', () => {
         }])
         .mockResolvedValueOnce([]),
     };
-    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any);
+    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any, {} as any, {} as any);
     jest.spyOn(service, 'ensureTable').mockResolvedValue();
 
     const result = await service.receive('delivery-event', {
@@ -112,6 +114,8 @@ describe('CatalogSalesIntegrationService.receive', () => {
     };
     const service = new CatalogSalesIntegrationService(
       dataSource as any,
+      {} as any,
+      {} as any,
       {} as any,
       {} as any,
     );
@@ -158,7 +162,7 @@ describe('CatalogSalesIntegrationService.setExchangeRate', () => {
         .mockResolvedValueOnce([event])
         .mockResolvedValueOnce([]),
     };
-    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any);
+    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any, {} as any, {} as any);
     jest.spyOn(service, 'ensureTable').mockResolvedValue();
 
     const result = await service.setExchangeRate(event.id, 3.75);
