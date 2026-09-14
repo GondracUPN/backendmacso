@@ -110,6 +110,15 @@ export class TrackingService {
     return s.length ? s : null;
   }
 
+  private guideKeys(value?: string | null): string[] {
+    const raw = this.clean(value);
+    if (!raw) return [];
+    const compact = raw.toLowerCase().replace(/\s+/g, '');
+    const alphanumeric = raw.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const digits = raw.replace(/\D+/g, '');
+    return [...new Set([raw.toLowerCase(), compact, alphanumeric, digits.length >= 6 ? digits : ''].filter(Boolean))];
+  }
+
   // Propaga tracking a todos los productos del mismo grupo de envío
   private async propagateToGrupo(productoId: number, tracking: Partial<Tracking>): Promise<void> {
     if (!productoId) return;
@@ -160,19 +169,21 @@ export class TrackingService {
       .map((c) => this.clean(c))
       .filter(Boolean) as string[];
     if (!codes.length) return;
-    const rows: Array<{ id: number; tracking_eshop: string }> = await this.repo.query(
+    const incoming = new Map<string, string>();
+    codes.forEach((code) => this.guideKeys(code).forEach((key) => incoming.set(key, statusByCode[code])));
+    const allRows: Array<{ id: number; tracking_eshop: string }> = await this.repo.query(
       `SELECT DISTINCT ON (tracking_eshop) id, tracking_eshop
        FROM tracking
-       WHERE tracking_eshop = ANY($1)
+       WHERE tracking_eshop IS NOT NULL AND BTRIM(tracking_eshop) <> ''
        ORDER BY tracking_eshop, id DESC`,
-      [codes],
     );
+    const rows = allRows.filter((row) => this.guideKeys(row.tracking_eshop).some((key) => incoming.has(key)));
     if (rows.length) {
       const cases: string[] = [];
       const params: any[] = [];
       const ids: number[] = [];
       rows.forEach((row) => {
-        const status = statusByCode[row.tracking_eshop];
+        const status = this.guideKeys(row.tracking_eshop).map((key) => incoming.get(key)).find(Boolean);
         if (!status) return;
         const idParam = params.length + 1;
         params.push(row.id);
@@ -196,15 +207,17 @@ export class TrackingService {
 
     // Los paquetes ya guardados como Personal no vuelven a pendientes, pero su
     // estado visible debe avanzar cuando una busqueda manual trae un cambio.
-    const personalRows = await this.personalEshopexRepo.find({
-      where: codes.map((trackingEshop) => ({ trackingEshop })),
-    });
+    const personalRows = (await this.personalEshopexRepo.find()).filter((item) =>
+      this.guideKeys(item.trackingEshop).some((key) => incoming.has(key)),
+    );
     const changed = personalRows.filter((item) => {
-      const next = statusByCode[item.trackingEshop];
+      const next = this.guideKeys(item.trackingEshop).map((key) => incoming.get(key)).find(Boolean);
       return next && next !== item.estatusEsho;
     });
     if (changed.length) {
-      changed.forEach((item) => { item.estatusEsho = statusByCode[item.trackingEshop]; });
+      changed.forEach((item) => {
+        item.estatusEsho = this.guideKeys(item.trackingEshop).map((key) => incoming.get(key)).find(Boolean) || item.estatusEsho;
+      });
       await this.personalEshopexRepo.save(changed);
     }
   }

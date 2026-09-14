@@ -611,6 +611,7 @@ export class TrackingController {
     if (!cleanCode) throw new NotFoundException('Tracking Eshopex invalido');
     const cached = eshopexCache.get(cleanCode);
     if (cached && Date.now() - cached.ts < ESHOPEX_CACHE_TTL_MS) {
+      if (cached.data.status) await this.svc.updateEstatusEshoBulk({ [cleanCode]: cached.data.status });
       return cached.data;
     }
     const url = `https://usamybox.com/internacional/tracking_box.php?nrotrack=${encodeURIComponent(cleanCode)}`;
@@ -637,6 +638,7 @@ export class TrackingController {
       time: latest?.time || null,
       items,
     };
+    if (data.status) await this.svc.updateEstatusEshoBulk({ [cleanCode]: data.status });
     eshopexCache.set(cleanCode, { ts: Date.now(), data });
     return data;
   }
