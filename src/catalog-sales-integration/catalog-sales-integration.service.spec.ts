@@ -71,6 +71,32 @@ describe('CatalogSalesIntegrationService.confirm', () => {
   });
 });
 
+describe('CatalogSalesIntegrationService.paymentOptions', () => {
+  it('ofrece solo cuentas de debito para recibir una venta del catalogo', async () => {
+    const dataSource = { query: jest.fn(async () => [{ id: 'event-id', sku: 'MS-366' }]) };
+    const productoRepo = {
+      findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' })),
+    };
+    const cardRepo = { find: jest.fn(async () => [{ tipo: 'bcp_visa' }, { tipo: 'io' }]) };
+    const userRepo = { findOne: jest.fn(async () => ({ id: 1 })) };
+    const service = new CatalogSalesIntegrationService(
+      dataSource as any,
+      productoRepo as any,
+      cardRepo as any,
+      userRepo as any,
+      {} as any,
+    );
+    jest.spyOn(service, 'ensureTable').mockResolvedValue();
+
+    await expect(service.paymentOptions('event-id')).resolves.toEqual({
+      owner: 'gonzalo',
+      seller: 'Gonzalo',
+      cards: [{ tipo: 'bcp' }, { tipo: 'interbank' }, { tipo: 'bbva' }],
+    });
+    expect(cardRepo.find).not.toHaveBeenCalled();
+  });
+});
+
 describe('CatalogSalesIntegrationService.receive', () => {
   it('vuelve a poner como pendiente una venta rechazada que se reenvia', async () => {
     const dataSource = {

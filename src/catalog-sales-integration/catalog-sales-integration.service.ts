@@ -10,6 +10,12 @@ import { VentaService } from '../venta/venta.service';
 import { Card } from '../cards/card.entity';
 import { User } from '../auth/entities/user.entity';
 
+const DEBIT_PAYMENT_OPTIONS = [
+  { tipo: 'bcp' },
+  { tipo: 'interbank' },
+  { tipo: 'bbva' },
+];
+
 @Injectable()
 export class CatalogSalesIntegrationService {
   private ready: Promise<void> | null = null;
@@ -41,14 +47,17 @@ export class CatalogSalesIntegrationService {
       ? ['gonzalo', 'renato']
       : [this.ownerFromSeller(sellerText)].filter(Boolean) as Array<'gonzalo' | 'renato'>;
     if (!owners.length) return { owner: null, seller: product?.vendedor || null, cards: [] };
-    const cardsByType = new Map<string, { tipo: string }>();
     for (const owner of owners) {
       let user = await this.userRepo.findOne({ where: { username: ILike(`%${owner}%`) } });
       if (!user && owner === 'gonzalo') user = await this.userRepo.findOne({ where: { role: 'admin' } });
-      const cards = user?.id ? await this.cardRepo.find({ where: { userId: user.id }, order: { id: 'ASC' } }) : [];
-      cards.forEach((card) => cardsByType.set(card.tipo, { tipo: card.tipo }));
+      if (!user?.id) return { owner: null, seller: product?.vendedor || null, cards: [] };
     }
-    return { owner: owners.length === 2 ? 'ambos' : owners[0], seller: product?.vendedor || null, cards: [...cardsByType.values()] };
+    return {
+      owner: owners.length === 2 ? 'ambos' : owners[0],
+      seller: product?.vendedor || null,
+      // Los ingresos de ventas se registran como movimientos de debito.
+      cards: DEBIT_PAYMENT_OPTIONS,
+    };
   }
 
   async ensureTable() {
