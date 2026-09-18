@@ -119,6 +119,40 @@ export class TrackingService {
     return [...new Set([raw.toLowerCase(), compact, alphanumeric, digits.length >= 6 ? digits : ''].filter(Boolean))];
   }
 
+  /**
+   * Guias que todavia deben revisarse en el rastreo publico de Eshopex.
+   * Se toma solo el tracking mas reciente de cada producto para no revivir
+   * registros historicos que ya fueron reemplazados o recogidos.
+   */
+  async getPendingEshopexCodes(): Promise<string[]> {
+    const trackingRows = await this.repo.find({
+      select: ['id', 'productoId', 'trackingEshop', 'estado'],
+      order: { id: 'DESC' },
+    });
+    const seenProducts = new Set<number>();
+    const codes: string[] = [];
+    for (const row of trackingRows) {
+      if (seenProducts.has(row.productoId)) continue;
+      seenProducts.add(row.productoId);
+      const code = this.clean(row.trackingEshop);
+      if (row.estado !== 'recogido' && code) codes.push(code);
+    }
+
+    const personalRows = await this.personalEshopexRepo.find();
+    for (const item of personalRows) {
+      const code = this.clean(item.trackingEshop);
+      if (!item.recogido && code) codes.push(code);
+    }
+
+    const unique = new Map<string, string>();
+    for (const code of codes) {
+      const key = this.guideKeys(code).find((value) => /^\d{6,}$/.test(value))
+        || this.guideKeys(code)[0];
+      if (key && !unique.has(key)) unique.set(key, code);
+    }
+    return Array.from(unique.values());
+  }
+
   // Propaga tracking a todos los productos del mismo grupo de envío
   private async propagateToGrupo(productoId: number, tracking: Partial<Tracking>): Promise<void> {
     if (!productoId) return;
@@ -172,10 +206,13 @@ export class TrackingService {
     const incoming = new Map<string, string>();
     codes.forEach((code) => this.guideKeys(code).forEach((key) => incoming.set(key, statusByCode[code])));
     const allRows: Array<{ id: number; tracking_eshop: string }> = await this.repo.query(
-      `SELECT DISTINCT ON (tracking_eshop) id, tracking_eshop
-       FROM tracking
-       WHERE tracking_eshop IS NOT NULL AND BTRIM(tracking_eshop) <> ''
-       ORDER BY tracking_eshop, id DESC`,
+      `SELECT id, tracking_eshop
+       FROM (
+         SELECT DISTINCT ON ("productoId") id, "productoId", tracking_eshop
+         FROM tracking
+         ORDER BY "productoId", id DESC
+       ) latest
+       WHERE tracking_eshop IS NOT NULL AND BTRIM(tracking_eshop) <> ''`,
     );
     const rows = allRows.filter((row) => this.guideKeys(row.tracking_eshop).some((key) => incoming.has(key)));
     if (rows.length) {

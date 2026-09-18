@@ -122,6 +122,38 @@ const decodeHtml = (input: string) => {
 const stripTags = (input: string) => input.replace(/<[^>]*>/g, ' ');
 const normalizeCell = (input: string) => decodeHtml(stripTags(input)).replace(/\s+/g, ' ').trim();
 
+const fetchEshopexPublicStatus = async (code: string, useCache = true) => {
+  const cleanCode = String(code || '').trim();
+  const cached = eshopexCache.get(cleanCode);
+  if (useCache && cached && Date.now() - cached.ts < ESHOPEX_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  const url = `https://usamybox.com/internacional/tracking_box.php?nrotrack=${encodeURIComponent(cleanCode)}`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!res.ok) throw new Error(`No se pudo consultar el tracking ${cleanCode}`);
+  const html = await res.text();
+  const items: Array<{ date: string; time: string; status: string; detail: string }> = [];
+  const re = /<div class="tracking-item">[\s\S]*?<div class="tracking-date">([^<]+)<span>([^<]+)<\/span><\/div>[\s\S]*?<div class="tracking-content">([^<]+)<span>([^<]*)<\/span>/g;
+  let match;
+  while ((match = re.exec(html)) !== null) {
+    items.push({
+      date: (match[1] || '').trim(),
+      time: (match[2] || '').trim(),
+      status: (match[3] || '').trim(),
+      detail: (match[4] || '').trim(),
+    });
+  }
+  const latest = items[0] || null;
+  const data = {
+    status: latest?.status || null,
+    date: latest?.date || null,
+    time: latest?.time || null,
+    items,
+  };
+  eshopexCache.set(cleanCode, { ts: Date.now(), data });
+  return data;
+};
+
 const parseEshopexCargaTable = (html: string, account: string): EshopexCargaRow[] => {
   const tables = html.match(/<table[\s\S]*?<\/table>/gi) || [];
   const targets = tables.filter((table) => /No\.\s*de\s*Gu/i.test(table) || /Fecha\s*Recepci/i.test(table));
@@ -609,37 +641,13 @@ export class TrackingController {
   async getEshopexStatus(@Param('code') code: string) {
     const cleanCode = String(code || '').trim();
     if (!cleanCode) throw new NotFoundException('Tracking Eshopex invalido');
-    const cached = eshopexCache.get(cleanCode);
-    if (cached && Date.now() - cached.ts < ESHOPEX_CACHE_TTL_MS) {
-      if (cached.data.status) await this.svc.updateEstatusEshoBulk({ [cleanCode]: cached.data.status });
-      return cached.data;
+    let data;
+    try {
+      data = await fetchEshopexPublicStatus(cleanCode, true);
+    } catch {
+      throw new NotFoundException('No se pudo consultar el tracking');
     }
-    const url = `https://usamybox.com/internacional/tracking_box.php?nrotrack=${encodeURIComponent(cleanCode)}`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) throw new NotFoundException('No se pudo consultar el tracking');
-    const html = await res.text();
-    const items: Array<{ date: string; time: string; status: string; detail: string }> = [];
-    const re = /<div class="tracking-item">[\s\S]*?<div class="tracking-date">([^<]+)<span>([^<]+)<\/span><\/div>[\s\S]*?<div class="tracking-content">([^<]+)<span>([^<]*)<\/span>/g;
-    let match;
-    while ((match = re.exec(html)) !== null) {
-      items.push({
-        date: (match[1] || '').trim(),
-        time: (match[2] || '').trim(),
-        status: (match[3] || '').trim(),
-        detail: (match[4] || '').trim(),
-      });
-    }
-    const latest = items[0] || null;
-    const data = {
-      status: latest?.status || null,
-      date: latest?.date || null,
-      time: latest?.time || null,
-      items,
-    };
     if (data.status) await this.svc.updateEstatusEshoBulk({ [cleanCode]: data.status });
-    eshopexCache.set(cleanCode, { ts: Date.now(), data });
     return data;
   }
 
@@ -781,6 +789,26 @@ export class TrackingController {
           if (code && status) statusByCode[code] = status;
         }
         await this.svc.updateEstatusEshoBulk(statusByCode);
+
+        // La tabla de carga deja de mostrar algunas guias al avanzar de estado.
+        // Por eso una actualizacion completa tambien revisa, sin cache, todas las
+        // guias que aun no fueron marcadas como recogidas en nuestro sistema.
+        const pendingCodes = await this.svc.getPendingEshopexCodes();
+        let nextPendingIndex = 0;
+        const refreshedStatuses: Record<string, string> = {};
+        const statusWorker = async () => {
+          while (nextPendingIndex < pendingCodes.length) {
+            const code = pendingCodes[nextPendingIndex++];
+            try {
+              const publicStatus = await fetchEshopexPublicStatus(code, false);
+              if (publicStatus.status) refreshedStatuses[code] = publicStatus.status;
+            } catch (err) {
+              console.warn('[Eshopex] No se pudo actualizar la guia pendiente', code, err);
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, pendingCodes.length) }, statusWorker));
+        await this.svc.updateEstatusEshoBulk(refreshedStatuses);
         eshopexCargaCache = { ts: Date.now(), data };
         setEshopexCargaProgress({
           status: 'done',
