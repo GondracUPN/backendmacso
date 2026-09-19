@@ -257,8 +257,12 @@ export class GastosService {
     targetUserId?: number,
   ) {
     const month = this.normalizeBudgetMonth(dto.month);
-    if (!String(dto.date || '').startsWith(`${month}-`)) {
-      throw new BadRequestException('La fecha debe pertenecer al mes indicado.');
+    const [year, monthNumber] = month.split('-').map(Number);
+    const minimumDate = `${month}-01`;
+    const nextMonthLastDate = new Date(Date.UTC(year, monthNumber + 1, 0));
+    const maximumDate = nextMonthLastDate.toISOString().slice(0, 10);
+    if (dto.date < minimumDate || dto.date > maximumDate) {
+      throw new BadRequestException('La fecha debe estar en el mes indicado o, como maximo, en el mes siguiente.');
     }
     const resolvedUserId = this.resolveBudgetUserId(userId, role, targetUserId);
     const amount = Number(dto.amount);
