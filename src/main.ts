@@ -258,6 +258,18 @@ async function bootstrap() {
         `CREATE INDEX IF NOT EXISTS "idx_bolsa_inversiones_month" ON "${schema}"."bolsa_inversiones" ("month")`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."bolsa_inversiones" ADD COLUMN IF NOT EXISTS "hapi_amount" numeric(12,2) NOT NULL DEFAULT 0`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."bolsa_inversiones" ADD COLUMN IF NOT EXISTS "trii_amount" numeric(12,2) NOT NULL DEFAULT 0`,
+      );
+      await dataSource.query(
+        `UPDATE "${schema}"."bolsa_inversiones"
+         SET "hapi_amount" = ROUND("amount" * 0.70, 2),
+             "trii_amount" = "amount" - ROUND("amount" * 0.70, 2)
+         WHERE "amount" <> 0 AND "hapi_amount" = 0 AND "trii_amount" = 0`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS accesorios text[] NOT NULL DEFAULT '{}'::text[]`,
       );
       await dataSource.query(

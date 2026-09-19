@@ -31,6 +31,12 @@ export class BolsaInvestment {
   @Column({ type: 'numeric', precision: 12, scale: 2 })
   amount: string;
 
+  @Column({ name: 'hapi_amount', type: 'numeric', precision: 12, scale: 2, default: 0 })
+  hapiAmount: string;
+
+  @Column({ name: 'trii_amount', type: 'numeric', precision: 12, scale: 2, default: 0 })
+  triiAmount: string;
+
   @Column({ type: 'date' })
   date: string;
 

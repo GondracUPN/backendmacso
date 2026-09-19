@@ -262,16 +262,24 @@ export class GastosService {
     }
     const resolvedUserId = this.resolveBudgetUserId(userId, role, targetUserId);
     const amount = Number(dto.amount);
+    const hasPlatformAmounts = dto.hapiAmount !== undefined || dto.triiAmount !== undefined;
+    const hapiAmount = hasPlatformAmounts ? Number(dto.hapiAmount || 0) : Number((amount * 0.7).toFixed(2));
+    const triiAmount = hasPlatformAmounts ? Number(dto.triiAmount || 0) : Number((amount - hapiAmount).toFixed(2));
+    const totalAmount = Number((hapiAmount + triiAmount).toFixed(2));
     let row = await this.bolsaRepo.findOne({ where: { userId: resolvedUserId, month } });
     if (!row) {
       row = this.bolsaRepo.create({
         userId: resolvedUserId,
         month,
-        amount: amount.toFixed(2),
+        amount: totalAmount.toFixed(2),
+        hapiAmount: hapiAmount.toFixed(2),
+        triiAmount: triiAmount.toFixed(2),
         date: dto.date,
       });
     } else {
-      row.amount = amount.toFixed(2);
+      row.amount = totalAmount.toFixed(2);
+      row.hapiAmount = hapiAmount.toFixed(2);
+      row.triiAmount = triiAmount.toFixed(2);
       row.date = dto.date;
     }
     return this.bolsaRepo.save(row);

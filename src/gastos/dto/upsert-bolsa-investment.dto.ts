@@ -1,4 +1,4 @@
-import { IsDateString, IsNumber, IsString, Matches, Min } from 'class-validator';
+import { IsDateString, IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
 
 export class UpsertBolsaInvestmentDto {
   @IsString()
@@ -8,6 +8,16 @@ export class UpsertBolsaInvestmentDto {
   @IsNumber()
   @Min(0)
   amount: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  hapiAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  triiAmount?: number;
 
   @IsDateString()
   date: string;
