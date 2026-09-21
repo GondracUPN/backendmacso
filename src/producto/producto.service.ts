@@ -439,12 +439,25 @@ export class ProductoService {
   }
 
   async findPersonalEshopex(): Promise<PersonalEshopex[]> {
-    const items = await this.personalEshopexRepo.find({ order: { id: 'DESC' } });
-    const missingCost = items.filter((item) => Number(item.peso) > 0 && Number(item.costoEnvio) <= 0);
-    if (missingCost.length) {
-      for (const item of missingCost) item.costoEnvio = this.getCostoEnvio(Number(item.peso), 0);
-      await this.personalEshopexRepo.save(missingCost);
+    const items = await this.personalEshopexRepo
+      .createQueryBuilder('personal')
+      .addSelect('personal.valorDec')
+      .orderBy('personal.id', 'DESC')
+      .getMany();
+    const staleCosts = items.filter((item) => {
+      const peso = Number(item.peso);
+      if (!(peso > 0)) return false;
+      const stored = Number(item.costoEnvio || 0);
+      const transportOnly = this.getTransporteConDescuento(peso);
+      return stored <= transportOnly + 0.01;
+    });
+    if (staleCosts.length) {
+      for (const item of staleCosts) {
+        item.costoEnvio = this.getCostoEnvio(Number(item.peso), Number(item.valorDec || 0));
+      }
+      await this.personalEshopexRepo.save(staleCosts);
     }
+    for (const item of items) delete (item as any).valorDec;
     return items;
   }
 
@@ -757,14 +770,18 @@ export class ProductoService {
 
 
   private getCostoEnvio(peso: number, valorDec: number, fechaCompra?: Date | string | null): number {
-    const tarifaBase = this.getTarifa(peso, fechaCompra);
-    const hasta3kg = this.getTarifa(Math.min(peso, 3), fechaCompra);
-    let descuento = Number((hasta3kg * 0.35).toFixed(2));
-    if (descuento > 41.99) descuento = 41.99;
-    const tarifaFinal = Number((tarifaBase - descuento).toFixed(2));
+    const tarifaFinal = this.getTransporteConDescuento(peso, fechaCompra);
     const honorarios = this.getHonorarios(valorDec, fechaCompra);
     const seguro = this.getSeguro(valorDec);
     return Number((tarifaFinal + honorarios + seguro).toFixed(2));
+  }
+
+  private getTransporteConDescuento(peso: number, fechaCompra?: Date | string | null): number {
+    if (!Number.isFinite(peso) || peso <= 0) return 0;
+    const tarifaBase = this.getTarifa(peso, fechaCompra);
+    const hasta3kg = this.getTarifa(Math.min(peso, 3), fechaCompra);
+    const descuento = Math.min(Number((hasta3kg * 0.35).toFixed(2)), 41.99);
+    return Number(Math.max(0, tarifaBase - descuento).toFixed(2));
   }
 
   private usesLegacyTarifa(fechaCompra?: Date | string | null): boolean {
