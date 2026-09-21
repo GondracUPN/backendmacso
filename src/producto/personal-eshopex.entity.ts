@@ -22,8 +22,13 @@ export class PersonalEshopex {
   @Column({ type: 'numeric', precision: 10, scale: 2, nullable: true })
   peso?: number | null;
 
-  @Column({ type: 'numeric', precision: 10, scale: 2, default: 0 })
+  // Campo legado: se conserva en la tabla para no hacer un borrado destructivo,
+  // pero Personal ya no lo recibe, actualiza ni devuelve.
+  @Column({ type: 'numeric', precision: 10, scale: 2, default: 0, select: false })
   valorDec: number;
+
+  @Column({ type: 'numeric', precision: 10, scale: 2, default: 0 })
+  costoEnvio: number;
 
   @Column({ type: 'varchar', length: 120, nullable: true })
   estatusEsho?: string | null;

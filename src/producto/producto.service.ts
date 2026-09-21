@@ -439,7 +439,13 @@ export class ProductoService {
   }
 
   async findPersonalEshopex(): Promise<PersonalEshopex[]> {
-    return this.personalEshopexRepo.find({ order: { id: 'DESC' } });
+    const items = await this.personalEshopexRepo.find({ order: { id: 'DESC' } });
+    const missingCost = items.filter((item) => Number(item.peso) > 0 && Number(item.costoEnvio) <= 0);
+    if (missingCost.length) {
+      for (const item of missingCost) item.costoEnvio = this.getPersonalCostoEnvio(Number(item.peso));
+      await this.personalEshopexRepo.save(missingCost);
+    }
+    return items;
   }
 
   async upsertPersonalEshopex(data: Partial<PersonalEshopex>): Promise<PersonalEshopex> {
@@ -450,7 +456,7 @@ export class ProductoService {
       trackingEshop,
       descripcion: String(data.descripcion || 'Personal').trim() || 'Personal',
       peso: data.peso == null ? null : Number(data.peso),
-      valorDec: Number(data.valorDec || 0) || 0,
+      costoEnvio: this.getPersonalCostoEnvio(Number(data.peso || 0)),
       estatusEsho: data.estatusEsho ? String(data.estatusEsho).trim() : null,
       fechaRecepcion: data.fechaRecepcion || null,
       fechaRecepcionRaw: data.fechaRecepcionRaw || null,
@@ -479,6 +485,10 @@ export class ProductoService {
       item.despachoAt = new Date();
     }
     Object.assign(item, patch);
+    if (patch.peso !== undefined) {
+      item.peso = patch.peso == null ? null : Number(patch.peso);
+      item.costoEnvio = this.getPersonalCostoEnvio(Number(item.peso || 0));
+    }
     if ((patch as any).recogido === true) {
       item.despacho = false;
       item.despachoAt = null;
@@ -753,6 +763,17 @@ export class ProductoService {
     const honorarios = this.getHonorarios(valorDec, fechaCompra);
     const seguro = this.getSeguro(valorDec);
     return Number((tarifaFinal + honorarios + seguro).toFixed(2));
+  }
+
+  private getPersonalCostoEnvio(peso: number): number {
+    if (!Number.isFinite(peso) || peso <= 0) return 0;
+    const hundredths = Math.round(peso * 100);
+    const tenths = Math.floor(hundredths / 10);
+    const pesoFacturable = (hundredths - tenths * 10 <= 5 ? tenths : tenths + 1) / 10;
+    const tarifaBase = this.getTarifa(pesoFacturable);
+    const hasta3kg = this.getTarifa(Math.min(pesoFacturable, 3));
+    const descuento = Math.min(Number((hasta3kg * 0.35).toFixed(2)), 41.99);
+    return Number(Math.max(0, tarifaBase - descuento).toFixed(2));
   }
 
   private usesLegacyTarifa(fechaCompra?: Date | string | null): boolean {

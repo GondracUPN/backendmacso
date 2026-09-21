@@ -300,6 +300,9 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "despachoCasilleroAt" TIMESTAMPTZ`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."personal_eshopex" ADD COLUMN IF NOT EXISTS "costoEnvio" numeric(10,2) NOT NULL DEFAULT 0`,
+      );
+      await dataSource.query(
         `CREATE TABLE IF NOT EXISTS "${schema}"."inventario" (
           "id" SERIAL PRIMARY KEY,
           "productoId" integer NOT NULL REFERENCES "${schema}"."producto"("id") ON DELETE CASCADE,
