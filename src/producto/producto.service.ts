@@ -456,8 +456,8 @@ export class ProductoService {
       trackingEshop,
       descripcion: String(data.descripcion || 'Personal').trim() || 'Personal',
       peso: data.peso == null ? null : Number(data.peso),
-      // El DEC se usa solo para aplicar la misma calculadora de un producto normal;
-      // no se asigna a la entidad Personal ni se persiste.
+      // Usa la misma fórmula completa de Producto. El DEC solo participa en
+      // este cálculo y nunca se asigna a la entidad Personal.
       costoEnvio: this.getCostoEnvio(Number(data.peso || 0), Number(data.valorDec || 0)),
       estatusEsho: data.estatusEsho ? String(data.estatusEsho).trim() : null,
       fechaRecepcion: data.fechaRecepcion || null,
