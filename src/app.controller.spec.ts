@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { AppController, buildEbayPriceFilters, isApplePartTitle, matchesAppleProductTitle } from './app.controller';
+import { AppController, buildEbayPriceFilters, isApplePartTitle, isUnwantedCaseOrCarStereoTitle, matchesAppleProductTitle, matchesTitleKeywordQuery } from './app.controller';
 import { AppService } from './app.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import { EbayPawn } from './ebay-pawn.entity';
@@ -71,6 +71,22 @@ describe('AppController', () => {
 
 describe('identificacion de productos Apple recientes', () => {
   it.each([
+    '7" Car Stereo For BMW 3-series E46 M3 Apple CarPlay Radio GPS NAVI',
+    'New - OtterBox Defender Pro XT MagSafe Apple iPhone 16 Pro Max',
+    'New - OtterBox Defender Pro XT MagSafe Apple iPhone 16 Plus Black/Clear',
+    'Apple iPhone 16 Pro Max Silicone Case with MagSafe',
+  ])('excluye fundas y equipos de sonido para automovil: %s', (title) => {
+    expect(isUnwantedCaseOrCarStereoTitle(title)).toBe(true);
+    expect(matchesAppleProductTitle({ title })).toBe(false);
+  });
+
+  it('no confunde unos AirPods completos con una funda por incluir Charging Case', () => {
+    const title = 'Apple AirPods 4th Generation with Charging Case';
+    expect(isUnwantedCaseOrCarStereoTitle(title)).toBe(false);
+    expect(matchesAppleProductTitle({ title })).toBe(true);
+  });
+
+  it.each([
     'Apple MacBook Pro 14 M3 Pro A2918 18GB 512GB',
     'A2918 Apple laptop 14 inch M3 Pro',
     'Apple M3 Pro 14-inch 18GB 512GB',
@@ -79,11 +95,17 @@ describe('identificacion de productos Apple recientes', () => {
     'Apple A3404 13-inch 8GB 512GB',
     'MHFF4LL/A Apple laptop 13-inch Indigo',
     'Apple iPad Pro A2918 M3 14 inch',
-    'Apple Watch Series 10 GPS Cellular 46mm A3000',
+    'Apple Watch Series 11 GPS Cellular 46mm A3333',
     'Apple Watch SE 2 GPS 44mm A2723',
     'Apple Watch Ultra 2 GPS Cellular A2986',
     'Apple iMac M1 24-inch A2438',
     'Apple Mac mini M4 Pro A3239',
+    'Apple Macboob Air laptop MGE94LL/A',
+    'Apple laptop M6 16GB 512GB',
+    'Apple iPhone 13 Mini A2481 128GB Unlocked',
+    'Apple iPad Air M6 11-inch',
+    'Apple AirPods Pro 3',
+    'Apple AirPods 4th Generation',
   ])('acepta un equipo real por familia, chip o identificador: %s', (title) => {
     expect(matchesAppleProductTitle({ title })).toBe(true);
   });
@@ -101,6 +123,12 @@ describe('identificacion de productos Apple recientes', () => {
     'MacBook Air 13.6 Inch Case with Touch ID, M4 A3240 M3 A3113 M2 A2681, Smooth',
     'MacBook Air 13 M4 2025 A3240 A3113 Left & Right Speakers Wi-Fi Antennas OEM',
     'NEW mCover CASE for 13.6 Apple MacBook Air A2681 A3113 A3240 M3 M4',
+    'Apple Watch Series 10 GPS Cellular 42mm A2997',
+    'Apple AirPods Pro 2',
+    'Apple AirPods 3rd Generation',
+    'Apple AirTag 4 Pack',
+    'Apple USB-C Cable 2m',
+    'Apple 20W USB-C Power Adapter Charger',
   ])('rechaza caja, repuesto, accesorio u otra marca: %s', (title) => {
     expect(matchesAppleProductTitle({ title })).toBe(false);
   });
@@ -123,6 +151,14 @@ describe('identificacion de productos Apple recientes', () => {
     const title = 'Apple MacBook Air M3 13-inch 16GB 512GB SSD with keyboard';
     expect(isApplePartTitle(title)).toBe(false);
     expect(matchesAppleProductTitle({ title })).toBe(true);
+  });
+});
+
+describe('búsqueda textual dentro de pawns', () => {
+  it('acepta cualquier título que contenga todas las palabras buscadas', () => {
+    expect(matchesTitleKeywordQuery('Apple 20W USB-C Power Adapter Charger', 'apple')).toBe(true);
+    expect(matchesTitleKeywordQuery('Apple AirTag 4 Pack', 'apple airtag')).toBe(true);
+    expect(matchesTitleKeywordQuery('Samsung Galaxy Phone', 'apple')).toBe(false);
   });
 });
 

@@ -124,7 +124,7 @@ const parseTitleAttrs = (title: string): TitleAttrs => {
   const a18Match = t.match(/\b(a18)\s*(pro)\b/);
   const procMatch =
     a18Match ||
-    t.match(/\b(m[1-5])\s*(pro|max|ultra)?\b/) ||
+    t.match(/\b(m[1-6])\s*(pro|max|ultra)?\b/) ||
     t.match(/\b(i[3579])\b/) ||
     t.match(/\b(ryzen\s*\d)\b/);
   if (procMatch) {
@@ -1682,6 +1682,7 @@ export const matchesAppleProductTitle = (
   options: { allowParts?: boolean } = {},
 ) => {
   const titleText = normalizeLookupText(item?.title || '');
+  const completeTargetAirPods = isCompleteTargetAirPodsWithChargingCase(titleText);
 
   if (/\b(?:samsung|galaxy|google\s+pixel|motorola|moto|xiaomi|huawei|oneplus|oppo|vivo|dell|lenovo|thinkpad|hp|hewlett\s+packard|asus|acer|microsoft|surface|sony|nokia|lg)\b/.test(titleText)) return false;
   if (isApplePartTitle(titleText)) {
@@ -1689,14 +1690,15 @@ export const matchesAppleProductTitle = (
     return /\b(?:apple|macbook|ipad|iphone|imac|mac\s*mini|apple\s*watch|a\d{4})\b/.test(titleText);
   }
   if (isExcludedAppleProductTitle(titleText)) return false;
-  if (isAccessoryTitle(titleText)) return false;
+  if (isAccessoryTitle(titleText) && !completeTargetAirPods) return false;
   return hasModernAppleChipWithoutFamily(titleText) ||
     isLikelyAppleDeviceTitle(titleText, 'ipad') ||
     isLikelyAppleDeviceTitle(titleText, 'iphone') ||
     isLikelyAppleDeviceTitle(titleText, 'macbook') ||
     hasTargetImacSignal(titleText) ||
     hasTargetMacMiniSignal(titleText) ||
-    hasTargetAppleWatchSignal(titleText);
+    hasTargetAppleWatchSignal(titleText) ||
+    hasTargetAirPodsSignal(titleText);
 };
 
 const isTruthyQueryFlag = (value?: string) =>
@@ -1723,7 +1725,7 @@ const normalizeMinSellerReviews = (value?: number | string | null) => {
 };
 
 const getTrustedStoreBackfillMaxChecks = () => {
-  const raw = Number(process.env.EBAY_TRUSTED_STORE_BACKFILL_MAX_CHECKS || 0);
+  const raw = Number(process.env.EBAY_TRUSTED_STORE_BACKFILL_MAX_CHECKS || 30);
   return Math.max(0, Math.min(150, Number.isFinite(raw) ? raw : 0));
 };
 
@@ -1732,8 +1734,10 @@ const getTrustedStoreCheckConcurrency = () => {
   return Math.max(1, Math.min(10, Number.isFinite(raw) ? raw : 5));
 };
 
-const isTrustedStoreHtmlBackfillEnabled = () =>
-  isTruthyQueryFlag(process.env.EBAY_TRUSTED_STORE_HTML_BACKFILL || '');
+const isTrustedStoreHtmlBackfillEnabled = () => {
+  const configured = String(process.env.EBAY_TRUSTED_STORE_HTML_BACKFILL || '').trim();
+  return configured ? isTruthyQueryFlag(configured) : true;
+};
 
 const getEbayCacheItemKey = (item: any) =>
   String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
@@ -1937,7 +1941,7 @@ const titleIncludesKeywordToken = (titleText: string, titleCompact: string, toke
   return Boolean(compactToken && titleCompact.includes(compactToken));
 };
 
-const matchesTitleKeywordQuery = (title: string, rawQuery?: string) => {
+export const matchesTitleKeywordQuery = (title: string, rawQuery?: string) => {
   const titleText = normalizeLookupText(title);
   const titleCompact = normalizeCompactLookupText(title);
   const tokenGroups = getTitleKeywordTokenGroups(rawQuery);
@@ -2020,9 +2024,26 @@ const EXCLUDED_APPLE_PRODUCT_TITLE_PATTERNS = [
   /\bmcover\b/,
 ] as const;
 
+const isCompleteTargetAirPodsWithChargingCase = (title: string) =>
+  /\bair\s*pods?\s+(?:pro\s*[3-9]|[4-9](?:st|nd|rd|th)?(?:\s+generation)?)\b.*\bcharging\s+case\b/.test(
+    normalizeLookupText(title),
+  );
+
+export const isUnwantedCaseOrCarStereoTitle = (title: string) => {
+  const normalized = normalizeLookupText(title);
+  const completeAirPods = isCompleteTargetAirPodsWithChargingCase(normalized);
+  if (!completeAirPods && /\botterbox\b/.test(normalized)) return true;
+  if (!completeAirPods && /\b(?:iphone|ipad|macbook|air\s*pods?|apple\s+watch)\b.{0,70}\b(?:case|cover|folio|sleeve|screen\s+protector)\b/.test(normalized)) return true;
+  if (/\b(?:case|cover|folio|sleeve|screen\s+protector)\b.{0,70}\b(?:for|compatible\s+with)\s+(?:apple\s+)?(?:iphone|ipad|macbook|air\s*pods?|watch)\b/.test(normalized)) return true;
+  if (/\b(?:car|vehicle|automotive|bmw|mercedes|ford|toyota|honda|jeep)\b.{0,100}\b(?:stereo|radio|head\s*unit|carplay|gps\s+navigation)\b/.test(normalized)) return true;
+  if (/\b(?:stereo|radio|head\s*unit|carplay|android\s+auto)\b.{0,100}\b(?:car|vehicle|automotive|bmw|mercedes|ford|toyota|honda|jeep|gps\s+navigation)\b/.test(normalized)) return true;
+  return /\b(?:carplay|android\s+auto)\b.{0,60}\b(?:stereo|radio|receiver|head\s*unit|navigation)\b/.test(normalized);
+};
+
 const isExcludedAppleProductTitle = (title: string) => {
   const normalized = normalizeLookupText(title);
-  return EXCLUDED_APPLE_PRODUCT_TITLE_PATTERNS.some((pattern) => pattern.test(normalized));
+  return isUnwantedCaseOrCarStereoTitle(normalized) ||
+    EXCLUDED_APPLE_PRODUCT_TITLE_PATTERNS.some((pattern) => pattern.test(normalized));
 };
 
 const APPLE_PART_COMPONENT_PATTERN = /\b(?:trackpads?|touchpads?|keyboards?|keycaps?|type\s*c\s+ports?|usb[\s-]*c\s+ports?|thunderbolt\s+ports?|charging\s+ports?|earphone\s+jacks?|headphone\s+(?:audio\s+)?jacks?|audio\s+jacks?|dc\s+jacks?|magsafe\s+(?:jacks?|boards?)|microphone\s+flex|flex\s+cables?|ribbon\s+cables?|speakers?|antennas?|fans?|heatsinks?|hinges?|connectors?|cameras?|webcams?|daughterboards?|logic\s+boards?|motherboards?|jack\s+boards?|usb[\s-]*c\s+boards?|lcds?|displays?|screens?|display\s+assembl(?:y|ies)|screen\s+assembl(?:y|ies)|batter(?:y|ies)|palmrests?|bezels?|housings?|chassis)\b/;
@@ -2119,7 +2140,6 @@ const TARGET_IPHONE_MODEL_NUMBERS = [
   'a3575', 'a3634', 'a3635',
 ] as const;
 const TARGET_IPHONE_ORDER_CODES: readonly string[] = [];
-const IPHONE_13_MINI_MODEL_NUMBERS = ['a2481', 'a2626', 'a2628', 'a2629', 'a2630'] as const;
 const BLOCKED_IPHONE_PATTERN =
   /\b(?:carrier|network|sim|activation|icloud|finance|financed|mdm)\s*locked\b|\b(?:verizon|at\s*&?\s*t|att|t[\s-]*mobile|sprint|cricket|boost|metro(?:pcs)?|xfinity|spectrum|tracfone|straight\s+talk|us\s+cellular)\b|\bbad\s+esn\b|\bblacklisted\b|\bnot\s+unlocked\b/;
 
@@ -2214,16 +2234,16 @@ const hasTargetMacBookSignal = (normalized: string) => {
 const hasTargetIpadSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
   if (titleHasTargetIdentifier(title, TARGET_IPAD_MODEL_NUMBERS, TARGET_IPAD_ORDER_CODES)) return true;
-  if (/\bm[1-5]\b/.test(normalized) && /\bipad\s+pro\b|\bipad\s+air\b/.test(normalized)) return true;
+  if (/\bm[1-6]\b/.test(normalized) && /\bipad\s+pro\b|\bipad\s+air\b/.test(normalized)) return true;
   if (/\bipad\s+mini\b/.test(normalized) && /\bipad\s+mini\s+(?:6|7)\b|\b(?:6th|sixth|7th|seventh|a17\s*pro)\b/.test(normalized)) return true;
   if (/\bipad\s+pro\b/.test(normalized)) {
-    if (/\b11(?:\.\d+)?\s*(?:inch|in|")?\b/.test(normalized) && /\b(?:3rd|third|4th|fourth|m[1-5])\b/.test(normalized)) return true;
-    if (/\b12\.9(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\b(?:5th|fifth|6th|sixth|m[1-5])\b/.test(normalized)) return true;
-    if (/\b13(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[4-5]\b/.test(normalized)) return true;
+    if (/\b11(?:\.\d+)?\s*(?:inch|in|")?\b/.test(normalized) && /\b(?:3rd|third|4th|fourth|m[1-6])\b/.test(normalized)) return true;
+    if (/\b12\.9(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\b(?:5th|fifth|6th|sixth|m[1-6])\b/.test(normalized)) return true;
+    if (/\b13(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[4-6]\b/.test(normalized)) return true;
   }
   if (/\bipad\s+air\b/.test(normalized)) {
-    if (/\b(?:4th|fourth|5th|fifth|m[1-4])\b/.test(normalized)) return true;
-    if (/\b(?:11|13)(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[2-4]\b/.test(normalized)) return true;
+    if (/\b(?:4th|fourth|5th|fifth|m[1-6])\b/.test(normalized)) return true;
+    if (/\b(?:11|13)(?:\s*(?:inch|in|"))?\b/.test(normalized) && /\bm[2-6]\b/.test(normalized)) return true;
   }
   if (/\bipad\b/.test(normalized) && !/\b(?:pro|air|mini)\b/.test(normalized)) {
     return /\b(?:11th|eleventh|a16)\b/.test(normalized);
@@ -2233,8 +2253,6 @@ const hasTargetIpadSignal = (title: string) => {
 
 const hasTargetIphoneSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
-  if (/\bmini\b/.test(normalized)) return false;
-  if (hasAnyTargetModelNumber(normalized, IPHONE_13_MINI_MODEL_NUMBERS)) return false;
   if (BLOCKED_IPHONE_PATTERN.test(normalized)) return false;
   if (titleHasTargetIdentifier(title, TARGET_IPHONE_MODEL_NUMBERS, TARGET_IPHONE_ORDER_CODES)) return true;
   return /\biphone\s*(?:13|14|15|16|17)\b/.test(normalized) ||
@@ -2246,21 +2264,20 @@ const hasTargetImacSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
   if (MACBOOK_INTEL_PATTERN.test(normalized)) return false;
   if (titleHasTargetIdentifier(title, TARGET_IMAC_MODEL_NUMBERS, TARGET_IMAC_ORDER_CODES)) return true;
-  return (/\bi\s*mac\b|\bimac\b/.test(normalized)) && /\bm[1-5]\b/.test(normalized);
+  return (/\bi\s*mac\b|\bimac\b/.test(normalized)) && /\bm[1-6]\b/.test(normalized);
 };
 
 const hasTargetMacMiniSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
   if (MACBOOK_INTEL_PATTERN.test(normalized)) return false;
   if (titleHasTargetIdentifier(title, TARGET_MAC_MINI_MODEL_NUMBERS, TARGET_MAC_MINI_ORDER_CODES)) return true;
-  return (/\bmac\s*mini\b|\bmacmini\b/.test(normalized)) && /\bm[1-5]\b/.test(normalized);
+  return (/\bmac\s*mini\b|\bmacmini\b/.test(normalized)) && /\bm[1-6](?:\s+(?:pro|max|ultra))?\b/.test(normalized);
 };
 
 const hasTargetAppleWatchSignal = (title: string) => {
   const normalized = normalizeLookupText(title);
   if (isAccessoryTitle(normalized)) return false;
   const modelNumbers = [
-    ...TARGET_APPLE_WATCH_SERIES_10_MODEL_NUMBERS,
     ...TARGET_APPLE_WATCH_SERIES_11_MODEL_NUMBERS,
     ...TARGET_APPLE_WATCH_SE2_MODEL_NUMBERS,
     ...TARGET_APPLE_WATCH_SE3_MODEL_NUMBERS,
@@ -2269,13 +2286,31 @@ const hasTargetAppleWatchSignal = (title: string) => {
   if (hasAnyTargetModelNumber(normalized, modelNumbers)) return true;
   const isWatch = /\bapple\s+watch\b|\biwatch\b/.test(normalized);
   if (!isWatch) return false;
-  if (/\bultra\s*(?:2|3|4)\b/.test(normalized)) return true;
-  if (/\bse\s*(?:2|3)\b|\bse\s*(?:second|third|2nd|3rd)\b/.test(normalized)) return true;
-  if (/\b(?:series\s*)?(?:10|11|12)\b|\bs(?:10|11|12)\b/.test(normalized)) {
+  const ultraNumber = Number(normalized.match(/\bultra\s*(\d+)\b/)?.[1] || 0);
+  if (ultraNumber >= 2) return true;
+  const seNumber = Number(normalized.match(/\bse\s*(\d+)\b/)?.[1] || 0);
+  if (seNumber >= 2 || /\bse\s*(?:second|third|2nd|3rd)\b/.test(normalized)) return true;
+  const seriesNumber = Number(normalized.match(/\b(?:series\s*|s)(\d{2})\b/)?.[1] || 0);
+  if (seriesNumber >= 11) {
     const statedSize = normalized.match(/\b(\d{2})\s*mm\b/)?.[1];
     return !statedSize || statedSize === '42' || statedSize === '46';
   }
   return false;
+};
+
+const hasTargetAirPodsSignal = (title: string) => {
+  const normalized = normalizeLookupText(title);
+  if (!/\bair\s*pods?\b/.test(normalized)) return false;
+  if (isExcludedAppleProductTitle(normalized) ||
+    (isAccessoryTitle(normalized) && !isCompleteTargetAirPodsWithChargingCase(normalized))) return false;
+  const proGeneration = Number(normalized.match(/\bair\s*pods?\s+pro\s*(\d+)\b/)?.[1] || 0);
+  if (proGeneration >= 3) return true;
+  const generation = Number(
+    normalized.match(/\bair\s*pods?\s*(\d+)\b/)?.[1] ||
+    normalized.match(/\bair\s*pods?\b.{0,20}\b(\d+)(?:st|nd|rd|th)?\s*(?:gen|generation)\b/)?.[1] ||
+    0,
+  );
+  return generation >= 4;
 };
 
 const MODERN_APPLE_CHIP_PATTERN =
@@ -2318,7 +2353,7 @@ const getAppleCollectionFamilyLabel = (family: string) => {
 };
 
 const getRequiredChipFromEntryKey = (key: string) => {
-  const match = String(key || '').toLowerCase().match(/\bm[1-5]\b/);
+  const match = String(key || '').toLowerCase().match(/\bm[1-6]\b/);
   return match ? match[0] : '';
 };
 
@@ -2334,7 +2369,7 @@ const isWatchUltraAccessoryTitle = (normalized: string) =>
 
 const isLikelyExtendedAppleTitle = (title: string, family: string, key = '') => {
   const normalized = normalizeLookupText(title);
-  if (family === 'airpods') return /\bair\s*pods?\b|\bairpods?\b/.test(normalized);
+  if (family === 'airpods') return hasTargetAirPodsSignal(title);
   if (family === 'apple-watch') return hasTargetAppleWatchSignal(title);
   if (family === 'apple-watch-ultra') {
     if (isAccessoryTitle(normalized)) return false;
@@ -2626,7 +2661,7 @@ const fetchEbayStoreFeed = async (params?: {
     const pageItems = results.flatMap((result) => (Array.isArray(result?.items) ? result.items : []));
     for (const item of pageItems) {
       if (!matchesTitleKeywordQuery(item?.title || '', params?.query)) continue;
-      if (!matchesRequestedAppleProductKind(item, params?.condition)) continue;
+      if (isUnwantedCaseOrCarStereoTitle(item?.title || '')) continue;
       const key = String(item?.itemId || item?.legacyItemId || item?.itemWebUrl || '').trim();
       if (!key || seen.has(key)) continue;
       seen.add(key);
