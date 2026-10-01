@@ -123,8 +123,14 @@ export class ProductoService {
     let valor: ProductoValor | null = null;
     if (data.valor) {
       const { valorProducto, valorDec, peso, fechaCompra } = data.valor;
-      const valorSoles = Number((valorProducto * 3.7).toFixed(2));
-      const costoEnvio = this.getCostoEnvio(peso, valorDec, fechaCompra);
+      const monedaCompra = String((data.valor as any).monedaCompra || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+      const valorSoles = monedaCompra === 'PEN'
+        ? Number(Number(valorProducto).toFixed(2))
+        : Number((valorProducto * 3.7).toFixed(2));
+      const costoEnvioInformado = Number((data.valor as any).costoEnvio);
+      const costoEnvio = Number.isFinite(costoEnvioInformado)
+        ? costoEnvioInformado
+        : this.getCostoEnvio(peso, valorDec, fechaCompra);
       const costoTotal = Number((valorSoles + costoEnvio).toFixed(2));
 
       valor = this.valorRepo.create({
@@ -135,6 +141,7 @@ export class ProductoService {
         valorSoles,
         costoEnvio,
         costoTotal,
+        monedaCompra,
       });
       valor = await this.valorRepo.save(valor);
     }
@@ -219,7 +226,7 @@ export class ProductoService {
     if (!model) return null;
 
     const candidates = (await this.productoRepo.find({
-      where: { tipo: data.tipo, stockActual: MoreThan(0) },
+      where: { tipo: data.tipo },
       relations: ['detalle', 'valor', 'tracking'],
       order: { id: 'ASC' },
     })) || [];
@@ -229,8 +236,17 @@ export class ProductoService {
       && this.normalizeAccessoryMatch(product.detalle?.modelo) === model
       && this.normalizeAccessoryMatch(product.estado) === estado,
     );
-    if (!existing) return null;
-    return Number(existing.codigoInventario || existing.id);
+    if (existing) return Number(existing.codigoInventario || existing.id);
+
+    // Los accesorios llevan una numeración propia (ACC-1, ACC-2, ...),
+    // independiente del id/MS de los equipos. Se reutiliza el primer hueco
+    // libre para instalaciones que ya tenían accesorios con códigos antiguos.
+    const usedCodes = new Set(
+      candidates.map((product) => Number(product.codigoInventario)).filter((code) => Number.isInteger(code) && code > 0),
+    );
+    let nextCode = 1;
+    while (usedCodes.has(nextCode)) nextCode += 1;
+    return nextCode;
   }
 
   async createLote(data: CreateProductoLoteDto): Promise<Producto[]> {
@@ -627,7 +643,10 @@ export class ProductoService {
       const v = producto.valor;
       Object.assign(v, dto.valor);
 
-      v.valorSoles = Number((v.valorProducto * 3.7).toFixed(2));
+      v.monedaCompra = String((v as any).monedaCompra || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+      v.valorSoles = v.monedaCompra === 'PEN'
+        ? Number(Number(v.valorProducto).toFixed(2))
+        : Number((v.valorProducto * 3.7).toFixed(2));
       v.costoEnvio = manualCostoEnvio !== undefined
         ? manualCostoEnvio
         : this.getCostoEnvio(v.peso, v.valorDec, v.fechaCompra);

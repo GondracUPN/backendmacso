@@ -24,6 +24,7 @@ export class CreateProductoDetalleDto {
   @IsOptional() @IsString() conexion?: string;
   @IsOptional() @IsString() esim?: string;
   @IsOptional() @IsString() descripcionOtro?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) modelosCompatibles?: string[];
 }
 
 export class CreateProductoValorDto {
@@ -33,6 +34,7 @@ export class CreateProductoValorDto {
   @IsDateString() fechaCompra: string;
   @IsOptional() @IsNumber() @Min(0) costoEnvio?: number;
   @IsOptional() @IsNumber() @Min(0) costoEnvioProrrateado?: number;
+  @IsOptional() @IsString() monedaCompra?: string;
 }
 
 export class CreateProductoDto {

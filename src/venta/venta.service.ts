@@ -94,6 +94,26 @@ const getAccessoryLotDate = (producto?: Producto | null) => {
   if (pickupDates.length) return Math.min(...pickupDates);
   return Number((producto as any)?.id || 0);
 };
+const accessoryFamily = (detail: any): string => {
+  const value = normalizeComparable([
+    detail?.modelo,
+    detail?.gama,
+    detail?.descripcionOtro,
+  ].filter(Boolean).join(' '));
+  if (!value) return '';
+  if (value.includes('airtag')) return 'airtag';
+  if (value.includes('applepencil') || value.includes('pencil')) return 'apple-pencil';
+  if (value.includes('magickeyboard')) return 'magic-keyboard';
+  if (value.includes('charger') || value.includes('cargador') || value.includes('adaptador')) return 'cargador';
+  if (value.includes('cable')) return 'cable';
+  if (value.includes('case') || value.includes('funda')) return 'case';
+  if (value.includes('correa') || value.includes('band')) return 'correa';
+  return value
+    .replace(/\b(?:1st|2nd|3rd|first|second|third|primera|segunda|tercera|1a|2a|3a)\s+(?:generation|generacion)\b/g, '')
+    .replace(/\b(?:pro|usb c)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
 const buildProductoNombre = (producto?: Producto | null) => {
   if (!producto) return '-';
   const detalle = (producto as any).detalle || {};
@@ -365,6 +385,7 @@ export class VentaService {
 
     const referenceDetail: any = reference.detalle || {};
     const type = normalizeComparable(reference.tipo);
+    const referenceAccessoryFamily = type === 'accesorios' ? accessoryFamily(referenceDetail) : '';
     const sameWhenPresent = (candidateDetail: any, key: string) => {
       const expected = normalizeComparable(referenceDetail[key]);
       return !expected || normalizeComparable(candidateDetail?.[key]) === expected;
@@ -372,6 +393,10 @@ export class VentaService {
 
     const similar = candidates.filter((sale) => {
       const candidateDetail: any = sale.producto?.detalle || {};
+      if (type === 'accesorios') {
+        return Boolean(referenceAccessoryFamily)
+          && accessoryFamily(candidateDetail) === referenceAccessoryFamily;
+      }
       if (!sameWhenPresent(candidateDetail, 'procesador')) return false;
       if (!sameWhenPresent(candidateDetail, 'tamano')) return false;
       if (['macbook', 'ipad', 'watch'].includes(type) && !sameWhenPresent(candidateDetail, 'gama')) return false;
@@ -815,7 +840,7 @@ export class VentaService {
     }
     const visibleCode = Number(requested.codigoInventario || requested.id);
     const lots = await this.productoRepo.find({
-      where: [{ id: visibleCode }, { codigoInventario: visibleCode }],
+      where: [{ id: requested.id }, { codigoInventario: visibleCode }],
       relations: ['valor', 'tracking'],
     });
     const validLots = lots.filter((lot) => isAccessoryStock(lot.tipo));
@@ -827,8 +852,10 @@ export class VentaService {
         })
       : [];
 
+    const lotsById = new Map(validLots.map((lot) => [Number(lot.id), lot]));
     let unidadesVendidas = 0;
     let ventaBruta = 0;
+    let costoVendido = 0;
     let weightedTc = 0;
     const detalleVentas = sales.map((sale) => {
       const cantidad = Math.max(1, Number(sale.cantidad || 1));
@@ -836,8 +863,17 @@ export class VentaService {
         ? sale.distribucionStock
         : [{ productoId: sale.productoId, cantidad }];
       const bruto = Number(sale.precioVenta || 0);
+      const costo = distribution.reduce((sum, item) => {
+        const lot = lotsById.get(Number(item.productoId));
+        if (!lot?.valor) return sum;
+        const totalLotCost = Number(lot.valor.costoTotalProrrateado ?? lot.valor.costoTotal ?? lot.valor.valorSoles ?? 0);
+        const unitCost = totalLotCost / Math.max(1, Number(lot.stockInicial || 1));
+        return sum + unitCost * Math.max(0, Number(item.cantidad || 0));
+      }, 0);
+      const gananciaNeta = bruto - costo;
       unidadesVendidas += cantidad;
       ventaBruta += bruto;
+      costoVendido += costo;
       weightedTc += Number(sale.tipoCambio || 0) * cantidad;
       return {
         id: sale.id,
@@ -845,8 +881,8 @@ export class VentaService {
         cantidad,
         precioUnitario: +(bruto / cantidad).toFixed(2),
         ventaBruta: +bruto.toFixed(2),
-        costo: 0,
-        gananciaNeta: 0,
+        costo: +costo.toFixed(2),
+        gananciaNeta: +gananciaNeta.toFixed(2),
         tipoCambio: Number(sale.tipoCambio || 0),
         distribucionStock: distribution,
       };
@@ -858,8 +894,8 @@ export class VentaService {
       unidadesDisponibles: validLots.reduce((sum, lot) => sum + Number(lot.stockActual || 0), 0),
       unidadesVendidas,
       ventaBruta: +ventaBruta.toFixed(2),
-      costoVendido: 0,
-      gananciaNeta: 0,
+      costoVendido: +costoVendido.toFixed(2),
+      gananciaNeta: +(ventaBruta - costoVendido).toFixed(2),
       tipoCambioPromedio: unidadesVendidas ? +(weightedTc / unidadesVendidas).toFixed(4) : null,
       ventas: detalleVentas.reverse(),
     };
@@ -904,7 +940,7 @@ export class VentaService {
         const lockedIdRows = await transactionProductRepo
           .createQueryBuilder('producto')
           .select('producto.id', 'id')
-          .where('(producto.id = :visibleCode OR producto.codigoInventario = :visibleCode)', { visibleCode })
+          .where('(producto.id = :requestedId OR producto.codigoInventario = :visibleCode)', { requestedId: lockedBase.id, visibleCode })
           .orderBy('producto.id', 'ASC')
           .setLock('pessimistic_write')
           .getRawMany();

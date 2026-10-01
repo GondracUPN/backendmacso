@@ -385,4 +385,32 @@ describe('VentaService.completeAdelanto', () => {
 
     expect(result.map((sale) => sale.id)).toEqual([20]);
   });
+
+  it('no mezcla familias de accesorios en los ultimos vendidos similares', async () => {
+    const candidates = [
+      { id: 30, fechaVenta: '2026-08-14', producto: { tipo: 'accesorios', detalle: { modelo: 'Apple Pencil USB-C' }, tracking: [] } },
+      { id: 31, fechaVenta: '2026-08-13', producto: { tipo: 'accesorios', detalle: { modelo: 'AirTag - Apple AirTag (1st Generation)' }, tracking: [] } },
+      { id: 32, fechaVenta: '2026-08-12', producto: { tipo: 'accesorios', detalle: { modelo: 'AirTag - 2nd Generation' }, tracking: [] } },
+    ];
+    const queryBuilder: any = {
+      leftJoinAndSelect: jest.fn(() => queryBuilder),
+      where: jest.fn(() => queryBuilder),
+      andWhere: jest.fn(() => queryBuilder),
+      orderBy: jest.fn(() => queryBuilder),
+      addOrderBy: jest.fn(() => queryBuilder),
+      take: jest.fn(() => queryBuilder),
+      getMany: jest.fn(async () => candidates),
+    };
+    const service = new VentaService(
+      { createQueryBuilder: jest.fn(() => queryBuilder) } as any,
+      {} as any,
+      { findOne: jest.fn(async () => ({ id: 399, tipo: 'accesorios', detalle: { modelo: 'AirTag - Apple AirTag (2nd Generation)' } })) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await service.findSimilarSold(399, 8);
+
+    expect(result.map((sale) => sale.id)).toEqual([31, 32]);
+  });
 });

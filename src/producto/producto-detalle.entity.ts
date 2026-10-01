@@ -39,4 +39,7 @@ export class ProductoDetalle {
 
   @Column({ nullable: true })
   descripcionOtro: string;
+
+  @Column({ type: 'text', array: true, default: '{}' })
+  modelosCompatibles: string[];
 }

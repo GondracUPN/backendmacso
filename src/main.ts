@@ -285,6 +285,12 @@ async function bootstrap() {
         `CREATE INDEX IF NOT EXISTS "idx_producto_codigo_inventario" ON "${schema}"."producto" ("codigoInventario")`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."producto_detalle" ADD COLUMN IF NOT EXISTS "modelosCompatibles" text[] NOT NULL DEFAULT '{}'::text[]`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."producto_valor" ADD COLUMN IF NOT EXISTS "monedaCompra" varchar(3) NOT NULL DEFAULT 'USD'`,
+      );
+      await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS vendedor varchar(80)`,
       );
       await dataSource.query(

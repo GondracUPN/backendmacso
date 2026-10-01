@@ -35,4 +35,7 @@ export class ProductoValor {
 
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   costoTotalProrrateado: number;
+
+  @Column({ type: 'varchar', length: 3, default: 'USD' })
+  monedaCompra: string;
 }
