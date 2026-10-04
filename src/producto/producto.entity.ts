@@ -38,6 +38,10 @@ export class Producto {
   @Column({ type: 'int', nullable: true })
   codigoInventario?: number | null;
 
+  // Compras directas de accesorios creadas desde Inventario.
+  @Column({ type: 'boolean', default: false })
+  soloInventario: boolean;
+
   // Control interno para saber si el HTML/DEC ya marcó factura subida
   @Column({ type: 'boolean', default: false })
   facturaDecSubida: boolean;

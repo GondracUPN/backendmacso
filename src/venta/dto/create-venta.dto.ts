@@ -43,6 +43,14 @@ export class CreateVentaDto {
   incomeBank?: 'bcp' | 'interbank' | 'bbva' | 'bcp_amex' | 'bcp_visa' | 'visa_qore' | 'io' | 'saga';
 
   @IsOptional()
+  @IsIn(['direct', 'card', 'debt'])
+  incomePaymentType?: 'direct' | 'card' | 'debt';
+
+  @IsOptional()
+  @IsString()
+  incomeSku?: string;
+
+  @IsOptional()
   @IsString()
   vendedor?: string; // ✅ ahora permitido por el validador
 }

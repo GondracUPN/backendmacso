@@ -7,9 +7,10 @@ import { GastoBudget } from './entities/gasto-budget.entity';
 import { BolsaInvestment } from './entities/bolsa-investment.entity';
 import { ScheduledCharge } from '../schedules/scheduled-charge.entity';
 import { CatalogModule } from '../catalog/catalog.module';
+import { VentaModule } from '../venta/venta.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Gasto, GastoBudget, BolsaInvestment, ScheduledCharge]), CatalogModule],
+  imports: [TypeOrmModule.forFeature([Gasto, GastoBudget, BolsaInvestment, ScheduledCharge]), CatalogModule, VentaModule],
   controllers: [GastosController],
   providers: [GastosService],
 })

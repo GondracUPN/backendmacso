@@ -34,6 +34,30 @@ export class Gasto {
   @Column({ type: 'numeric', precision: 12, scale: 2 })
   monto: string;
 
+  @Column({ name: 'cantidad_500', type: 'int', nullable: true })
+  cantidad500?: number | null;
+
+  @Column({ name: 'destinatario_500', type: 'varchar', length: 12, nullable: true })
+  destinatario500?: 'yo' | 'renato' | null;
+
+  @Column({ name: 'sale_id', type: 'int', nullable: true })
+  saleId?: number | null;
+
+  @Column({ name: 'sale_sku', type: 'varchar', length: 100, nullable: true })
+  saleSku?: string | null;
+
+  @Column({ name: 'sale_payment_type', type: 'varchar', length: 12, nullable: true })
+  salePaymentType?: 'direct' | 'card' | 'debt' | null;
+
+  @Column({ name: 'sale_received_amount', type: 'numeric', precision: 12, scale: 2, nullable: true })
+  saleReceivedAmount?: string | null;
+
+  @Column({ name: 'sale_paid_at', type: 'date', nullable: true })
+  salePaidAt?: string | null;
+
+  @Column({ name: 'itf_ingreso_id', type: 'int', nullable: true })
+  itfIngresoId?: number | null;
+
   @Column({ type: 'date' })
   fecha: string;
 

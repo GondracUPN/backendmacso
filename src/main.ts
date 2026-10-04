@@ -282,6 +282,26 @@ async function bootstrap() {
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "codigoInventario" integer`,
       );
       await dataSource.query(
+        `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "soloInventario" boolean NOT NULL DEFAULT false`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "cantidad_500" integer`,
+      );
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "destinatario_500" varchar(12)`,
+      );
+      await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_id" integer`);
+      await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_sku" varchar(100)`);
+      await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_payment_type" varchar(12)`);
+      await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_received_amount" numeric(12,2)`);
+      await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_paid_at" date`);
+      await dataSource.query(
+        `ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "itf_ingreso_id" integer`,
+      );
+      await dataSource.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "idx_gastos_itf_ingreso" ON "${schema}"."gastos" ("itf_ingreso_id") WHERE "itf_ingreso_id" IS NOT NULL`,
+      );
+      await dataSource.query(
         `CREATE INDEX IF NOT EXISTS "idx_producto_codigo_inventario" ON "${schema}"."producto" ("codigoInventario")`,
       );
       await dataSource.query(

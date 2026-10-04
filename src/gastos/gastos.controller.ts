@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { GastosService } from './gastos.service';
+import { VentaService } from '../venta/venta.service';
 import { CreateGastoDto } from './dto/create-gasto.dto';
 import { UpdateGastoDto } from './dto/update-gasto.dto';
 import { UpsertGastoBudgetDto } from './dto/upsert-gasto-budget.dto';
@@ -27,7 +28,7 @@ import {
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('gastos')
 export class GastosController {
-  constructor(private readonly svc: GastosService) {}
+  constructor(private readonly svc: GastosService, private readonly ventaService: VentaService) {}
 
   // Cualquier usuario: sus propios gastos
   @Get()
@@ -67,6 +68,16 @@ export class GastosController {
     @Query('userId') userId?: string,
   ) {
     return this.svc.findBolsaInvestments(user.userId, user.role, userId ? Number(userId) : undefined);
+  }
+
+  @Patch('sale-income/:id')
+  async updateSaleIncome(
+    @CurrentUser() user: JwtUserPayload,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { receivedAmount?: number; paidAt?: string | null; exchangeRate?: number },
+  ) {
+    await this.svc.findOneAuth(user.userId, user.role, id);
+    return this.ventaService.updateSaleIncomePayment(id, body);
   }
 
   @Post('bolsa-registro')

@@ -46,6 +46,8 @@ export class CreateProductoDto {
 
   @IsOptional() @IsInt() @Min(1) cantidad?: number;
 
+  @IsOptional() @IsBoolean() soloInventario?: boolean;
+
   @IsOptional()
   @IsBoolean()
   facturaDecSubida?: boolean;

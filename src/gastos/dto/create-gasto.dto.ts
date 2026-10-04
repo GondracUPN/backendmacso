@@ -47,6 +47,15 @@ export class CreateGastoDto {
   @IsPositive()
   monto: number;
 
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  cantidad500?: number | null;
+
+  @IsOptional()
+  @IsIn(['yo', 'renato'])
+  destinatario500?: 'yo' | 'renato' | null;
+
   @IsISO8601()
   fecha: string; // YYYY-MM-DD
 

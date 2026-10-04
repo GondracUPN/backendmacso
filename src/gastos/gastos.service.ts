@@ -29,6 +29,7 @@ function normConcept(con?: string) {
     bolsa: 'bolsa',
     ingreso: 'ingreso',
     ingresos: 'ingreso',
+    itf: 'itf',
     'pago tarjeta': 'pago_tarjeta',
     'pago de tarjeta': 'pago_tarjeta',
     pago_tarjeta: 'pago_tarjeta',
@@ -49,6 +50,11 @@ function normConcept(con?: string) {
   return m;
 }
 
+export function calculateIncomeItf(monto: number, cantidad500?: number | null): number {
+  if (!Number.isFinite(monto) || monto <= 1000 || cantidad500) return 0;
+  return Number((monto * 0.00005).toFixed(2));
+}
+
 @Injectable()
 export class GastosService {
   constructor(
@@ -59,8 +65,53 @@ export class GastosService {
     private readonly catalogService: CatalogService,
   ) {}
 
+  private validateCantidad500(
+    concepto: string, metodoPago: string, moneda: string, monto: number,
+    cantidad500?: number | null, destinatario500?: string | null,
+  ) {
+    if (cantidad500 == null) {
+      if (destinatario500) throw new BadRequestException('Selecciona x500 para indicar a quién se le dio.');
+      return null;
+    }
+    if (concepto !== 'ingreso' || metodoPago !== 'debito' || moneda !== 'PEN') {
+      throw new BadRequestException('La opción x500 solo corresponde a ingresos en soles.');
+    }
+    if (!Number.isInteger(cantidad500) || cantidad500 < 1 || cantidad500 * 500 > monto) {
+      throw new BadRequestException('La cantidad x500 no puede superar el monto del ingreso.');
+    }
+    if (!['yo', 'renato'].includes(String(destinatario500 || ''))) {
+      throw new BadRequestException('Indica si los depósitos x500 se dieron a ti o a Renato.');
+    }
+    return cantidad500;
+  }
+
+  private async syncIncomeItf(ingreso: Gasto, repo: Repository<Gasto> = this.repo) {
+    if (!ingreso?.id) return;
+    const amount = ingreso.concepto === 'ingreso' && ingreso.metodoPago === 'debito' && ingreso.moneda === 'PEN'
+      ? calculateIncomeItf(Number(ingreso.monto), ingreso.cantidad500)
+      : 0;
+    const existing = await repo.findOne({ where: { itfIngresoId: ingreso.id } });
+    if (!amount) {
+      if (existing) await repo.remove(existing);
+      return;
+    }
+    const itf = existing || repo.create({
+      userId: ingreso.userId,
+      concepto: 'itf',
+      metodoPago: 'debito',
+      moneda: 'PEN',
+      itfIngresoId: ingreso.id,
+    });
+    itf.monto = amount.toFixed(2);
+    itf.montoPen = itf.monto;
+    itf.fecha = ingreso.fecha;
+    itf.tarjeta = ingreso.tarjeta;
+    itf.notas = `ITF del ingreso #${ingreso.id}`;
+    await repo.save(itf);
+  }
+
   private async isConceptAllowed(concepto: string, metodoPago: 'debito' | 'credito') {
-    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'bolsa']);
+    const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'itf', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'bolsa']);
     const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback']);
     if (metodoPago === 'debito' && allowedDeb.has(concepto)) return true;
     if (metodoPago === 'credito' && allowedCred.has(concepto)) return true;
@@ -95,6 +146,7 @@ export class GastosService {
 
     const montoNum = Number(dto.monto);
     const montoSigned = concepto === 'cashback' ? -Math.abs(montoNum) : montoNum;
+    const cantidad500 = this.validateCantidad500(concepto, metodoPago, moneda, montoNum, dto.cantidad500, dto.destinatario500);
 
     if (concepto !== 'gastos_recurrentes' && !dto.allowDuplicate) {
       const sameDayRows = await this.repo.find({
@@ -126,6 +178,8 @@ export class GastosService {
       cuotasMeses: concepto === 'deuda_cuotas' ? (dto.cuotasMeses ?? null) : null,
       moneda,
       monto: montoSigned.toFixed(2),
+      cantidad500,
+      destinatario500: cantidad500 ? dto.destinatario500 : null,
       fecha: dto.fecha,
       metodoPago,
       // Guardamos la "tarjeta" para ambos métodos (débito=banco, crédito=tarjeta)
@@ -165,7 +219,14 @@ export class GastosService {
           : null,
     });
 
-    const saved = await this.repo.save(gasto);
+    const saved = concepto === 'ingreso'
+      ? await this.repo.manager.transaction(async (manager) => {
+          const repo = manager.getRepository(Gasto);
+          const ingreso = await repo.save(gasto);
+          await this.syncIncomeItf(ingreso, repo);
+          return ingreso;
+        })
+      : await this.repo.save(gasto);
 
     // Auto-upsert de programación para gastos mensuales/recurrentes
     if (gasto.concepto === 'gastos_recurrentes') {
@@ -355,6 +416,8 @@ export class GastosService {
     if (role !== 'admin' && g.userId !== userId) {
       throw new ForbiddenException('No autorizado');
     }
+    if (g.itfIngresoId) throw new BadRequestException('El ITF automático se modifica desde su ingreso.');
+    const wasIncome = g.concepto === 'ingreso';
 
     if (dto.concepto !== undefined) g.concepto = normConcept(dto.concepto);
     if (dto.detalleGusto !== undefined && dto.notas === undefined) {
@@ -408,12 +471,29 @@ export class GastosService {
       g.montoPen = (g.moneda === 'USD' ? Number(g.monto) * rate : Number(g.monto)).toFixed(2) as any;
     }
 
+    const nextCantidad500 = dto.cantidad500 !== undefined ? dto.cantidad500 : g.cantidad500;
+    const nextDestinatario500 = dto.destinatario500 !== undefined ? dto.destinatario500 : g.destinatario500;
+    g.cantidad500 = this.validateCantidad500(
+      g.concepto, g.metodoPago, g.moneda, Number(g.monto),
+      nextCantidad500, nextCantidad500 == null ? null : nextDestinatario500,
+    );
+    g.destinatario500 = g.cantidad500 ? nextDestinatario500 : null;
+
+    if (wasIncome || g.concepto === 'ingreso') {
+      return this.repo.manager.transaction(async (manager) => {
+        const repo = manager.getRepository(Gasto);
+        const saved = await repo.save(g);
+        await this.syncIncomeItf(saved, repo);
+        return saved;
+      });
+    }
     return this.repo.save(g);
   }
 
   async remove(userId: number, role: Role, id: number) {
     const g = await this.getOrThrow(id);
     if (role !== 'admin' && g.userId !== userId) throw new ForbiddenException('No autorizado');
+    if (g.itfIngresoId) throw new BadRequestException('El ITF automático se elimina junto con su ingreso.');
     if (g.concepto === 'gastos_recurrentes' || g.concepto === 'gastos_mensuales') {
       const query = this.schedulesRepo
         .createQueryBuilder('schedule')
@@ -432,7 +512,16 @@ export class GastosService {
       const schedules = await query.getMany();
       if (schedules.length) await this.schedulesRepo.remove(schedules);
     }
-    await this.repo.remove(g);
+    if (g.concepto === 'ingreso') {
+      await this.repo.manager.transaction(async (manager) => {
+        const repo = manager.getRepository(Gasto);
+        const linkedItf = await repo.findOne({ where: { itfIngresoId: g.id } });
+        if (linkedItf) await repo.remove(linkedItf);
+        await repo.remove(g);
+      });
+    } else {
+      await this.repo.remove(g);
+    }
     return { ok: true };
   }
 }

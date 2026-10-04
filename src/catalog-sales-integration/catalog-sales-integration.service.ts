@@ -281,16 +281,21 @@ export class CatalogSalesIntegrationService {
     );
   }
 
-  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown) {
+  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
     if (['confirmed', 'cancelled'].includes(event.status)) return event;
 
     try {
       if (event.eventType === 'sale.created') {
-        const exchangeRate = Number(submittedExchangeRate);
-        if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
-          throw new BadRequestException('Ingresa un tipo de cambio valido');
+        const enteredRate = Number(submittedExchangeRate);
+        const storedRate = Number(event.exchangeRate);
+        const exchangeRate = Number.isFinite(enteredRate) && enteredRate > 0
+          ? enteredRate
+          : Number.isFinite(storedRate) && storedRate > 0 ? storedRate : 3.7;
+        const paymentType = submittedPaymentType == null ? undefined : String(submittedPaymentType);
+        if (paymentType && !['direct', 'card', 'debt'].includes(paymentType)) {
+          throw new BadRequestException('Selecciona directo, pago con tarjeta o deuda.');
         }
         const codeMatch = String(event.sku).match(/(\d+)(?!.*\d)/);
         const code = Number(codeMatch?.[1]);
@@ -311,6 +316,8 @@ export class CatalogSalesIntegrationService {
           precioVenta: Number(event.amount),
           vendedor: product.vendedor || undefined,
           incomeBank,
+          incomePaymentType: paymentType,
+          incomeSku: String(event.sku),
         };
         const pendingCancellation = await this.findPendingCancellationBefore(schema, event);
         let sale: any;

@@ -101,6 +101,9 @@ export class ProductoService {
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
   async create(data: CreateProductoDto): Promise<Producto> {
+    if (data.soloInventario && !isAccessoryStock(data.tipo)) {
+      throw new BadRequestException('Solo los accesorios pueden quedar exclusivamente en Inventario.');
+    }
     const rawDetalle: any = data.detalle ? { ...(data.detalle as any) } : null;
     if (rawDetalle) {
       rawDetalle.tamano = rawDetalle.tamano ?? rawDetalle.tamanio ?? rawDetalle['tama\u00f1o'] ?? null;
@@ -169,6 +172,7 @@ export class ProductoService {
       stockInicial: cantidad,
       stockActual: cantidad,
       codigoInventario: accessoryDisplayCode,
+      soloInventario: !!data.soloInventario,
       envioGrupoId: envioGrupoId || null,
       detalle: detalle || undefined,
       valor: valor || undefined,
@@ -189,8 +193,8 @@ export class ProductoService {
       await this.valorRepo.save(valor);
     }
 
-    // Todos los productos pueden llevar tracking. Los accesorios, además, entran
-    // inmediatamente a Inventario para administrar su stock por unidades.
+    // Los accesorios entran a Inventario de inmediato. Las compras simples
+    // creadas alli no necesitan el tracking inicial de Productos.
     if (accessoryStock) {
       await this.inventarioRepo.save(this.inventarioRepo.create({
         productoId: savedProducto.id,
@@ -198,9 +202,11 @@ export class ProductoService {
         accesorios: [],
       }));
     }
-    await this.trackingRepo.save(
-      this.trackingRepo.create({ productoId: savedProducto.id, estado: 'comprado_sin_tracking' }),
-    );
+    if (!data.soloInventario) {
+      await this.trackingRepo.save(
+        this.trackingRepo.create({ productoId: savedProducto.id, estado: 'comprado_sin_tracking' }),
+      );
+    }
     if (envioGrupoId) {
       await this.syncTrackingEnGrupo(envioGrupoId);
     }
@@ -234,7 +240,8 @@ export class ProductoService {
     const existing = candidates.find((product) =>
       Number(product.stockActual || 0) > 0
       && this.normalizeAccessoryMatch(product.detalle?.modelo) === model
-      && this.normalizeAccessoryMatch(product.estado) === estado,
+      && this.normalizeAccessoryMatch(product.estado) === estado
+      && Boolean(product.soloInventario) === Boolean(data.soloInventario),
     );
     if (existing) return Number(existing.codigoInventario || existing.id);
 
@@ -345,6 +352,7 @@ export class ProductoService {
       .leftJoinAndSelect('p.detalle', 'd')
       .leftJoinAndSelect('p.valor', 'v')
       .leftJoinAndSelect('p.tracking', 't')
+      .where('p.soloInventario = false')
       .orderBy('p.id', 'DESC');
 
     let items: Producto[] = [];

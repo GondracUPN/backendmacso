@@ -69,6 +69,26 @@ describe('CatalogSalesIntegrationService.confirm', () => {
     expect(ventaService.create).toHaveBeenCalledWith(expect.objectContaining({ productoId: 366 }));
     expect(queries.some(({ sql, params }) => sql.includes("'confirmed'") && params[1] === 92)).toBe(true);
   });
+
+  it('usa el cambio del sistema y registra la deuda x500 al confirmar', async () => {
+    const { service, ventaService } = makeService({
+      updateError: new NotFoundException('Venta 91 no encontrada'),
+    });
+    await service.confirm(event.id, undefined, 'bcp', 'debt');
+    expect(ventaService.create).toHaveBeenCalledWith(expect.objectContaining({
+      tipoCambio: 3.7,
+      incomePaymentType: 'debt',
+      incomeSku: 'MS-366',
+    }));
+  });
+
+  it('acepta el cobro directo de la venta', async () => {
+    const { service, ventaService } = makeService({
+      updateError: new NotFoundException('Venta 91 no encontrada'),
+    });
+    await service.confirm(event.id, 3.75, 'bcp', 'direct');
+    expect(ventaService.create).toHaveBeenCalledWith(expect.objectContaining({ incomePaymentType: 'direct' }));
+  });
 });
 
 describe('CatalogSalesIntegrationService.paymentOptions', () => {

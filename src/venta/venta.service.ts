@@ -229,7 +229,9 @@ export class VentaService {
     return owner === 'gonzalo' ? this.userRepo.findOne({ where: { role: 'admin' } }) : null;
   }
 
-  private async syncSaleIncome(venta: Venta, incomeBank?: string): Promise<void> {
+  private async syncSaleIncome(
+    venta: Venta, incomeBank?: string, paymentType?: 'direct' | 'card' | 'debt', saleSku?: string,
+  ): Promise<void> {
     if (!this.gastoRepo || !this.userRepo) return;
     const seller = normalizeSeller(venta.vendedor);
     const owners: Array<{ owner: 'gonzalo' | 'renato'; share: number }> = seller === 'ambos'
@@ -266,6 +268,8 @@ export class VentaService {
       desiredUserIds.add(user.id);
       const amount = +(Number(venta.precioVenta || 0) * share).toFixed(2);
       const existing = linked.find((row) => row.userId === user.id);
+      const resolvedPaymentType = paymentType || existing?.salePaymentType || null;
+      const samePaymentType = existing?.salePaymentType === resolvedPaymentType;
       const values = {
         userId: user.id,
         concepto: 'ingreso',
@@ -277,6 +281,16 @@ export class VentaService {
         tarjeta: incomeBank || existing?.tarjeta || 'bcp',
         tarjetaPago: null,
         notas: reference,
+        saleId: venta.id,
+        saleSku: saleSku || existing?.saleSku || null,
+        salePaymentType: resolvedPaymentType,
+        saleReceivedAmount: resolvedPaymentType === 'direct'
+          ? amount.toFixed(2)
+          : samePaymentType ? (existing?.saleReceivedAmount ?? (resolvedPaymentType ? '0.00' : null)) : (resolvedPaymentType ? '0.00' : null),
+        salePaidAt: resolvedPaymentType === 'direct'
+          ? String(venta.fechaVenta || '').slice(0, 10)
+          : samePaymentType ? (existing?.salePaidAt ?? null) : null,
+        cantidad500: resolvedPaymentType === 'debt' ? (samePaymentType ? (existing?.cantidad500 ?? 0) : 0) : null,
       };
       if (existing) {
         Object.assign(existing, values);
@@ -288,6 +302,40 @@ export class VentaService {
 
     const obsolete = linked.filter((row) => !desiredUserIds.has(row.userId));
     if (obsolete.length) await this.gastoRepo.remove(obsolete);
+  }
+
+  async updateSaleIncomePayment(
+    gastoId: number,
+    input: { receivedAmount?: number; paidAt?: string | null; exchangeRate?: number },
+  ): Promise<Gasto> {
+    if (!this.gastoRepo) throw new BadRequestException('No se pueden actualizar los cobros.');
+    const income = await this.gastoRepo.findOne({ where: { id: gastoId } });
+    if (!income?.saleId || !['card', 'debt'].includes(String(income.salePaymentType))) {
+      throw new BadRequestException('Este ingreso no corresponde a un cobro de venta del catálogo.');
+    }
+    const total = Number(income.monto);
+    const received = Number(input.receivedAmount);
+    if (!Number.isFinite(received) || received < 0 || received > total || Math.abs(Math.round(received * 100) - received * 100) > 0.000001) {
+      throw new BadRequestException('El monto recibido debe estar entre cero y el total de la venta.');
+    }
+    if (input.paidAt && !/^\d{4}-\d{2}-\d{2}$/.test(input.paidAt)) {
+      throw new BadRequestException('Fecha de pago inválida.');
+    }
+    if (income.salePaymentType === 'card' && received > 0 && !input.paidAt) {
+      throw new BadRequestException('Indica la fecha del pago con tarjeta.');
+    }
+    if (received === 0 && input.paidAt) {
+      throw new BadRequestException('Registra un monto recibido antes de indicar la fecha.');
+    }
+    if (input.exchangeRate !== undefined) {
+      const rate = Number(input.exchangeRate);
+      if (!Number.isFinite(rate) || rate <= 0) throw new BadRequestException('Tipo de cambio inválido.');
+      await this.update(income.saleId, { tipoCambio: rate });
+    }
+    income.saleReceivedAmount = received.toFixed(2);
+    income.cantidad500 = income.salePaymentType === 'debt' ? Math.floor(received / 500) : null;
+    income.salePaidAt = input.paidAt || null;
+    return this.gastoRepo.save(income);
   }
 
   private async findExistingByProducto(productoId: number): Promise<Venta | null> {
@@ -904,7 +952,7 @@ export class VentaService {
   async create(dto: CreateVentaDto): Promise<Venta> {
     const existing = await this.findExistingByProducto(dto.productoId);
     if (existing && !isAccessoryStock(existing.producto?.tipo)) {
-      await this.syncSaleIncome(existing, dto.incomeBank);
+      await this.syncSaleIncome(existing, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
       return existing;
     }
 
@@ -987,7 +1035,7 @@ export class VentaService {
           vendedor: normalizeSellerLabel(dto.vendedor) ?? sellerFromProducto(locked, null),
         }));
       });
-      await this.syncSaleIncome(saved, dto.incomeBank);
+      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
       await this.cache.del?.('productos:stats').catch?.(() => {});
       await this.cache.del?.('productos:resumen').catch?.(() => {});
       return saved;
@@ -1055,7 +1103,7 @@ export class VentaService {
           sellerFromProducto(producto, 'ambos'),
       });
       const saved = await this.saveIdempotent(venta);
-      await this.syncSaleIncome(saved, dto.incomeBank);
+      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
       // invalidar KPIs de productos
       await this.cache.del?.('productos:stats').catch?.(() => {});
       return saved;
@@ -1091,7 +1139,7 @@ export class VentaService {
       vendedor: resolvedSeller,
     });
     const saved = await this.saveIdempotent(venta);
-    await this.syncSaleIncome(saved, dto.incomeBank);
+    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
     // invalidar KPIs de productos
     await this.cache.del?.('productos:stats').catch?.(() => {});
     await this.cache.del?.('productos:resumen').catch?.(() => {});
@@ -1120,7 +1168,7 @@ export class VentaService {
       venta.ganancia = 0;
       venta.porcentajeGanancia = 0;
       const saved = await this.ventaRepo.save(venta);
-      await this.syncSaleIncome(saved, dto.incomeBank);
+      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
       await this.cache.del?.('productos:stats').catch?.(() => {});
       await this.cache.del?.('productos:resumen').catch?.(() => {});
       return saved;
@@ -1230,7 +1278,7 @@ export class VentaService {
     if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;
 
     const saved = await this.ventaRepo.save(venta);
-    await this.syncSaleIncome(saved, dto.incomeBank);
+    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
     await this.cache.del?.('productos:stats').catch?.(() => {});
     await this.cache.del?.('productos:resumen').catch?.(() => {});
     return saved;
@@ -1262,6 +1310,10 @@ export class VentaService {
       }
     }
     await this.ventaRepo.remove(venta);
+    if (this.gastoRepo) {
+      const linkedIncome = await this.gastoRepo.find({ where: { saleId: id } });
+      if (linkedIncome.length) await this.gastoRepo.remove(linkedIncome);
+    }
     await this.cache.del?.('productos:stats').catch?.(() => {});
     await this.cache.del?.('productos:resumen').catch?.(() => {});
   }

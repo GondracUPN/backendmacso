@@ -115,6 +115,8 @@ describe('VentaService.create', () => {
       fechaVenta: '2026-08-04',
       precioVenta: 3000,
       incomeBank: 'bcp',
+      incomePaymentType: 'debt',
+      incomeSku: 'MS-44',
     });
 
     expect(result).toBe(existing);
@@ -125,6 +127,11 @@ describe('VentaService.create', () => {
       fecha: '2026-08-04',
       tarjeta: 'bcp',
       notas: '__SALE_INCOME__:44',
+      saleId: 93,
+      saleSku: 'MS-44',
+      salePaymentType: 'debt',
+      saleReceivedAmount: '0.00',
+      cantidad500: 0,
     }));
   });
 

@@ -137,6 +137,41 @@ describe('ProductoService', () => {
     expect(result.tracking).toEqual([expect.objectContaining({ estado: 'comprado_sin_tracking' })]);
   });
 
+  it('crea accesorios simples solo para Inventario y sin tracking', async () => {
+    detalleRepo.save.mockImplementation(async (value) => ({ id: 10, ...value }));
+    valorRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));
+    productoRepo.save.mockImplementation(async (value) => ({ id: 31, ...value }));
+    inventarioRepo.save.mockImplementation(async (value) => value);
+    productoRepo.findOneOrFail.mockResolvedValue({
+      id: 31, tipo: 'accesorios', soloInventario: true, tracking: [],
+    });
+
+    const result = await service.create({
+      tipo: 'accesorios', estado: 'nuevo', soloInventario: true, cantidad: 4,
+      detalle: { modelo: 'Cable USB-C' },
+      valor: { valorProducto: 60, valorDec: 0, peso: 0, fechaCompra: '2026-10-02' },
+    } as any);
+
+    expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ soloInventario: true, stockActual: 4 }));
+    expect(inventarioRepo.save).toHaveBeenCalledWith(expect.objectContaining({ productoId: 31, enAlmacen: true }));
+    expect(trackingRepo.save).not.toHaveBeenCalled();
+    expect(result.tracking).toEqual([]);
+  });
+
+  it('excluye las compras exclusivas de Inventario del listado de Productos', async () => {
+    const query = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
+    };
+    productoRepo.createQueryBuilder.mockReturnValue(query);
+
+    await service.findAll();
+
+    expect(query.where).toHaveBeenCalledWith('p.soloInventario = false');
+  });
+
   it('crea una recompra separada con el mismo código visible mientras quede stock', async () => {
     const existing = {
       id: 12,
