@@ -284,6 +284,42 @@ async function bootstrap() {
       await dataSource.query(
         `ALTER TABLE "${schema}"."producto" ADD COLUMN IF NOT EXISTS "soloInventario" boolean NOT NULL DEFAULT false`,
       );
+      // La versión anterior de "Agregar accesorio simple" creaba la compra
+      // sin esta marca y con un tracking vacío. Recuperar esas compras antiguas
+      // para que aparezcan solo en Inventario. La fecha fija evita reclasificar
+      // accesorios normales que se creen después de esta corrección.
+      const legacySimpleAccessories = await dataSource.query(
+        `UPDATE "${schema}"."producto" p
+         SET "soloInventario" = true
+         FROM "${schema}"."producto_valor" v, "${schema}"."inventario" i
+         WHERE p."valorId" = v.id
+           AND i."productoId" = p.id
+           AND LOWER(p.tipo) = 'accesorios'
+           AND p."soloInventario" = false
+           AND p.vendedor IS NULL
+           AND p."envioGrupoId" IS NULL
+           AND v."valorDec" = 0
+           AND v.peso = 0
+           AND i."enAlmacen" = true
+           AND i."createdAt" < TIMESTAMPTZ '2026-10-06 05:00:00+00'
+           AND v."fechaCompra"::date = (i."createdAt" AT TIME ZONE 'America/Lima')::date
+           AND EXISTS (
+             SELECT 1 FROM "${schema}"."tracking" t
+             WHERE t."productoId" = p.id
+               AND t.estado = 'comprado_sin_tracking'
+               AND t.tracking_usa IS NULL AND t.tracking_eshop IS NULL AND t.casillero IS NULL
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM "${schema}"."tracking" t
+             WHERE t."productoId" = p.id
+               AND (t.estado <> 'comprado_sin_tracking'
+                 OR t.tracking_usa IS NOT NULL OR t.tracking_eshop IS NOT NULL OR t.casillero IS NOT NULL)
+           )
+         RETURNING p.id`,
+      );
+      if (legacySimpleAccessories.length) {
+        console.log('[BOOT][LEGACY_SIMPLE_ACCESSORIES]', legacySimpleAccessories.map((row: { id: number }) => row.id));
+      }
       await dataSource.query(
         `ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "cantidad_500" integer`,
       );
