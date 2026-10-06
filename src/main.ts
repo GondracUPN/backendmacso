@@ -302,7 +302,10 @@ async function bootstrap() {
            AND v.peso = 0
            AND i."enAlmacen" = true
            AND i."createdAt" < TIMESTAMPTZ '2026-10-06 05:00:00+00'
-           AND v."fechaCompra"::date = (i."createdAt" AT TIME ZONE 'America/Lima')::date
+           AND v."fechaCompra"::date IN (
+             i."createdAt"::date,
+             (i."createdAt" AT TIME ZONE 'America/Lima')::date
+           )
            AND EXISTS (
              SELECT 1 FROM "${schema}"."tracking" t
              WHERE t."productoId" = p.id
