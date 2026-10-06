@@ -1367,7 +1367,9 @@ export class ProductoService {
     const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
     const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
     const productos = await this.productoRepo.find({
-      ...(includeAlreadySent ? {} : { where: { catalogoEnviado: false } }),
+      where: includeAlreadySent
+        ? { soloInventario: false }
+        : { catalogoEnviado: false, soloInventario: false },
       relations: ['detalle', 'valor', 'tracking'],
       order: { id: 'DESC' },
     });
@@ -1384,6 +1386,7 @@ export class ProductoService {
     const productosListos = new Set(fichasListas.map((ficha) => ficha.productoId));
 
     return productos
+      .filter((producto) => !producto.soloInventario)
       .filter((producto) => isAccessoryStock(producto.tipo)
         ? Number(producto.stockActual || 0) > 0
         : !vendidosSet.has(producto.id))

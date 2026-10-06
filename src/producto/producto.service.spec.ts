@@ -414,12 +414,31 @@ describe('ProductoService', () => {
     const result = await service.findPendientesCatalogo();
 
     expect(productoRepo.find).toHaveBeenCalledWith(expect.objectContaining({
-      where: { catalogoEnviado: false },
+      where: { catalogoEnviado: false, soloInventario: false },
     }));
     expect(inventarioRepo.find).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ enAlmacen: true, fotosTomadas: true }),
     }));
     expect(result.map((producto) => producto.id)).toEqual([1]);
+  });
+
+  it('excluye los accesorios simples de pendientes del catalogo incluso al recalcular', async () => {
+    ventaRepo.find.mockResolvedValue([]);
+    productoRepo.find.mockResolvedValue([
+      { id: 10, tipo: 'accesorios', soloInventario: true, stockActual: 3, tracking: [] },
+      { id: 11, tipo: 'accesorios', soloInventario: false, stockActual: 2, tracking: [] },
+    ]);
+    inventarioRepo.find.mockResolvedValue([
+      { productoId: 10, enAlmacen: true, fotosTomadas: true },
+      { productoId: 11, enAlmacen: true, fotosTomadas: true },
+    ]);
+
+    const result = await service.findPendientesCatalogo(true);
+
+    expect(productoRepo.find).toHaveBeenCalledWith(expect.objectContaining({
+      where: { soloInventario: false },
+    }));
+    expect(result.map((producto) => producto.id)).toEqual([11]);
   });
 
   it('mantiene en catálogo un accesorio con venta parcial y publica su stock restante', async () => {

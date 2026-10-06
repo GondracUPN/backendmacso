@@ -55,6 +55,12 @@ export class Gasto {
   @Column({ name: 'sale_paid_at', type: 'date', nullable: true })
   salePaidAt?: string | null;
 
+  @Column({ name: 'sale_payment_history', type: 'jsonb', nullable: true })
+  salePaymentHistory?: Array<{ amount: number; paidAt: string; units500?: number }> | null;
+
+  @Column({ name: 'sale_exchange_rate', type: 'numeric', precision: 10, scale: 4, nullable: true })
+  saleExchangeRate?: string | null;
+
   @Column({ name: 'itf_ingreso_id', type: 'int', nullable: true })
   itfIngresoId?: number | null;
 

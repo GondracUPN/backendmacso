@@ -13,7 +13,7 @@ describe('cobro de venta del catálogo', () => {
       salePaymentType: 'direct', saleReceivedAmount: '5200.00', salePaidAt: '2026-10-02', saleSku: 'MS-44',
     }));
   });
-  it('actualiza el avance x500 y el tipo de cambio en la venta', async () => {
+  it('registra un lote x500 con fecha sin cambiar la venta hasta completar el saldo', async () => {
     const income = {
       id: 31, saleId: 7, salePaymentType: 'debt', saleReceivedAmount: '0.00',
       monto: '5200.00', cantidad500: 0, salePaidAt: null,
@@ -26,20 +26,66 @@ describe('cobro de venta del catálogo', () => {
     const update = jest.spyOn(service, 'update').mockResolvedValue({ id: 7 } as any);
 
     const result = await service.updateSaleIncomePayment(31, {
-      receivedAmount: 1200, paidAt: '2026-10-02', exchangeRate: 3.8,
+      paymentCount: 2, paidAt: '2026-10-02', exchangeRate: 3.8,
     });
 
-    expect(update).toHaveBeenCalledWith(7, { tipoCambio: 3.8 });
-    expect(result).toMatchObject({ saleReceivedAmount: '1200.00', cantidad500: 2, salePaidAt: '2026-10-02' });
+    expect(update).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ saleReceivedAmount: '1000.00', cantidad500: 2, salePaidAt: '2026-10-02', saleExchangeRate: '3.8000' });
+    expect(result.salePaymentHistory).toEqual([{ amount: 1000, paidAt: '2026-10-02', units500: 2 }]);
   });
 
-  it('suma solo el importe registrado de un pago con tarjeta', async () => {
+  it('suma pagos normales sin superar el saldo y conserva sus fechas', async () => {
     const income = { id: 32, saleId: 8, salePaymentType: 'card', monto: '1800.00', saleReceivedAmount: '0.00' };
     const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
     const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
-    await expect(service.updateSaleIncomePayment(32, { receivedAmount: 0, paidAt: '2026-10-02' })).rejects.toThrow(/Registra un monto recibido/);
-    const result = await service.updateSaleIncomePayment(32, { receivedAmount: 800, paidAt: '2026-10-02' });
-    expect(result).toMatchObject({ saleReceivedAmount: '800.00', salePaidAt: '2026-10-02' });
+    await expect(service.updateSaleIncomePayment(32, { paymentAmount: 0, paidAt: '2026-10-02' })).rejects.toThrow(/monto recibido válido/);
+    await service.updateSaleIncomePayment(32, { paymentAmount: 800, paidAt: '2026-10-02' });
+    await expect(service.updateSaleIncomePayment(32, { paymentAmount: 1001, paidAt: '2026-10-03' })).rejects.toThrow(/supera el saldo/);
+    const result = await service.updateSaleIncomePayment(32, { paymentAmount: 1000, paidAt: '2026-10-03' });
+    expect(result).toMatchObject({ saleReceivedAmount: '1800.00', salePaidAt: '2026-10-03' });
+    expect(result.salePaymentHistory).toEqual([
+      { amount: 800, paidAt: '2026-10-02' },
+      { amount: 1000, paidAt: '2026-10-03' },
+    ]);
+  });
+
+  it('aplica el tipo de cambio al completar y permite corregirlo después desde gastos', async () => {
+    const income = { id: 33, saleId: 9, salePaymentType: 'card', monto: '1700.00', saleReceivedAmount: '900.00', salePaidAt: '2026-10-02', salePaymentHistory: [{ amount: 900, paidAt: '2026-10-02' }], saleExchangeRate: null as string | null, tasaUsdPen: null as string | null };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 9, vendedor: 'Gonzalo' } as any);
+    const update = jest.spyOn(service, 'update').mockResolvedValue({ id: 9 } as any);
+
+    await service.updateSaleIncomePayment(33, { paymentAmount: 800, paidAt: '2026-10-05', exchangeRate: 3.7 });
+    expect(update).toHaveBeenCalledWith(9, { tipoCambio: 3.7 });
+    expect(income.saleExchangeRate).toBe('3.7000');
+
+    await service.updateSaleIncomePayment(33, { exchangeRate: 3.8 });
+    expect(update).toHaveBeenLastCalledWith(9, { tipoCambio: 3.8 });
+    expect(income.tasaUsdPen).toBe('3.8000');
+  });
+
+  it('solo permite el último monto x500 cuando faltan menos de S/ 500', async () => {
+    const income = { id: 34, saleId: 10, salePaymentType: 'debt', monto: '1200.00', saleReceivedAmount: '1000.00', cantidad500: 2, salePaidAt: '2026-10-02' };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
+    await expect(service.updateSaleIncomePayment(34, { paymentCount: 1, paidAt: '2026-10-03' })).rejects.toThrow(/cantidad de pagos/);
+    const result = await service.updateSaleIncomePayment(34, { paymentAmount: 200, paidAt: '2026-10-03' });
+    expect(result.saleReceivedAmount).toBe('1200.00');
+    expect(result.salePaymentHistory).toHaveLength(2);
+  });
+
+  it('usa al cancelar x500 el tipo de cambio fijado en un abono anterior', async () => {
+    const income = { id: 35, saleId: 11, salePaymentType: 'debt', monto: '1200.00', saleReceivedAmount: '1000.00', cantidad500: 2, saleExchangeRate: '3.7000', salePaymentHistory: [{ amount: 1000, paidAt: '2026-10-02', units500: 2 }] };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 11, vendedor: 'Renato' } as any);
+    const update = jest.spyOn(service, 'update').mockResolvedValue({ id: 11 } as any);
+
+    const result = await service.updateSaleIncomePayment(35, { paymentAmount: 200, paidAt: '2026-10-05' });
+
+    expect(update).toHaveBeenCalledWith(11, { tipoCambio: 3.7 });
+    expect(result.saleReceivedAmount).toBe('1200.00');
   });
 
   it('elimina el ingreso vinculado cuando se anula la venta', async () => {

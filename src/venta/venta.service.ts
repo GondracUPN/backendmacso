@@ -306,35 +306,72 @@ export class VentaService {
 
   async updateSaleIncomePayment(
     gastoId: number,
-    input: { receivedAmount?: number; paidAt?: string | null; exchangeRate?: number },
+    input: { paymentAmount?: number; paymentCount?: number; paidAt?: string; exchangeRate?: number },
   ): Promise<Gasto> {
     if (!this.gastoRepo) throw new BadRequestException('No se pueden actualizar los cobros.');
     const income = await this.gastoRepo.findOne({ where: { id: gastoId } });
     if (!income?.saleId || !['card', 'debt'].includes(String(income.salePaymentType))) {
       throw new BadRequestException('Este ingreso no corresponde a un cobro de venta del catálogo.');
     }
-    const total = Number(income.monto);
-    const received = Number(input.receivedAmount);
-    if (!Number.isFinite(received) || received < 0 || received > total || Math.abs(Math.round(received * 100) - received * 100) > 0.000001) {
-      throw new BadRequestException('El monto recibido debe estar entre cero y el total de la venta.');
+    const totalCents = Math.round(Number(income.monto) * 100);
+    const receivedCents = Math.round(Number(income.saleReceivedAmount || 0) * 100);
+    const remainingCents = totalCents - receivedCents;
+    const hasAmount = input.paymentAmount !== undefined;
+    const hasCount = input.paymentCount !== undefined;
+    if (!Number.isSafeInteger(totalCents) || totalCents <= 0 || !Number.isSafeInteger(receivedCents) || receivedCents < 0 || remainingCents < 0) {
+      throw new BadRequestException('El saldo de la venta es inválido.');
     }
-    if (input.paidAt && !/^\d{4}-\d{2}-\d{2}$/.test(input.paidAt)) {
-      throw new BadRequestException('Fecha de pago inválida.');
+    if (hasAmount && hasCount) throw new BadRequestException('Registra el pago en un solo formato.');
+    if (!hasAmount && !hasCount && input.exchangeRate === undefined) throw new BadRequestException('Indica un pago o un tipo de cambio.');
+
+    let paymentCents = 0;
+    if (hasCount) {
+      if (income.salePaymentType !== 'debt' || !Number.isInteger(input.paymentCount) || input.paymentCount! < 1 || remainingCents < 50000) {
+        throw new BadRequestException('La cantidad de pagos de S/ 500 es inválida.');
+      }
+      paymentCents = input.paymentCount! * 50000;
+    } else if (hasAmount) {
+      const amount = Number(input.paymentAmount);
+      paymentCents = Math.round(amount * 100);
+      if (!Number.isFinite(amount) || paymentCents < 1 || Math.abs(paymentCents / 100 - amount) > 0.000001) {
+        throw new BadRequestException('Ingresa un monto recibido válido.');
+      }
+      if (income.salePaymentType === 'debt' && remainingCents >= 50000) {
+        throw new BadRequestException('Registra primero los pagos de S/ 500.');
+      }
     }
-    if (income.salePaymentType === 'card' && received > 0 && !input.paidAt) {
-      throw new BadRequestException('Indica la fecha del pago con tarjeta.');
+    if (paymentCents > remainingCents) throw new BadRequestException('El pago supera el saldo pendiente.');
+    if (paymentCents > 0 && (!input.paidAt || !/^\d{4}-\d{2}-\d{2}$/.test(input.paidAt))) {
+      throw new BadRequestException('Indica la fecha del pago.');
     }
-    if (received === 0 && input.paidAt) {
-      throw new BadRequestException('Registra un monto recibido antes de indicar la fecha.');
-    }
+    if (!paymentCents && input.paidAt) throw new BadRequestException('Registra un monto antes de indicar la fecha.');
     if (input.exchangeRate !== undefined) {
       const rate = Number(input.exchangeRate);
       if (!Number.isFinite(rate) || rate <= 0) throw new BadRequestException('Tipo de cambio inválido.');
-      await this.update(income.saleId, { tipoCambio: rate });
+      income.saleExchangeRate = rate.toFixed(4);
     }
-    income.saleReceivedAmount = received.toFixed(2);
-    income.cantidad500 = income.salePaymentType === 'debt' ? Math.floor(received / 500) : null;
-    income.salePaidAt = input.paidAt || null;
+    const history = Array.isArray(income.salePaymentHistory) ? [...income.salePaymentHistory] : [];
+    if (!history.length && receivedCents > 0) {
+      history.push({ amount: receivedCents / 100, paidAt: income.salePaidAt || '', ...(income.salePaymentType === 'debt' ? { units500: Number(income.cantidad500 || 0) } : {}) });
+    }
+    if (paymentCents > 0) {
+      history.push({ amount: paymentCents / 100, paidAt: input.paidAt!, ...(hasCount ? { units500: input.paymentCount } : {}) });
+    }
+    const nextReceivedCents = receivedCents + paymentCents;
+    income.salePaymentHistory = history;
+    income.saleReceivedAmount = (nextReceivedCents / 100).toFixed(2);
+    income.cantidad500 = income.salePaymentType === 'debt'
+      ? history.reduce((sum, payment) => sum + Number(payment.units500 || 0), 0)
+      : null;
+    income.salePaidAt = history.at(-1)?.paidAt || null;
+    if (nextReceivedCents === totalCents && income.saleExchangeRate) {
+      const rate = Number(income.saleExchangeRate);
+      const sale = await this.findOne(income.saleId);
+      await this.update(income.saleId, isSplitSeller(normalizeSeller(sale.vendedor))
+        ? { tipoCambio: rate, tipoCambioGonzalo: rate, tipoCambioRenato: rate }
+        : { tipoCambio: rate });
+      income.tasaUsdPen = rate.toFixed(4);
+    }
     return this.gastoRepo.save(income);
   }
 
