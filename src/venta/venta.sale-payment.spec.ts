@@ -13,6 +13,18 @@ describe('cobro de venta del catálogo', () => {
       salePaymentType: 'direct', saleReceivedAmount: '5200.00', salePaidAt: '2026-10-02', saleSku: 'MS-44',
     }));
   });
+  it('aplica pagos combinados solo al saldo final de una venta con adelantos', async () => {
+    const saved: any[] = [];
+    const gastoRepo = { find: jest.fn(async () => []), create: jest.fn((value) => value), save: jest.fn(async (value) => { saved.push(value); return { id: saved.length, ...value }; }) };
+    const advanceRepo = { findOne: jest.fn(async () => ({ ventaId: 7, montoAdelanto: 800 })) };
+    const service = new VentaService({} as any, advanceRepo as any, { findOne: jest.fn(async () => ({ tipo: 'macbook' })) } as any, {} as any, {} as any, gastoRepo as any, { findOne: jest.fn(async () => ({ id: 1 })) } as any);
+    await (service as any).syncSaleIncome({ id: 7, productoId: 44, vendedor: 'Gonzalo', precioVenta: 2000, fechaVenta: '2026-10-07' }, 'bcp', 'direct', 'MS-44', [
+      { type: 'direct', amount: 200 }, { type: 'card', amount: 1000 },
+    ]);
+    expect(saved.map((row) => [row.salePaymentType, row.monto, row.saleReceivedAmount])).toEqual([
+      ['direct', '200.00', '200.00'], ['card', '1000.00', '0.00'],
+    ]);
+  });
   it('registra un lote x500 con fecha sin cambiar la venta hasta completar el saldo', async () => {
     const income = {
       id: 31, saleId: 7, salePaymentType: 'debt', saleReceivedAmount: '0.00',
@@ -47,6 +59,15 @@ describe('cobro de venta del catálogo', () => {
       { amount: 800, paidAt: '2026-10-02' },
       { amount: 1000, paidAt: '2026-10-03' },
     ]);
+  });
+
+  it('permite cobrar un adelanto por tarjeta antes de completar la venta', async () => {
+    const income = { id: 40, saleId: null, notas: '__SALE_ADVANCE__:5:0', salePaymentType: 'card', monto: '500.00', saleReceivedAmount: '0.00' };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
+    const result = await service.updateSaleIncomePayment(40, { paymentAmount: 200, paidAt: '2026-09-04' });
+    expect(result).toMatchObject({ saleReceivedAmount: '200.00', salePaidAt: '2026-09-04' });
+    expect(result.salePaymentHistory).toEqual([{ amount: 200, paidAt: '2026-09-04' }]);
   });
 
   it('aplica el tipo de cambio al completar y permite corregirlo después desde gastos', async () => {

@@ -281,7 +281,7 @@ export class CatalogSalesIntegrationService {
     );
   }
 
-  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown) {
+  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown, submittedIncomeParts?: unknown) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
     if (['confirmed', 'cancelled'].includes(event.status)) return event;
@@ -306,8 +306,10 @@ export class CatalogSalesIntegrationService {
         if (!product) throw new NotFoundException(`No existe el producto compartido ${event.sku}`);
         const paymentOptions = await this.paymentOptions(id);
         const incomeBank = String(submittedIncomeBank || '').trim();
-        if (!incomeBank || !paymentOptions.cards.some((card: any) => card.tipo === incomeBank)) {
-          throw new BadRequestException('Selecciona una tarjeta disponible del vendedor');
+        const parts = submittedIncomeParts as Array<{ type: string; amount: number }> | undefined;
+        const cashOnly = Array.isArray(parts) && parts.length === 1 && parts[0]?.type === 'cash';
+        if (!cashOnly && (!incomeBank || !paymentOptions.cards.some((card: any) => card.tipo === incomeBank))) {
+          throw new BadRequestException('Selecciona una cuenta de débito disponible del vendedor');
         }
         const saleData: any = {
           productoId: product.id,
@@ -317,6 +319,7 @@ export class CatalogSalesIntegrationService {
           vendedor: product.vendedor || undefined,
           incomeBank,
           incomePaymentType: paymentType,
+          incomeParts: parts,
           incomeSku: String(event.sku),
         };
         const pendingCancellation = await this.findPendingCancellationBefore(schema, event);

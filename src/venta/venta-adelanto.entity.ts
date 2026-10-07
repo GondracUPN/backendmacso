@@ -11,6 +11,8 @@ import { Producto } from '../producto/producto.entity';
 export type VentaAdelantoCuota = {
   fecha: string;
   monto: number;
+  banco?: 'bcp' | 'interbank' | 'bbva';
+  tipoPago?: 'direct' | 'card';
 };
 
 @Entity()

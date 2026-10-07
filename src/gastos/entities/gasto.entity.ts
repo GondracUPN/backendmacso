@@ -47,7 +47,7 @@ export class Gasto {
   saleSku?: string | null;
 
   @Column({ name: 'sale_payment_type', type: 'varchar', length: 12, nullable: true })
-  salePaymentType?: 'direct' | 'card' | 'debt' | null;
+  salePaymentType?: 'direct' | 'card' | 'debt' | 'cash' | null;
 
   @Column({ name: 'sale_received_amount', type: 'numeric', precision: 12, scale: 2, nullable: true })
   saleReceivedAmount?: string | null;

@@ -25,7 +25,7 @@ export class CatalogSalesIntegrationController {
 
   @Post(':id/confirm')
   confirm(@Param('id') id: string, @Body() body: any) {
-    return this.service.confirm(id, body?.exchangeRate, body?.incomeBank, body?.paymentType);
+    return this.service.confirm(id, body?.exchangeRate, body?.incomeBank, body?.paymentType, body?.incomeParts);
   }
 
   @Post(':id/exchange-rate')

@@ -1,4 +1,4 @@
-import { IsDateString, IsInt, IsNumber, IsPositive } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsPositive } from 'class-validator';
 
 export class CreateVentaAdelantoDto {
   @IsInt()
@@ -14,4 +14,12 @@ export class CreateVentaAdelantoDto {
   @IsNumber()
   @IsPositive()
   montoVenta: number; // S/
+
+  @IsOptional()
+  @IsIn(['bcp', 'interbank', 'bbva'])
+  incomeBank?: 'bcp' | 'interbank' | 'bbva';
+
+  @IsOptional()
+  @IsIn(['direct', 'card'])
+  incomePaymentType?: 'direct' | 'card';
 }

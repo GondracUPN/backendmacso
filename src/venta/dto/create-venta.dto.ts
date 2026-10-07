@@ -6,7 +6,19 @@ import {
   IsString,
   IsIn,
   Min,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class SaleIncomePartDto {
+  @IsIn(['direct', 'card', 'debt', 'cash'])
+  type: 'direct' | 'card' | 'debt' | 'cash';
+
+  @IsNumber()
+  @Min(0.01)
+  amount: number;
+}
 
 export class CreateVentaDto {
   @IsInt()
@@ -45,6 +57,12 @@ export class CreateVentaDto {
   @IsOptional()
   @IsIn(['direct', 'card', 'debt'])
   incomePaymentType?: 'direct' | 'card' | 'debt';
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaleIncomePartDto)
+  incomeParts?: SaleIncomePartDto[];
 
   @IsOptional()
   @IsString()

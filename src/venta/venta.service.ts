@@ -229,8 +229,66 @@ export class VentaService {
     return owner === 'gonzalo' ? this.userRepo.findOne({ where: { role: 'admin' } }) : null;
   }
 
+  private async syncAdelantoIncome(adelanto: VentaAdelanto, producto?: Producto | null): Promise<void> {
+    if (!this.gastoRepo || !this.userRepo) return;
+    const seller = normalizeSeller(producto?.vendedor || adelanto.producto?.vendedor);
+    const owners: Array<'gonzalo' | 'renato'> = seller === 'ambos'
+      ? ['gonzalo', 'renato']
+      : seller === 'renato' ? ['renato']
+        : seller === 'gonzalo' || seller.startsWith('gonzalo (') ? ['gonzalo'] : [];
+    const cuotas = Array.isArray(adelanto.cuotas) && adelanto.cuotas.length
+      ? adelanto.cuotas
+      : [{ fecha: adelanto.fechaAdelanto, monto: Number(adelanto.montoAdelanto) }];
+    for (const [index, cuota] of cuotas.entries()) {
+      const cents = Math.round(Number(cuota.monto) * 100);
+      if (cents <= 0) continue;
+      const reference = `__SALE_ADVANCE__:${adelanto.id}:${index}`;
+      const linked = await this.gastoRepo.find({ where: { concepto: 'ingreso', metodoPago: 'debito', notas: reference } });
+      let allocated = 0;
+      for (const [ownerIndex, owner] of owners.entries()) {
+        const user = await this.resolveIncomeUser(owner);
+        if (!user?.id) throw new BadRequestException(`No se encontró el usuario ${owner} para registrar el adelanto.`);
+        const ownerCents = ownerIndex === owners.length - 1 ? cents - allocated : Math.round(cents / owners.length);
+        allocated += ownerCents;
+        if (ownerCents <= 0) continue;
+        const existing = linked.find((row) => row.userId === user.id);
+        const tipoPago = cuota.tipoPago || 'direct';
+        if (!existing && !cuota.banco && !cuota.tipoPago) {
+          const manualMatches = await this.gastoRepo.find({ where: {
+            userId: user.id, concepto: 'ingreso', metodoPago: 'debito', moneda: 'PEN',
+            fecha: cuota.fecha, monto: (ownerCents / 100).toFixed(2),
+          } });
+          if (manualMatches.filter((row) => !row.saleId && !String(row.notas || '').startsWith('__SALE_')).length === 1) continue;
+        }
+        const received = tipoPago === 'direct' ? ownerCents : Math.round(Number(existing?.saleReceivedAmount || 0) * 100);
+        if (received > ownerCents) throw new BadRequestException('El adelanto es menor que los pagos ya recibidos.');
+        const values = {
+          userId: user.id,
+          concepto: 'ingreso',
+          metodoPago: 'debito' as const,
+          moneda: 'PEN' as const,
+          monto: (ownerCents / 100).toFixed(2),
+          montoPen: (ownerCents / 100).toFixed(2),
+          fecha: cuota.fecha,
+          tarjeta: cuota.banco || existing?.tarjeta || 'bcp',
+          tarjetaPago: null,
+          notas: reference,
+          saleId: adelanto.ventaId || null,
+          saleSku: `MS-${producto?.codigoInventario || adelanto.productoId}`,
+          salePaymentType: tipoPago,
+          saleReceivedAmount: (received / 100).toFixed(2),
+          salePaidAt: tipoPago === 'direct' ? cuota.fecha : (existing?.salePaidAt || null),
+          salePaymentHistory: existing?.salePaymentHistory || null,
+          cantidad500: null,
+        };
+        await this.gastoRepo.save(existing ? Object.assign(existing, values) : this.gastoRepo.create(values));
+      }
+    }
+  }
+
   private async syncSaleIncome(
     venta: Venta, incomeBank?: string, paymentType?: 'direct' | 'card' | 'debt', saleSku?: string,
+    submittedParts?: Array<{ type: 'direct' | 'card' | 'debt' | 'cash'; amount: number }>,
   ): Promise<void> {
     if (!this.gastoRepo || !this.userRepo) return;
     const seller = normalizeSeller(venta.vendedor);
@@ -256,20 +314,96 @@ export class VentaService {
       where: {
         concepto: 'ingreso',
         metodoPago: 'debito',
-        notas: In([reference, String(venta.productoId)]),
+        notas: In([reference, String(venta.productoId), ...(['direct', 'card', 'debt', 'cash'].map((type) => `${reference}:${type}`))]),
       },
       order: { id: 'ASC' },
     });
-    const desiredUserIds = new Set<number>();
+    const completedAdelanto = typeof this.adelantoRepo?.findOne === 'function'
+      ? await this.adelantoRepo.findOne({ where: { ventaId: venta.id } })
+      : null;
+    const totalCents = Math.round(Number(venta.precioVenta || 0) * 100)
+      - Math.round(Number(completedAdelanto?.montoAdelanto || 0) * 100);
+    if (totalCents < 0) throw new BadRequestException('El precio de venta no puede ser menor que los adelantos registrados.');
+    if (totalCents === 0) {
+      if (linked.length) await this.gastoRepo.remove(linked);
+      return;
+    }
+    let parts: Array<{ type: 'direct' | 'card' | 'debt' | 'cash'; cents: number }> | null = null;
+    if (submittedParts === undefined && linked.some((row) => String(row.notas).startsWith(`${reference}:`))) {
+      submittedParts = (['direct', 'card', 'debt', 'cash'] as const).map((type) => ({
+        type,
+        amount: linked.filter((row) => row.salePaymentType === type).reduce((sum, row) => sum + Number(row.monto || 0), 0),
+      })).filter((part) => part.amount > 0);
+    }
+    if (submittedParts !== undefined) {
+      if (!Array.isArray(submittedParts) || !submittedParts.length) throw new BadRequestException('Indica al menos una forma de cobro.');
+      const seen = new Set<string>();
+      parts = submittedParts.map((part) => {
+        const cents = Math.round(Number(part.amount) * 100);
+        if (!['direct', 'card', 'debt', 'cash'].includes(part.type) || seen.has(part.type)
+          || !Number.isSafeInteger(cents) || cents <= 0 || Math.abs(cents / 100 - Number(part.amount)) > 0.000001) {
+          throw new BadRequestException('Las partes del cobro deben tener tipos distintos y montos válidos.');
+        }
+        seen.add(part.type);
+        return { type: part.type, cents };
+      });
+      if (parts.reduce((sum, part) => sum + part.cents, 0) !== totalCents) {
+        throw new BadRequestException('Las partes del cobro deben sumar el precio total de la venta.');
+      }
+      if (parts.some((part) => part.type !== 'cash') && !incomeBank) {
+        throw new BadRequestException('Selecciona la cuenta de débito para el cobro que no es en efectivo.');
+      }
+    }
+    const desiredIds = new Set<number>();
+    const allocatedPartCents = new Map<string, number>();
 
-    for (const { owner, share } of owners) {
+    let allocatedOwnerCents = 0;
+    for (const [ownerIndex, { owner, share }] of owners.entries()) {
       const user = await this.resolveIncomeUser(owner);
       if (!user?.id) throw new BadRequestException(`No se encontró el usuario ${owner} para registrar el ingreso.`);
-      desiredUserIds.add(user.id);
-      const amount = +(Number(venta.precioVenta || 0) * share).toFixed(2);
-      const existing = linked.find((row) => row.userId === user.id);
+      const ownerCents = ownerIndex === owners.length - 1 ? totalCents - allocatedOwnerCents : Math.round(totalCents * share);
+      allocatedOwnerCents += ownerCents;
+      const amount = ownerCents / 100;
+      if (parts) {
+        for (const part of parts) {
+          const previousAllocation = allocatedPartCents.get(part.type) || 0;
+          const partCents = ownerIndex === owners.length - 1
+            ? part.cents - previousAllocation
+            : Math.round(part.cents * share);
+          allocatedPartCents.set(part.type, previousAllocation + partCents);
+          if (partCents <= 0) continue;
+          const partReference = `${reference}:${part.type}`;
+          const existingPart = linked.find((row) => row.userId === user.id && row.notas === partReference);
+          const isReceived = part.type === 'direct' || part.type === 'cash';
+          const values = {
+            userId: user.id,
+            concepto: 'ingreso',
+            metodoPago: 'debito' as const,
+            moneda: 'PEN' as const,
+            monto: (partCents / 100).toFixed(2),
+            montoPen: (partCents / 100).toFixed(2),
+            fecha: String(venta.fechaVenta || '').slice(0, 10),
+            tarjeta: part.type === 'cash' ? 'efectivo' : incomeBank || existingPart?.tarjeta || 'bcp',
+            tarjetaPago: null,
+            notas: partReference,
+            saleId: venta.id,
+            saleSku: saleSku || existingPart?.saleSku || null,
+            salePaymentType: part.type,
+            saleReceivedAmount: isReceived ? (partCents / 100).toFixed(2) : (existingPart?.saleReceivedAmount || '0.00'),
+            salePaidAt: isReceived ? String(venta.fechaVenta || '').slice(0, 10) : (existingPart?.salePaidAt || null),
+            cantidad500: part.type === 'debt' ? (existingPart?.cantidad500 || 0) : null,
+          };
+          const saved = await this.gastoRepo.save(existingPart ? Object.assign(existingPart, values) : this.gastoRepo.create(values));
+          if (saved?.id) desiredIds.add(saved.id);
+        }
+        continue;
+      }
+      const existing = linked.find((row) => row.userId === user.id && !String(row.notas).startsWith(`${reference}:`));
       const resolvedPaymentType = paymentType || existing?.salePaymentType || null;
       const samePaymentType = existing?.salePaymentType === resolvedPaymentType;
+      if (samePaymentType && Number(existing?.saleReceivedAmount || 0) > amount) {
+        throw new BadRequestException('El saldo de venta es menor que los pagos ya recibidos.');
+      }
       const values = {
         userId: user.id,
         concepto: 'ingreso',
@@ -294,13 +428,15 @@ export class VentaService {
       };
       if (existing) {
         Object.assign(existing, values);
-        await this.gastoRepo.save(existing);
+        const saved = await this.gastoRepo.save(existing);
+        if (saved?.id) desiredIds.add(saved.id);
       } else {
-        await this.gastoRepo.save(this.gastoRepo.create(values));
+        const saved = await this.gastoRepo.save(this.gastoRepo.create(values));
+        if (saved?.id) desiredIds.add(saved.id);
       }
     }
 
-    const obsolete = linked.filter((row) => !desiredUserIds.has(row.userId));
+    const obsolete = linked.filter((row) => !desiredIds.has(row.id));
     if (obsolete.length) await this.gastoRepo.remove(obsolete);
   }
 
@@ -310,7 +446,8 @@ export class VentaService {
   ): Promise<Gasto> {
     if (!this.gastoRepo) throw new BadRequestException('No se pueden actualizar los cobros.');
     const income = await this.gastoRepo.findOne({ where: { id: gastoId } });
-    if (!income?.saleId || !['card', 'debt'].includes(String(income.salePaymentType))) {
+    const isAdvance = String(income?.notas || '').startsWith('__SALE_ADVANCE__:');
+    if (!income || (!income.saleId && !isAdvance) || !['card', 'debt'].includes(String(income.salePaymentType))) {
       throw new BadRequestException('Este ingreso no corresponde a un cobro de venta del catálogo.');
     }
     const totalCents = Math.round(Number(income.monto) * 100);
@@ -364,7 +501,7 @@ export class VentaService {
       ? history.reduce((sum, payment) => sum + Number(payment.units500 || 0), 0)
       : null;
     income.salePaidAt = history.at(-1)?.paidAt || null;
-    if (nextReceivedCents === totalCents && income.saleExchangeRate) {
+    if (nextReceivedCents === totalCents && income.saleExchangeRate && income.saleId) {
       const rate = Number(income.saleExchangeRate);
       const sale = await this.findOne(income.saleId);
       await this.update(income.saleId, isSplitSeller(normalizeSeller(sale.vendedor))
@@ -529,6 +666,7 @@ export class VentaService {
   async findLatestAdelantosByProductos(productoIds?: number[]): Promise<VentaAdelanto[]> {
     const qb = this.adelantoRepo
       .createQueryBuilder('a')
+      .leftJoinAndSelect('a.producto', 'producto')
       .where('a.completadoAt IS NULL')
       .distinctOn(['a.productoId'])
       .orderBy('a.productoId', 'ASC')
@@ -539,7 +677,9 @@ export class VentaService {
       qb.andWhere('a.productoId IN (:...productoIds)', { productoIds });
     }
 
-    return qb.getMany();
+    const adelantos = await qb.getMany();
+    for (const adelanto of adelantos) await this.syncAdelantoIncome(adelanto, adelanto.producto);
+    return adelantos;
   }
 
   async pedidoSummary() {
@@ -801,9 +941,11 @@ export class VentaService {
       montoAdelanto,
       fechaAdelanto: dto.fechaAdelanto,
       montoVenta,
-      cuotas: [{ fecha: dto.fechaAdelanto, monto: montoAdelanto }],
+      cuotas: [{ fecha: dto.fechaAdelanto, monto: montoAdelanto, banco: dto.incomeBank || 'bcp', tipoPago: dto.incomePaymentType || 'direct' }],
     });
-    return this.adelantoRepo.save(adelanto);
+    const saved = await this.adelantoRepo.save(adelanto);
+    await this.syncAdelantoIncome(saved, producto);
+    return saved;
   }
 
   async addAdelantoCuota(
@@ -839,18 +981,26 @@ export class VentaService {
         monto: montoActual,
       });
     }
-    cuotas.push({ fecha: dto.fechaCuota, monto: montoCuota });
+    cuotas.push({ fecha: dto.fechaCuota, monto: montoCuota, banco: dto.incomeBank || 'bcp', tipoPago: dto.incomePaymentType || 'direct' });
 
     adelanto.cuotas = cuotas;
     adelanto.montoAdelanto = nuevoTotal;
-    return this.adelantoRepo.save(adelanto);
+    const saved = await this.adelantoRepo.save(adelanto);
+    const producto = await this.productoRepo.findOne({ where: { id: adelanto.productoId } });
+    await this.syncAdelantoIncome(saved, producto);
+    return saved;
   }
 
   async completeAdelanto(id: number, dto: CompleteVentaAdelantoDto): Promise<Venta> {
     const adelanto = await this.adelantoRepo.findOne({ where: { id } });
     if (!adelanto) throw new NotFoundException(`Adelanto ${id} no encontrado`);
     if (adelanto.completadoAt) {
-      throw new BadRequestException('El adelanto ya fue completado.');
+      if (!adelanto.ventaId) throw new BadRequestException('El adelanto ya fue completado.');
+      const savedSale = await this.findOne(adelanto.ventaId);
+      const savedProduct = await this.productoRepo.findOne({ where: { id: adelanto.productoId } });
+      await this.syncAdelantoIncome(adelanto, savedProduct);
+      await this.syncSaleIncome(savedSale, dto.incomeBank, dto.incomePaymentType || 'direct', undefined, dto.incomeParts);
+      return savedSale;
     }
 
     const producto = await this.productoRepo.findOne({
@@ -900,11 +1050,12 @@ export class VentaService {
       vendedor: sellerFromProducto(producto, null),
     });
     const saved = await this.ventaRepo.save(venta);
-    await this.syncSaleIncome(saved);
 
     adelanto.ventaId = saved.id;
     adelanto.completadoAt = new Date();
     await this.adelantoRepo.save(adelanto);
+    await this.syncAdelantoIncome(adelanto, producto);
+    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType || 'direct', undefined, dto.incomeParts);
     await this.cache.del?.('productos:stats').catch?.(() => {});
     return saved;
   }
@@ -987,9 +1138,20 @@ export class VentaService {
   }
 
   async create(dto: CreateVentaDto): Promise<Venta> {
+    if (dto.incomeParts !== undefined) {
+      const parts = dto.incomeParts;
+      const cents = parts.map((part) => Math.round(Number(part.amount) * 100));
+      if (!parts.length || new Set(parts.map((part) => part.type)).size !== parts.length
+        || parts.some((part, index) => !['direct', 'card', 'debt', 'cash'].includes(part.type)
+          || !Number.isSafeInteger(cents[index]) || cents[index] <= 0
+          || Math.abs(cents[index] / 100 - Number(part.amount)) > 0.000001)
+        || cents.reduce((sum, value) => sum + value, 0) !== Math.round(Number(dto.precioVenta) * 100)) {
+        throw new BadRequestException('Las partes del cobro deben sumar el precio total de la venta.');
+      }
+    }
     const existing = await this.findExistingByProducto(dto.productoId);
     if (existing && !isAccessoryStock(existing.producto?.tipo)) {
-      await this.syncSaleIncome(existing, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
+      await this.syncSaleIncome(existing, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts);
       return existing;
     }
 
@@ -1072,7 +1234,7 @@ export class VentaService {
           vendedor: normalizeSellerLabel(dto.vendedor) ?? sellerFromProducto(locked, null),
         }));
       });
-      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
+      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts);
       await this.cache.del?.('productos:stats').catch?.(() => {});
       await this.cache.del?.('productos:resumen').catch?.(() => {});
       return saved;
@@ -1140,7 +1302,7 @@ export class VentaService {
           sellerFromProducto(producto, 'ambos'),
       });
       const saved = await this.saveIdempotent(venta);
-      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
+      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts);
       // invalidar KPIs de productos
       await this.cache.del?.('productos:stats').catch?.(() => {});
       return saved;
@@ -1176,7 +1338,7 @@ export class VentaService {
       vendedor: resolvedSeller,
     });
     const saved = await this.saveIdempotent(venta);
-    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
+    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts);
     // invalidar KPIs de productos
     await this.cache.del?.('productos:stats').catch?.(() => {});
     await this.cache.del?.('productos:resumen').catch?.(() => {});
@@ -1185,6 +1347,18 @@ export class VentaService {
 
   async update(id: number, dto: UpdateVentaDto): Promise<Venta> {
     const venta = await this.findOne(id);
+    if (dto.precioVenta !== undefined && typeof this.adelantoRepo?.findOne === 'function') {
+      const advance = await this.adelantoRepo.findOne({ where: { ventaId: id } });
+      if (advance && Number(dto.precioVenta) < Number(advance.montoAdelanto)) {
+        throw new BadRequestException('El precio de venta no puede ser menor que los adelantos registrados.');
+      }
+    }
+    if (this.gastoRepo && dto.precioVenta !== undefined && Number(dto.precioVenta) !== Number(venta.precioVenta) && dto.incomeParts === undefined) {
+      const incomes = await this.gastoRepo.find({ where: { saleId: id } });
+      if (incomes.some((income) => ['direct', 'card', 'debt', 'cash'].some((type) => String(income.notas || '').endsWith(`:${type}`)))) {
+        throw new BadRequestException('Para cambiar el precio de una venta con pagos combinados, indica también los nuevos importes de cobro.');
+      }
+    }
     const producto = await this.productoRepo.findOne({
       where: { id: venta.productoId },
       relations: ['valor'],
@@ -1205,7 +1379,7 @@ export class VentaService {
       venta.ganancia = 0;
       venta.porcentajeGanancia = 0;
       const saved = await this.ventaRepo.save(venta);
-      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
+      await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts);
       await this.cache.del?.('productos:stats').catch?.(() => {});
       await this.cache.del?.('productos:resumen').catch?.(() => {});
       return saved;
@@ -1315,7 +1489,7 @@ export class VentaService {
     if (dto.fechaVenta !== undefined) venta.fechaVenta = dto.fechaVenta;
 
     const saved = await this.ventaRepo.save(venta);
-    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku);
+    await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts);
     await this.cache.del?.('productos:stats').catch?.(() => {});
     await this.cache.del?.('productos:resumen').catch?.(() => {});
     return saved;

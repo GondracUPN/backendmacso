@@ -135,6 +135,47 @@ describe('VentaService.create', () => {
     }));
   });
 
+  it('divide una venta entre efectivo, pago directo, tarjeta y x500', async () => {
+    const sale = { id: 94, productoId: 45, vendedor: 'Gonzalo', fechaVenta: '2026-10-07', precioVenta: 1000 };
+    const rows: any[] = [];
+    const gastoRepo = {
+      find: jest.fn(async () => [...rows]),
+      create: jest.fn((data) => data),
+      save: jest.fn(async (data) => {
+        const saved = { id: data.id || rows.length + 1, ...data };
+        rows.push(saved);
+        return saved;
+      }),
+      remove: jest.fn(),
+    };
+    const service = new VentaService(
+      { findOne: jest.fn(async () => sale) } as any,
+      {} as any,
+      { findOne: jest.fn(async () => ({ tipo: 'celular' })) } as any,
+      {} as any,
+      {} as any,
+      gastoRepo as any,
+      { findOne: jest.fn(async () => ({ id: 1, username: 'Gonzalo' })) } as any,
+    );
+
+    await service.create({
+      productoId: 45, tipoCambio: 3.7, fechaVenta: '2026-10-07', precioVenta: 1000,
+      incomeBank: 'bcp', incomeSku: 'MS-45',
+      incomeParts: [
+        { type: 'direct', amount: 200 }, { type: 'card', amount: 300 },
+        { type: 'debt', amount: 400 }, { type: 'cash', amount: 100 },
+      ],
+    });
+
+    expect(rows).toHaveLength(4);
+    expect(rows.map((row) => [row.salePaymentType, row.monto, row.saleReceivedAmount, row.tarjeta])).toEqual([
+      ['direct', '200.00', '200.00', 'bcp'],
+      ['card', '300.00', '0.00', 'bcp'],
+      ['debt', '400.00', '0.00', 'bcp'],
+      ['cash', '100.00', '100.00', 'efectivo'],
+    ]);
+  });
+
   it('devuelve la venta existente sin crear otra para el mismo producto', async () => {
     const existing = { id: 91, productoId: 42, precioVenta: 1500 };
     const ventaRepo = {
@@ -199,6 +240,47 @@ describe('VentaService.create', () => {
 });
 
 describe('VentaService.completeAdelanto', () => {
+  it('registra cada adelanto en su fecha y al completar solo ingresa el saldo', async () => {
+    const product = { id: 20, tipo: 'iphone', vendedor: 'Gonzalo', codigoInventario: 77, valor: { valorProducto: 100, costoEnvio: 0 } };
+    let advance: any = null;
+    const incomes: any[] = [];
+    const gastoRepo = {
+      find: jest.fn(async ({ where }) => typeof where.notas === 'string'
+        ? incomes.filter((row) => row.notas === where.notas)
+        : incomes.filter((row) => String(row.notas).startsWith('__SALE_INCOME__:'))),
+      create: jest.fn((data) => data),
+      save: jest.fn(async (data) => {
+        const saved = { id: data.id || incomes.length + 1, ...data };
+        const index = incomes.findIndex((row) => row.id === saved.id);
+        if (index >= 0) incomes[index] = saved; else incomes.push(saved);
+        return saved;
+      }),
+      remove: jest.fn(),
+    };
+    const adelantoRepo = {
+      findOne: jest.fn(async ({ where }) => where.productoId ? null : where.ventaId ? (advance?.ventaId === where.ventaId ? advance : null) : advance),
+      create: jest.fn((data) => data),
+      save: jest.fn(async (data) => { advance = { id: 5, ...data }; return advance; }),
+    };
+    const service = new VentaService(
+      { findOne: jest.fn(async () => null), create: jest.fn((data) => data), save: jest.fn(async (data) => ({ id: 9, ...data })) } as any,
+      adelantoRepo as any,
+      { findOne: jest.fn(async () => product) } as any,
+      { save: jest.fn(async (data) => data) } as any,
+      { del: jest.fn(async () => undefined) } as any,
+      gastoRepo as any,
+      { findOne: jest.fn(async () => ({ id: 1, username: 'Gonzalo' })) } as any,
+    );
+
+    await service.createAdelanto({ productoId: 20, montoAdelanto: 500, fechaAdelanto: '2026-09-01', montoVenta: 2000, incomeBank: 'bcp' });
+    await service.addAdelantoCuota(5, { montoCuota: 300, fechaCuota: '2026-09-03', incomeBank: 'interbank' });
+    expect(incomes.filter((row) => row.notas.startsWith('__SALE_ADVANCE__:')).map((row) => [row.fecha, row.monto, row.tarjeta])).toEqual([
+      ['2026-09-01', '500.00', 'bcp'], ['2026-09-03', '300.00', 'interbank'],
+    ]);
+    await service.completeAdelanto(5, { fechaVenta: '2026-09-05', tipoCambio: 3.7, incomeBank: 'bbva' });
+    expect(incomes.find((row) => row.notas === '__SALE_INCOME__:20')).toMatchObject({ monto: '1200.00', fecha: '2026-09-05', tarjeta: 'bbva' });
+    expect(incomes.reduce((sum, row) => sum + Number(row.monto), 0)).toBe(2000);
+  });
   it('calcula el porcentaje sobre el costo total aunque el adelanto sea mayor que el costo', async () => {
     const adelanto = {
       id: 8,
