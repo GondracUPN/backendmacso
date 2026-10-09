@@ -123,6 +123,11 @@ export class VentaController {
     return this.svc.findOne(id);
   }
 
+  @Get(':id/cobros')
+  salePayments(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.getSalePayments(id);
+  }
+
   @Patch(':id')
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVentaDto) {
     return this.svc.update(id, dto);

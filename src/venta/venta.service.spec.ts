@@ -126,7 +126,7 @@ describe('VentaService.create', () => {
       monto: '3000.00',
       fecha: '2026-08-04',
       tarjeta: 'bcp',
-      notas: '__SALE_INCOME__:44',
+      notas: '__SALE_INCOME__:44:93',
       saleId: 93,
       saleSku: 'MS-44',
       salePaymentType: 'debt',
@@ -278,7 +278,7 @@ describe('VentaService.completeAdelanto', () => {
       ['2026-09-01', '500.00', 'bcp'], ['2026-09-03', '300.00', 'interbank'],
     ]);
     await service.completeAdelanto(5, { fechaVenta: '2026-09-05', tipoCambio: 3.7, incomeBank: 'bbva' });
-    expect(incomes.find((row) => row.notas === '__SALE_INCOME__:20')).toMatchObject({ monto: '1200.00', fecha: '2026-09-05', tarjeta: 'bbva' });
+    expect(incomes.find((row) => row.notas === '__SALE_INCOME__:20:9')).toMatchObject({ monto: '1200.00', fecha: '2026-09-05', tarjeta: 'bbva' });
     expect(incomes.reduce((sum, row) => sum + Number(row.monto), 0)).toBe(2000);
   });
   it('calcula el porcentaje sobre el costo total aunque el adelanto sea mayor que el costo', async () => {

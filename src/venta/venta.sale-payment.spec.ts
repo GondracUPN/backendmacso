@@ -1,6 +1,51 @@
 import { VentaService } from './venta.service';
 
 describe('cobro de venta del catálogo', () => {
+  it('consulta todos los cobros por el ID de venta, incluso si están repartidos entre vendedores', async () => {
+    const gastoRepo = { find: jest.fn(async () => [
+      { saleId: 12, saleSku: 'MS-340', salePaymentType: 'direct', monto: '1500.00', saleReceivedAmount: '1500.00', tarjeta: 'bcp' },
+      { saleId: 12, saleSku: 'MS-340', salePaymentType: 'direct', monto: '1500.00', saleReceivedAmount: '1500.00', tarjeta: 'bcp' },
+      { saleId: 12, saleSku: 'MS-340', salePaymentType: 'cash', monto: '1000.00', saleReceivedAmount: '1000.00', tarjeta: 'efectivo' },
+    ]) };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 12, productoId: 340, precioVenta: 4000, fechaVenta: '2026-10-08', tipoCambio: 3.7 } as any);
+    expect(await service.getSalePayments(12)).toMatchObject({ saleId: 12, sku: 'MS-340', amount: 4000,
+      parts: [{ type: 'direct', amount: 3000, received: 3000 }, { type: 'cash', amount: 1000, received: 1000 }] });
+    expect(gastoRepo.find).toHaveBeenCalledWith({ where: { saleId: 12, concepto: 'ingreso' } });
+  });
+
+  it('permite corregir un pago directo en efectivo y conserva el ID de venta en ambos ingresos', async () => {
+    const original = { id: 5, userId: 1, saleId: 12, notas: '__SALE_INCOME__:340:direct', salePaymentType: 'direct', monto: '4000.00', saleReceivedAmount: '4000.00' };
+    const saved: any[] = [];
+    const gastoRepo = { find: jest.fn(async () => [original]), create: jest.fn((value) => value),
+      save: jest.fn(async (value) => { saved.push({ ...value }); return { id: value.id || 6, ...value }; }), remove: jest.fn() };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any, { findOne: jest.fn(async () => ({ id: 1 })) } as any);
+    await (service as any).syncSaleIncome({ id: 12, productoId: 340, vendedor: 'Gonzalo', precioVenta: 4000, fechaVenta: '2026-10-08' }, 'bcp', undefined, 'MS-340', [
+      { type: 'direct', amount: 3000 }, { type: 'cash', amount: 1000 },
+    ]);
+    expect(saved.map((row) => [row.saleId, row.salePaymentType, row.monto, row.saleReceivedAmount])).toEqual([
+      [12, 'direct', '3000.00', '3000.00'], [12, 'cash', '1000.00', '1000.00'],
+    ]);
+    expect(saved[0].notas).toBe('__SALE_INCOME__:340:12:direct');
+  });
+
+  it('mantiene editable el importe de una venta antigua con un solo cobro', async () => {
+    const original = { id: 5, userId: 1, saleId: 12, notas: '__SALE_INCOME__:340', salePaymentType: 'direct', monto: '4000.00', saleReceivedAmount: '4000.00' };
+    const gastoRepo = { find: jest.fn(async () => [original]), save: jest.fn(async (value) => value), remove: jest.fn() };
+    const service = new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any, { findOne: jest.fn(async () => ({ id: 1 })) } as any);
+    await (service as any).syncSaleIncome({ id: 12, productoId: 340, vendedor: 'Gonzalo', precioVenta: 4200, fechaVenta: '2026-10-08' }, 'bcp');
+    expect(gastoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ id: 5, saleId: 12, monto: '4200.00', saleReceivedAmount: '4200.00' }));
+  });
+
+  it('rechaza bajar un cobro ya recibido antes de guardar la venta', async () => {
+    const ventaRepo = { save: jest.fn() };
+    const gastoRepo = { find: jest.fn(async () => [{ salePaymentType: 'card', saleReceivedAmount: '4000.00' }]) };
+    const service = new VentaService(ventaRepo as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 12, precioVenta: 4000 } as any);
+    await expect(service.update(12, { precioVenta: 3900, incomeBank: 'bcp', incomeParts: [{ type: 'card', amount: 3900 }] } as any))
+      .rejects.toThrow(/menor que los pagos ya recibidos/);
+    expect(ventaRepo.save).not.toHaveBeenCalled();
+  });
   it('registra completo el ingreso directo desde la fecha de venta', async () => {
     const gastoRepo = {
       find: jest.fn(async () => []),

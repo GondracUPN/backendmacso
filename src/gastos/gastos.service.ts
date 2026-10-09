@@ -416,6 +416,7 @@ export class GastosService {
     if (role !== 'admin' && g.userId !== userId) {
       throw new ForbiddenException('No autorizado');
     }
+    if (g.saleId) throw new BadRequestException('Este ingreso está vinculado a una venta. Edítalo desde la venta.');
     if (g.itfIngresoId) throw new BadRequestException('El ITF automático se modifica desde su ingreso.');
     const wasIncome = g.concepto === 'ingreso';
 
@@ -493,6 +494,7 @@ export class GastosService {
   async remove(userId: number, role: Role, id: number) {
     const g = await this.getOrThrow(id);
     if (role !== 'admin' && g.userId !== userId) throw new ForbiddenException('No autorizado');
+    if (g.saleId) throw new BadRequestException('Este ingreso está vinculado a una venta. Elimina la venta para borrar sus cobros.');
     if (g.itfIngresoId) throw new BadRequestException('El ITF automático se elimina junto con su ingreso.');
     if (g.concepto === 'gastos_recurrentes' || g.concepto === 'gastos_mensuales') {
       const query = this.schedulesRepo

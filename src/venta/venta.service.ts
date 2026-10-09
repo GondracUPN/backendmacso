@@ -301,21 +301,16 @@ export class VentaService {
           : [];
     if (!owners.length) return;
 
-    let accessorySale = isAccessoryStock(venta.producto?.tipo);
-    if (!accessorySale && typeof (this.productoRepo as any).findOne === 'function') {
-      const productType = await this.productoRepo.findOne({ where: { id: venta.productoId }, select: ['id', 'tipo'] });
-      accessorySale = isAccessoryStock(productType?.tipo);
-    }
-    // Cada salida de stock es una venta distinta y necesita su propio ingreso.
-    const reference = accessorySale
-      ? `__SALE_INCOME__:${venta.productoId}:${venta.id}`
-      : `__SALE_INCOME__:${venta.productoId}`;
+    // El ID de venta mantiene cada cobro unido a su venta, incluso con varias salidas del mismo producto.
+    const reference = `__SALE_INCOME__:${venta.productoId}:${venta.id}`;
+    const legacyReference = `__SALE_INCOME__:${venta.productoId}`;
     const linked = await this.gastoRepo.find({
-      where: {
-        concepto: 'ingreso',
-        metodoPago: 'debito',
-        notas: In([reference, String(venta.productoId), ...(['direct', 'card', 'debt', 'cash'].map((type) => `${reference}:${type}`))]),
-      },
+      where: [
+        { saleId: venta.id, concepto: 'ingreso', metodoPago: 'debito' },
+        { saleId: IsNull(), concepto: 'ingreso', metodoPago: 'debito', notas: In([
+          legacyReference, String(venta.productoId), ...(['direct', 'card', 'debt', 'cash'].map((type) => `${legacyReference}:${type}`)),
+        ]) },
+      ],
       order: { id: 'ASC' },
     });
     const completedAdelanto = typeof this.adelantoRepo?.findOne === 'function'
@@ -329,7 +324,9 @@ export class VentaService {
       return;
     }
     let parts: Array<{ type: 'direct' | 'card' | 'debt' | 'cash'; cents: number }> | null = null;
-    if (submittedParts === undefined && linked.some((row) => String(row.notas).startsWith(`${reference}:`))) {
+    const hasPartReference = (row: Gasto) => ['direct', 'card', 'debt', 'cash']
+      .some((type) => String(row.notas || '').endsWith(`:${type}`));
+    if (submittedParts === undefined && linked.some(hasPartReference)) {
       submittedParts = (['direct', 'card', 'debt', 'cash'] as const).map((type) => ({
         type,
         amount: linked.filter((row) => row.salePaymentType === type).reduce((sum, row) => sum + Number(row.monto || 0), 0),
@@ -353,6 +350,17 @@ export class VentaService {
       if (parts.some((part) => part.type !== 'cash') && !incomeBank) {
         throw new BadRequestException('Selecciona la cuenta de débito para el cobro que no es en efectivo.');
       }
+      const receivedByType = new Map<string, number>();
+      linked.forEach((row) => {
+        if (row.salePaymentType) receivedByType.set(row.salePaymentType,
+          (receivedByType.get(row.salePaymentType) || 0) + Math.round(Number(row.saleReceivedAmount || 0) * 100));
+      });
+      for (const [type, received] of receivedByType) {
+        if (type !== 'card' && type !== 'debt') continue;
+        if (received > (parts.find((part) => part.type === type)?.cents || 0)) {
+          throw new BadRequestException('El nuevo importe no puede ser menor que los pagos ya recibidos.');
+        }
+      }
     }
     const desiredIds = new Set<number>();
     const allocatedPartCents = new Map<string, number>();
@@ -373,7 +381,7 @@ export class VentaService {
           allocatedPartCents.set(part.type, previousAllocation + partCents);
           if (partCents <= 0) continue;
           const partReference = `${reference}:${part.type}`;
-          const existingPart = linked.find((row) => row.userId === user.id && row.notas === partReference);
+          const existingPart = linked.find((row) => row.userId === user.id && row.salePaymentType === part.type);
           const isReceived = part.type === 'direct' || part.type === 'cash';
           const values = {
             userId: user.id,
@@ -398,7 +406,7 @@ export class VentaService {
         }
         continue;
       }
-      const existing = linked.find((row) => row.userId === user.id && !String(row.notas).startsWith(`${reference}:`));
+      const existing = linked.find((row) => row.userId === user.id && !hasPartReference(row));
       const resolvedPaymentType = paymentType || existing?.salePaymentType || null;
       const samePaymentType = existing?.salePaymentType === resolvedPaymentType;
       if (samePaymentType && Number(existing?.saleReceivedAmount || 0) > amount) {
@@ -510,6 +518,31 @@ export class VentaService {
       income.tasaUsdPen = rate.toFixed(4);
     }
     return this.gastoRepo.save(income);
+  }
+
+  async getSalePayments(id: number) {
+    const sale = await this.findOne(id);
+    const incomes = this.gastoRepo ? await this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } }) : [];
+    const advance = typeof this.adelantoRepo?.findOne === 'function'
+      ? await this.adelantoRepo.findOne({ where: { ventaId: id } }) : null;
+    const types = ['direct', 'card', 'debt', 'cash'] as const;
+    const parts = types.map((type) => ({
+      type,
+      amount: incomes.filter((income) => income.salePaymentType === type)
+        .reduce((sum, income) => sum + Math.round(Number(income.monto || 0) * 100), 0) / 100,
+      received: incomes.filter((income) => income.salePaymentType === type)
+        .reduce((sum, income) => sum + Math.round(Number(income.saleReceivedAmount || 0) * 100), 0) / 100,
+    })).filter((part) => part.amount > 0);
+    return {
+      saleId: sale.id,
+      sku: incomes.find((income) => income.saleSku)?.saleSku || `MS-${sale.productoId}`,
+      amount: Number(sale.precioVenta),
+      advanceAmount: Number(advance?.montoAdelanto || 0),
+      soldAt: String(sale.fechaVenta || '').slice(0, 10),
+      exchangeRate: Number(sale.tipoCambio),
+      incomeBank: incomes.find((income) => income.tarjeta && income.tarjeta !== 'efectivo')?.tarjeta || '',
+      parts,
+    };
   }
 
   private async findExistingByProducto(productoId: number): Promise<Venta | null> {
@@ -1347,10 +1380,40 @@ export class VentaService {
 
   async update(id: number, dto: UpdateVentaDto): Promise<Venta> {
     const venta = await this.findOne(id);
-    if (dto.precioVenta !== undefined && typeof this.adelantoRepo?.findOne === 'function') {
+    let advanceAmount = 0;
+    if ((dto.precioVenta !== undefined || dto.incomeParts !== undefined) && typeof this.adelantoRepo?.findOne === 'function') {
       const advance = await this.adelantoRepo.findOne({ where: { ventaId: id } });
+      advanceAmount = Number(advance?.montoAdelanto || 0);
       if (advance && Number(dto.precioVenta) < Number(advance.montoAdelanto)) {
         throw new BadRequestException('El precio de venta no puede ser menor que los adelantos registrados.');
+      }
+    }
+    if (dto.incomeParts !== undefined) {
+      const expectedCents = Math.round(Number(dto.precioVenta ?? venta.precioVenta) * 100) - Math.round(advanceAmount * 100);
+      const parts = dto.incomeParts;
+      const seen = new Set<string>();
+      if (!Array.isArray(parts) || !parts.length || !Number.isSafeInteger(expectedCents) || expectedCents <= 0
+        || parts.some((part) => {
+          const partCents = Math.round(Number(part.amount) * 100);
+          if (!['direct', 'card', 'debt', 'cash'].includes(part.type) || seen.has(part.type)
+            || !Number.isSafeInteger(partCents) || partCents <= 0 || Math.abs(partCents / 100 - Number(part.amount)) > 0.000001) return true;
+          seen.add(part.type);
+          return false;
+        }) || parts.reduce((sum, part) => sum + Math.round(Number(part.amount) * 100), 0) !== expectedCents) {
+        throw new BadRequestException('Las partes del cobro deben sumar el precio de la venta.');
+      }
+      if (parts.some((part) => part.type !== 'cash') && !dto.incomeBank) {
+        throw new BadRequestException('Selecciona la cuenta de débito para el cobro.');
+      }
+      if (this.gastoRepo) {
+        const incomes = await this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } });
+        for (const type of ['card', 'debt'] as const) {
+          const received = incomes.filter((income) => income.salePaymentType === type)
+            .reduce((sum, income) => sum + Math.round(Number(income.saleReceivedAmount || 0) * 100), 0);
+          if (received > Math.round(Number(parts.find((part) => part.type === type)?.amount || 0) * 100)) {
+            throw new BadRequestException('El nuevo importe no puede ser menor que los pagos ya recibidos.');
+          }
+        }
       }
     }
     if (this.gastoRepo && dto.precioVenta !== undefined && Number(dto.precioVenta) !== Number(venta.precioVenta) && dto.incomeParts === undefined) {

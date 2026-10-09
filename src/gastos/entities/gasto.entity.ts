@@ -40,6 +40,7 @@ export class Gasto {
   @Column({ name: 'destinatario_500', type: 'varchar', length: 12, nullable: true })
   destinatario500?: 'yo' | 'renato' | null;
 
+  @Index()
   @Column({ name: 'sale_id', type: 'int', nullable: true })
   saleId?: number | null;
 
