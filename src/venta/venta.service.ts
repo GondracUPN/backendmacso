@@ -8,7 +8,7 @@ import {
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, In, IsNull, Repository } from 'typeorm';
+import { ILike, In, IsNull, Like, Repository } from 'typeorm';
 import { Venta } from './venta.entity';
 import { VentaAdelanto } from './venta-adelanto.entity';
 import { CreateVentaDto } from './dto/create-venta.dto';
@@ -979,6 +979,26 @@ export class VentaService {
     const saved = await this.adelantoRepo.save(adelanto);
     await this.syncAdelantoIncome(saved, producto);
     return saved;
+  }
+
+  async cancelAdelanto(id: number): Promise<void> {
+    await this.adelantoRepo.manager.transaction(async (manager) => {
+      const adelantoRepo = manager.getRepository(VentaAdelanto);
+      const adelanto = await adelantoRepo.findOne({ where: { id } });
+      if (!adelanto) throw new NotFoundException(`Adelanto ${id} no encontrado`);
+      if (adelanto.completadoAt || adelanto.ventaId) {
+        throw new BadRequestException('No se puede cancelar un adelanto de una venta completada.');
+      }
+
+      const gastoRepo = manager.getRepository(Gasto);
+      const ingresos = await gastoRepo.find({
+        where: { concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${id}:%`) },
+      });
+      if (ingresos.length) await gastoRepo.remove(ingresos);
+      await adelantoRepo.remove(adelanto);
+    });
+    await this.cache.del?.('productos:stats').catch?.(() => {});
+    await this.cache.del?.('productos:resumen').catch?.(() => {});
   }
 
   async addAdelantoCuota(

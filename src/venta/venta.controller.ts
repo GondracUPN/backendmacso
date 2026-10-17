@@ -65,6 +65,11 @@ export class VentaController {
     return this.svc.completeAdelanto(id, dto);
   }
 
+  @Delete('adelanto/:id')
+  cancelAdelanto(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.cancelAdelanto(id);
+  }
+
   @Get('producto/:pid')
   byProducto(@Param('pid', ParseIntPipe) pid: number) {
     return this.svc.findByProducto(pid);
