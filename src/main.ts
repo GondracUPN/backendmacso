@@ -336,6 +336,7 @@ async function bootstrap() {
       await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_paid_at" date`);
       await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_payment_history" jsonb`);
       await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "sale_exchange_rate" numeric(10,4)`);
+      await dataSource.query(`ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "ciclo_override" varchar(7)`);
       await dataSource.query(
         `ALTER TABLE "${schema}"."gastos" ADD COLUMN IF NOT EXISTS "itf_ingreso_id" integer`,
       );

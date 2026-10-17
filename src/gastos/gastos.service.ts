@@ -411,6 +411,18 @@ export class GastosService {
     return g;
   }
 
+  async setCicloOverride(userId: number, role: Role, id: number, cicloOverride: string | null) {
+    const g = await this.findOneAuth(userId, role, id);
+    if (g.metodoPago !== 'credito') {
+      throw new BadRequestException('Solo las compras con crédito pertenecen a un ciclo de facturación.');
+    }
+    if (cicloOverride != null && !/^\d{4}-(0[1-9]|1[0-2])$/.test(cicloOverride)) {
+      throw new BadRequestException('El ciclo debe tener el formato YYYY-MM.');
+    }
+    g.cicloOverride = cicloOverride ?? null;
+    return this.repo.save(g);
+  }
+
   async update(userId: number, role: Role, id: number, dto: UpdateGastoDto) {
     const g = await this.getOrThrow(id);
     if (role !== 'admin' && g.userId !== userId) {

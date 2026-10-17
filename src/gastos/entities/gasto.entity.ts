@@ -98,6 +98,11 @@ export class Gasto {
   @Column({ name: 'monto_usd_aplicado', type: 'numeric', precision: 12, scale: 2, nullable: true })
   montoUsdAplicado?: string | null;
 
+  // Para compras con crédito: mes de pago (YYYY-MM) asignado manualmente cuando
+  // el banco toma la compra en otra facturación (compras en días límite del ciclo)
+  @Column({ name: 'ciclo_override', type: 'varchar', length: 7, nullable: true })
+  cicloOverride?: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

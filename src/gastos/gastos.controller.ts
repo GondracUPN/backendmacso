@@ -121,6 +121,16 @@ export class GastosController {
     return this.svc.create(targetUserId, dto);
   }
 
+  // Asigna manualmente una compra con crédito a otra facturación (null = según su fecha)
+  @Patch(':id/ciclo')
+  setCiclo(
+    @CurrentUser() user: JwtUserPayload,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { cicloOverride?: string | null },
+  ) {
+    return this.svc.setCicloOverride(user.userId, user.role, id, body?.cicloOverride ?? null);
+  }
+
   @Patch(':id')
   update(
     @CurrentUser() user: JwtUserPayload,
