@@ -23,7 +23,8 @@
     "migration:show": "typeorm-ts-node-commonjs -d ./typeorm.config.ts migration:show",
     "migration:run": "typeorm-ts-node-commonjs -d ./typeorm.config.ts migration:run",
     "migration:revert": "typeorm-ts-node-commonjs -d ./typeorm.config.ts migration:revert",
-    "finanzas:backfill": "ts-node -r tsconfig-paths/register src/scripts/finanzas-backfill.ts"
+    "finanzas:backfill": "ts-node -r tsconfig-paths/register src/scripts/finanzas-backfill.ts",
+    "backfill:adelanto-income": "ts-node -r tsconfig-paths/register src/scripts/backfill-adelanto-income.ts"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.1",

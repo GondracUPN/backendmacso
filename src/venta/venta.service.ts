@@ -271,9 +271,36 @@ export class VentaService {
 
   private async resolveIncomeUser(owner: 'gonzalo' | 'renato'): Promise<User | null> {
     if (!this.userRepo) return null;
-    const named = await this.userRepo.findOne({ where: { username: ILike(`%${owner}%`) } });
-    if (named) return named;
-    return owner === 'gonzalo' ? this.userRepo.findOne({ where: { role: 'admin' } }) : null;
+    const cached = this.incomeUsers.get(owner);
+    if (cached && cached.until > Date.now()) return cached.value;
+    const value = (async () => {
+      const named = await this.userRepo!.findOne({ where: { username: ILike(`%${owner}%`) } });
+      if (named) return named;
+      return owner === 'gonzalo' ? this.userRepo!.findOne({ where: { role: 'admin' } }) : null;
+    })();
+    this.incomeUsers.set(owner, { until: Date.now() + 10_000, value });
+    try { return await value; } catch (error) { this.incomeUsers.delete(owner); throw error; }
+  }
+
+  private readonly incomeUsers = new Map<string, { until: number; value: Promise<User | null> }>();
+
+  /** Reparacion manual, paginada y secuencial; nunca se invoca desde un GET. */
+  async backfillAdelantoIncome(apply = false): Promise<{ active: number; synchronized: number }> {
+    const where = { completadoAt: IsNull(), canceladoAt: IsNull() };
+    const active = await this.adelantoRepo.count({ where });
+    if (!apply) return { active, synchronized: 0 };
+    let synchronized = 0;
+    for (let skip = 0; skip < active; skip += 100) {
+      const items = await this.adelantoRepo.find({ where, relations: ['producto'], order: { id: 'ASC' }, skip, take: 100 });
+      for (const item of items) {
+        await this.inTransaction(async (service) => {
+          const current = await service.findAdelanto(item.id);
+          if (!current.canceladoAt && !current.completadoAt) await service.syncAdelantoIncome(current, item.producto);
+        });
+        synchronized++;
+      }
+    }
+    return { active, synchronized };
   }
 
   private async syncAdelantoIncome(adelanto: VentaAdelanto, producto?: Producto | null): Promise<void> {
@@ -836,9 +863,7 @@ export class VentaService {
       qb.andWhere('a.productoId IN (:...productoIds)', { productoIds });
     }
 
-    const adelantos = await qb.getMany();
-    for (const adelanto of adelantos) await this.syncAdelantoIncome(adelanto, adelanto.producto);
-    return adelantos;
+    return qb.getMany();
   }
 
   async pedidoSummary() {
