@@ -19,6 +19,7 @@ export default new DataSource({
   type: 'postgres',
   url: dbUrl,
   ssl: isProd ? { rejectUnauthorized: false } : false,
+  extra: { max: 10 },
   schema: process.env.DB_SCHEMA || 'public',
   logging: process.env.DB_LOG === 'true' || !isProd,
   entities: [

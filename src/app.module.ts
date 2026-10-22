@@ -57,6 +57,7 @@ import { AppCacheInvalidator } from './common/app-cache';
           type: 'postgres',
           url: cfg.get<string>('DATABASE_URL'),
           ssl: isProd ? { rejectUnauthorized: false } : false,
+          extra: { max: 10 },
           autoLoadEntities: true,
           // Ensure all entities are picked up in dev/prod
           entities: [join(__dirname, '/**/*.entity{.ts,.js}')],
