@@ -1,3 +1,7 @@
+import { UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Res, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
@@ -61,6 +65,7 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('inventario')
 export class InventarioController {
   constructor(private readonly inventarioService: InventarioService) {}
@@ -75,6 +80,7 @@ export class InventarioController {
     return this.inventarioService.findProductoByCode(productoId);
   }
 
+  @Roles('admin')
   @Patch(':productoId')
   upsert(
     @Param('productoId', ParseIntPipe) productoId: number,
@@ -83,6 +89,7 @@ export class InventarioController {
     return this.inventarioService.upsert(productoId, dto);
   }
 
+  @Roles('admin')
   @Post(':productoId/foto')
   uploadFoto(
     @Param('productoId', ParseIntPipe) productoId: number,
@@ -91,6 +98,7 @@ export class InventarioController {
     return this.inventarioService.uploadFoto(productoId, dto.dataUrl);
   }
 
+  @Roles('admin')
   @Post('fotos-zip')
   @UseInterceptors(FileInterceptor('watermark', { limits: { fileSize: 2 * 1024 * 1024 } }))
   async downloadPhotoCovers(
@@ -142,6 +150,7 @@ export class InventarioController {
     await archive.finalize();
   }
 
+  @Roles('admin')
   @Delete(':productoId/foto')
   deleteFoto(@Param('productoId', ParseIntPipe) productoId: number) {
     return this.inventarioService.deleteFoto(productoId);

@@ -44,6 +44,18 @@ export class Gasto {
   @Column({ name: 'sale_id', type: 'int', nullable: true })
   saleId?: number | null;
 
+  @Column({ name: 'sale_cuenta_id', type: 'int', nullable: true })
+  saleCuentaId?: number | null;
+
+  @Column({ name: 'sale_metodo', type: 'varchar', length: 20, nullable: true })
+  saleMetodo?: string | null;
+
+  @Column({ name: 'scheduled_charge_id', type: 'int', nullable: true })
+  scheduledChargeId?: number | null;
+
+  @Column({ name: 'scheduled_period', type: 'date', nullable: true })
+  scheduledPeriod?: string | null;
+
   @Column({ name: 'sale_sku', type: 'varchar', length: 100, nullable: true })
   saleSku?: string | null;
 
@@ -57,7 +69,7 @@ export class Gasto {
   salePaidAt?: string | null;
 
   @Column({ name: 'sale_payment_history', type: 'jsonb', nullable: true })
-  salePaymentHistory?: Array<{ amount: number; paidAt: string; units500?: number }> | null;
+  salePaymentHistory?: Array<{ amount: number; paidAt: string; units500?: number; pagoId?: number; bank?: string }> | null;
 
   @Column({ name: 'sale_exchange_rate', type: 'numeric', precision: 10, scale: 4, nullable: true })
   saleExchangeRate?: string | null;
@@ -102,6 +114,18 @@ export class Gasto {
   // el banco toma la compra en otra facturación (compras en días límite del ciclo)
   @Column({ name: 'ciclo_override', type: 'varchar', length: 7, nullable: true })
   cicloOverride?: string | null;
+
+  // Clasificación financiera explícita. Nulo = sin clasificar (no se asume por concepto).
+  @Column({ name: 'clasificacion_financiera', type: 'varchar', length: 30, nullable: true })
+  clasificacionFinanciera?: string | null;
+
+  // Costo directo o comisión vinculada a una venta / producto sin duplicar el gasto.
+  @Index()
+  @Column({ name: 'venta_vinculada_id', type: 'int', nullable: true })
+  ventaVinculadaId?: number | null;
+
+  @Column({ name: 'producto_vinculado_id', type: 'int', nullable: true })
+  productoVinculadoId?: number | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

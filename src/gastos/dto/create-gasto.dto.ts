@@ -12,6 +12,7 @@ import {
   ValidateIf,
   IsBoolean,
 } from 'class-validator';
+import { CLASIFICACIONES_GASTO } from '../../finanzas/dto/finanzas.dto';
 
 const CARD_TYPES = [
   'interbank',
@@ -113,4 +114,17 @@ export class CreateGastoDto {
   @IsOptional()
   @IsBoolean()
   allowDuplicate?: boolean;
+
+  // — Clasificación financiera opcional (nulo = sin clasificar) —
+  @IsOptional()
+  @IsIn([...CLASIFICACIONES_GASTO, null] as any)
+  clasificacionFinanciera?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  ventaVinculadaId?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  productoVinculadoId?: number | null;
 }

@@ -23,6 +23,7 @@ import { EbaySearchItem } from './ebay-search-item.entity';
 import { EbaySearchState } from './ebay-search-state.entity';
 import { EbayViewedItem } from './ebay-viewed-item.entity';
 import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catalog-sales-integration.module';
+import { FinanzasModule } from './finanzas/finanzas.module';
 
 @Module({
   imports: [
@@ -59,8 +60,8 @@ import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catal
           synchronize: allowSync,
           // Fuerza a usar el schema donde ya estan tus tablas.
           schema: cfg.get<string>('DB_SCHEMA') || 'public',
-          // (Opcional) deja logging solo mientras verificas en prod.
-          logging: cfg.get<string>('DB_LOG') === 'true' || !isProd,
+          // Por defecto solo errores y avisos; DB_LOG=true muestra todo el SQL para depurar.
+          logging: cfg.get<string>('DB_LOG') === 'true' ? true : ['error', 'warn'],
           logger: 'advanced-console',
         };
       },
@@ -80,6 +81,7 @@ import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catal
     CatalogModule,
     InventarioModule,
     CatalogSalesIntegrationModule,
+    FinanzasModule,
   ],
   controllers: [AppController],
   providers: [AppService],

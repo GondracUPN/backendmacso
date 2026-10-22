@@ -27,6 +27,9 @@ export class ScheduledCharge {
   @Column({ type: 'date' })
   nextDate: string; // próxima fecha de generación
 
+  @Column({ name: 'anchor_day', type: 'smallint', nullable: true })
+  anchorDay?: number | null;
+
   @Column({ type: 'date', nullable: true })
   lastDate?: string | null;
 

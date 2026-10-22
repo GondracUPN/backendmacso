@@ -1,4 +1,4 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -8,7 +8,10 @@ import { ProductoValor } from '../producto/producto-valor.entity';
 import { ProductoDetalle } from '../producto/producto-detalle.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
+import { Gasto } from '../gastos/entities/gasto.entity';
+import { In } from 'typeorm';
 import { aggregateProfitByPeriod, type GroupBy, type ProfitInput } from './profit.utils';
+import { financialTotals, productCost, roundMoney, saleAmounts, saleCost } from './financial-core';
 import { formatAppleWatchModel, formatAppleWatchName } from '../common/product-name.util';
 import {
   buildInsights,
@@ -49,6 +52,8 @@ type ProfitParams = {
   type?: string;
 };
 
+type FinancialParams = ProfitParams & { estado?: string; ram?: string; ssd?: string; estadoTracking?: string; groupBy?: GroupBy; budget?: number; strategy?: 'profit' | 'speed' | 'balanced' };
+
 type ProductAttrs = {
   tipo: string;
   gama: string;
@@ -76,6 +81,12 @@ function daysBetween(a?: string | Date | null, b?: string | Date | null): number
   const db = typeof b === 'string' ? new Date(b) : b;
   if (isNaN(da.getTime()) || isNaN(db.getTime())) return null;
   return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+
+function businessToday(): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || '';
+  return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
 function mean(nums: number[]): number | null {
@@ -242,7 +253,7 @@ const matchesProductoSeller = (producto: Producto | null | undefined, seller: st
   return productoShareForSeller(producto, seller) > 0;
 };
 const shareForSeller = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
-  const vend = getVentaSellerBySource(venta, source);
+  const vend = getVentaSellerBySource(venta, source) || (source === 'venta' ? getProductoSeller(venta.producto) : '');
   if (!seller) return 1;
   if (!vend) return 0;
   if (vend === seller) return 1;
@@ -264,14 +275,14 @@ const splitTipoCambio = (venta: Venta, seller: string) => {
   return base || 0;
 };
 
-const sellerMetrics = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
-  const vend = getVentaSellerBySource(venta, source);
+const sellerMetrics = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta', historicalCost?: number | null) => {
+  const vend = getVentaSellerBySource(venta, source) || (source === 'venta' ? getProductoSeller(venta.producto) : '');
   const target = normalizeSeller(seller);
   if (!vend || !target) return null;
 
   const precioVentaTotal = Number(venta?.precioVenta ?? 0) || 0;
-  const costoTotal = Number(venta?.producto?.valor?.costoTotal ?? 0) || 0;
-  const baseGanancia = Number(venta?.ganancia ?? (precioVentaTotal - costoTotal)) || 0;
+  const costoTotal = historicalCost ?? (Number(venta?.producto?.valor?.costoTotalProrrateado ?? venta?.producto?.valor?.costoTotal ?? 0) || 0);
+  const baseGanancia = precioVentaTotal - costoTotal;
 
   if (vend === target) {
     const pct = costoTotal > 0 ? (baseGanancia / costoTotal) * 100 : 0;
@@ -285,6 +296,12 @@ const sellerMetrics = (venta: Venta, seller: string, source: 'producto' | 'venta
   }
 
   if (vend === SPLIT_VENDOR && SELLERS.includes(target)) {
+    if (String(venta.producto?.tipo || '').toLowerCase() === 'accesorios') {
+      const income = precioVentaTotal / 2;
+      const cost = costoTotal / 2;
+      const ganancia = income - cost;
+      return { income, cost, ganancia, porcentaje: cost > 0 ? ganancia / cost * 100 : 0, share: 0.5 };
+    }
     const valorUsd = Number(venta?.producto?.valor?.valorProducto ?? 0) || 0;
     const envioSoles = Number(
       (venta?.producto?.valor as any)?.costoEnvioProrrateado ??
@@ -307,8 +324,8 @@ const sellerMetrics = (venta: Venta, seller: string, source: 'producto' | 'venta
   return null;
 };
 
-const mapVentaForSeller = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta') => {
-  const metrics = sellerMetrics(venta, seller, source);
+const mapVentaForSeller = (venta: Venta, seller: string, source: 'producto' | 'venta' = 'venta', historicalCost?: number | null) => {
+  const metrics = sellerMetrics(venta, seller, source, historicalCost);
   if (!metrics) return null;
   const vend = getVentaSellerBySource(venta, source);
   if (vend === normalizeSeller(seller)) return venta;
@@ -417,6 +434,7 @@ export class AnalyticsService {
     @InjectRepository(Tracking) private readonly trackRepo: Repository<Tracking>,
     @InjectRepository(Venta) private readonly ventaRepo: Repository<Venta>,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    @Optional() @InjectRepository(Gasto) private readonly gastoRepo?: Repository<Gasto>,
   ) {}
 
   private readonly inflight = new Set<string>();
@@ -453,7 +471,7 @@ export class AnalyticsService {
   }
 
   private async getAnalyticsUniverseCached(): Promise<AnalyticsUniverse> {
-    return this.rememberCached('analytics:universe:v2', 45, async () => {
+    return this.rememberCached('analytics:universe:v3', 45, async () => {
       const [productos, ventas] = await Promise.all([
         this.prodRepo.find({
           relations: ['valor', 'detalle', 'tracking'],
@@ -479,7 +497,7 @@ export class AnalyticsService {
 
   // Stale‑while‑revalidate wrapper for the heavy summary aggregation
   async summaryCached(params: Params) {
-    const key = this.buildKey('analytics:summary:v5', params);
+    const key = this.buildKey('analytics:summary:v6', params);
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 120_000; // recompute in background every 2 min if accessed
@@ -555,28 +573,20 @@ export class AnalyticsService {
       return prod ? matchesProductFilters(prod) : true;
     });
 
-    // Ensure ganancia is available for analytics (fallback to precioVenta - costoTotal)
+    // Costo de la venta segun los lotes utilizados, no segun compras del mes.
     for (const v of ventas) {
-      const saleProduct = v.producto || productoById.get(v.productoId);
-      if (saleProduct && isAccessory(saleProduct as Producto)) {
-        v.ganancia = 0 as any;
-        v.porcentajeGanancia = 0 as any;
-        continue;
+      const amounts = saleAmounts(v, productoById);
+      if (amounts.profit != null) {
+        v.ganancia = amounts.profit as any;
+        v.porcentajeGanancia = (amounts.markup ?? 0) as any;
       }
-      const curr = Number(v.ganancia);
-      if (v.ganancia != null && isFinite(curr)) continue;
-      const costoTotal =
-        Number(v.producto?.valor?.costoTotal ?? productoById.get(v.productoId)?.valor?.costoTotal ?? 0) || 0;
-      const precioVenta = Number(v.precioVenta ?? 0) || 0;
-      const computed = precioVenta - costoTotal;
-      if (isFinite(computed)) v.ganancia = computed as any;
     }
 
     const sellerTarget = normalizeSeller(vendedor);
     if (sellerTarget) {
       ventas = ventas
         .filter((v) => matchesProductoSeller((v.producto as any) || productoById.get(v.productoId), sellerTarget))
-        .map((v) => mapVentaForSeller(v, sellerTarget, 'producto'))
+        .map((v) => mapVentaForSeller(v, sellerTarget, 'producto', saleCost(v, productoById)))
         .filter(Boolean) as Venta[];
     }
 
@@ -1517,6 +1527,271 @@ export class AnalyticsService {
     };
   }
 
+  async financialDashboard(params: FinancialParams) {
+    const { productos, ventas } = await this.getAnalyticsUniverseCached();
+    const productsById = new Map(productos.map((product) => [product.id, product]));
+    const { matchesProductFilters, getAttrs } = createAttrsMatcher(params);
+    const seller = normalizeSeller(params.vendedor);
+    const from = params.from || '0001-01-01';
+    const to = params.to || '9999-12-31';
+    const group = params.groupBy || 'month';
+    const periodOf = (date: string) => group === 'day' ? date.slice(0, 10) : group === 'year' ? date.slice(0, 4) : date.slice(0, 7);
+    const dateKey = (value: unknown): string => {
+      if (value instanceof Date) return Number.isNaN(value.getTime()) ? '' : value.toISOString().slice(0, 10);
+      const text = String(value || '');
+      return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : '';
+    };
+    const inRange = (date: unknown) => {
+      const key = dateKey(date);
+      return !!key && key >= from && key <= to;
+    };
+    const selected = (product: Producto) => matchesProductFilters(product)
+      && (!params.estado || String(product.estado || '').toLowerCase() === params.estado.toLowerCase())
+      && (!params.ram || getAttrs(product).ram.toLowerCase() === params.ram.toLowerCase())
+      && (!params.ssd || getAttrs(product).ssd.toLowerCase() === params.ssd.toLowerCase())
+      && (!params.estadoTracking || (product.tracking || []).some((row) => row.estado === params.estadoTracking));
+    const selectedProducts = productos.filter(selected);
+    const selectedIds = new Set(selectedProducts.map((product) => product.id));
+    const filteredSales = ventas.filter((sale) => selectedIds.has(sale.productoId) && inRange(sale.fechaVenta));
+    const saleRows = filteredSales.map((sale) => {
+      const product = productsById.get(sale.productoId)!;
+      const totalCost = saleCost(sale, productsById);
+      const sellerPart = seller ? sellerMetrics(sale, seller, 'venta', totalCost) : null;
+      if (seller && !sellerPart) return null;
+      const income = roundMoney(sellerPart ? sellerPart.income : Number(sale.precioVenta || 0));
+      const cost = totalCost == null ? null : roundMoney(sellerPart ? sellerPart.cost : totalCost);
+      return {
+        id: sale.id,
+        productoId: product.id,
+        category: String(product.tipo || 'otro').toLowerCase(),
+        name: productDisplayClean(product),
+        model: [getAttrs(product).tipo, getAttrs(product).gama, getAttrs(product).proc, getAttrs(product).pantalla, getAttrs(product).ram, getAttrs(product).ssd, product.estado].filter(Boolean).join(' · '),
+        state: product.estado || 'Sin estado',
+        date: String(sale.fechaVenta).slice(0, 10),
+        purchaseDate: dateKey(product.valor?.fechaCompra),
+        units: Number(sale.cantidad || 1) * (sellerPart?.share ?? 1),
+        income,
+        cost,
+        profit: cost == null ? null : roundMoney(income - cost),
+        days: daysBetween(product.valor?.fechaCompra, sale.fechaVenta),
+      };
+    }).filter(Boolean) as Array<{ id: number; productoId: number; category: string; name: string; model: string; state: string; date: string; purchaseDate: string; units: number; income: number; cost: number | null; profit: number | null; days: number | null }>;
+
+    const totals = financialTotals(saleRows);
+    const paymentRows = this.gastoRepo && saleRows.length ? await this.gastoRepo.find({ where: { saleId: In(saleRows.map((row) => row.id)) } }) : [];
+    const coveredSaleIds = new Set(paymentRows.filter((row) => row.concepto === 'ingreso' && row.saleId).map((row) => Number(row.saleId)));
+    const collectedVerified = paymentRows.length ? roundMoney(paymentRows.filter((row) => row.concepto === 'ingreso' && row.saleId)
+      .reduce((sum, row) => sum + Number(row.saleReceivedAmount ?? (row.salePaymentType === 'direct' ? row.montoPen ?? row.monto : 0)), 0)) : null;
+    const allPurchases = selectedProducts.filter((product) => product.valor && (!seller || productoShareForSeller(product, seller) > 0));
+    const purchased = allPurchases.filter((product) => inRange(product.valor?.fechaCompra));
+    const purchasedCost = purchased.reduce((sum, product) => sum + (productCost(product) || 0) * productoShareForSeller(product, seller), 0);
+    const purchasedMissing = purchased.filter((product) => productCost(product) == null).length;
+    const allPurchaseMissing = allPurchases.filter((product) => productCost(product) == null).length;
+    const soldIds = new Set(ventas.filter((sale) => String(productsById.get(sale.productoId)?.tipo || '').toLowerCase() !== 'accesorios').map((sale) => sale.productoId));
+    const inventoryRows = selectedProducts.filter((product) => !seller || productoShareForSeller(product, seller) > 0).map((product) => {
+      const accessory = String(product.tipo).toLowerCase() === 'accesorios';
+      const units = accessory ? Math.max(0, Number(product.stockActual || 0)) : soldIds.has(product.id) ? 0 : 1;
+      if (!units) return null;
+      const cost = productCost(product);
+      const share = productoShareForSeller(product, seller);
+      const purchaseDate = dateKey(product.valor?.fechaCompra);
+      const tracking = [...(product.tracking || [])].sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
+      const status = accessory && product.soloInventario ? 'disponible'
+        : String(tracking?.estado || 'comprado_sin_tracking');
+      return {
+        id: product.id, name: productDisplayClean(product), category: String(product.tipo).toLowerCase(),
+        units: units * share, capital: cost == null ? null : roundMoney(cost * units / Math.max(1, accessory ? Number(product.stockInicial || 1) : 1) * share),
+        purchaseDate, daysSincePurchase: daysBetween(purchaseDate, businessToday()), status,
+      };
+    }).filter(Boolean) as Array<{ id: number; name: string; category: string; units: number; capital: number | null; purchaseDate: string; daysSincePurchase: number | null; status: string }>;
+    const inventoryMissing = inventoryRows.filter((row) => row.capital == null).length;
+    const inventoryCapital = inventoryMissing ? null : roundMoney(inventoryRows.reduce((sum, row) => sum + Number(row.capital), 0));
+    const recoveredCapital = totals.cost;
+    const capitalInvested = allPurchaseMissing ? null : roundMoney(allPurchases.reduce((sum, product) => sum + productCost(product)! * productoShareForSeller(product, seller), 0));
+    const purchaseCapitalInPeriod = purchasedMissing ? null : roundMoney(purchasedCost);
+    const days = saleRows.filter((row) => row.days != null && row.days >= 0).map((row) => row.days!);
+
+    const categories = Array.from(new Set([...purchased.map((p) => String(p.tipo).toLowerCase()), ...saleRows.map((r) => r.category), ...inventoryRows.map((r) => r.category)])).map((category) => {
+      const purchases = purchased.filter((product) => String(product.tipo).toLowerCase() === category);
+      const rows = saleRows.filter((row) => row.category === category);
+      const total = financialTotals(rows);
+      const categoryDays = rows.filter((row) => row.days != null && row.days >= 0).map((row) => row.days!);
+      return {
+        category,
+        purchased: purchases.reduce((sum, product) => sum + (String(product.tipo).toLowerCase() === 'accesorios' ? Number(product.stockInicial || 0) : 1) * productoShareForSeller(product, seller), 0),
+        sold: roundMoney(rows.reduce((sum, row) => sum + row.units, 0)),
+        ...total,
+        medianDays: median(categoryDays),
+        roiRealized: total.cost && total.grossProfit != null ? roundMoney(total.grossProfit / total.cost * 100) : null,
+        sample: rows.length,
+      };
+    }).sort((a, b) => (b.grossProfit ?? -Infinity) - (a.grossProfit ?? -Infinity));
+    const aggregateSales = (key: 'model' | 'state') => [...new Set(saleRows.map((row) => row[key]))].map((name) => {
+      const rows = saleRows.filter((row) => row[key] === name);
+      const amounts = financialTotals(rows);
+      const elapsed = rows.filter((row) => row.days != null && row.days >= 0).map((row) => row.days!);
+      return { name, sales: rows.length, units: roundMoney(rows.reduce((sum, row) => sum + row.units, 0)), ...amounts,
+        profitPerUnit: amounts.grossProfit == null ? null : roundMoney(amounts.grossProfit / Math.max(1, rows.reduce((sum, row) => sum + row.units, 0))),
+        medianDays: median(elapsed),
+        profitPerCapitalDay: amounts.grossProfit != null && amounts.cost && elapsed.length === rows.length
+          ? roundMoney(amounts.grossProfit / amounts.cost / Math.max(1, mean(elapsed)!) * 100) : null,
+      };
+    }).sort((a, b) => (b.grossProfit ?? -Infinity) - (a.grossProfit ?? -Infinity));
+
+    const periods = new Map<string, { period: string; purchases: number; income: number; cost: number; missingCosts: number }>();
+    const at = (date: string) => {
+      const key = periodOf(date);
+      if (!periods.has(key)) periods.set(key, { period: key, purchases: 0, income: 0, cost: 0, missingCosts: 0 });
+      return periods.get(key)!;
+    };
+    for (const product of purchased) {
+      const row = at(dateKey(product.valor?.fechaCompra));
+      row.purchases += (productCost(product) || 0) * productoShareForSeller(product, seller);
+    }
+    for (const row of saleRows) {
+      const period = at(row.date);
+      period.income += row.income;
+      if (row.cost == null) period.missingCosts++;
+      else period.cost += row.cost;
+    }
+    const evolution = Array.from(periods.values()).sort((a, b) => a.period.localeCompare(b.period)).map((row) => ({
+      period: row.period,
+      purchases: roundMoney(row.purchases),
+      income: roundMoney(row.income),
+      cost: row.missingCosts ? null : roundMoney(row.cost),
+      grossProfit: row.missingCosts ? null : roundMoney(row.income - row.cost),
+      missingCosts: row.missingCosts,
+    }));
+    const agingBounds = [15, 30, 60];
+    const aging = ['0-15', '16-30', '31-60', '60+'].map((label, index) => {
+      const rows = inventoryRows.filter((row) => {
+        const value = row.daysSincePurchase;
+        return value != null && (index === 0 ? value <= agingBounds[0]
+          : index === 1 ? value > agingBounds[0] && value <= agingBounds[1]
+          : index === 2 ? value > agingBounds[1] && value <= agingBounds[2]
+          : value > agingBounds[2]);
+      });
+      return { label, units: roundMoney(rows.reduce((sum, row) => sum + row.units, 0)), capital: rows.some((row) => row.capital == null) ? null : roundMoney(rows.reduce((sum, row) => sum + Number(row.capital), 0)), records: rows };
+    });
+    const statusOf = (status: string) => {
+      if (['recogido', 'disponible', 'en_almacen'].includes(status)) return 'Disponible en Lima';
+      if (status.includes('eshopex')) return 'En Eshopex';
+      if (status === 'comprado_sin_tracking') return 'Sin tracking';
+      return 'En tránsito / pendiente';
+    };
+    const inventoryByStatus = [...new Set(inventoryRows.map((row) => statusOf(row.status)))].map((status) => {
+      const rows = inventoryRows.filter((row) => statusOf(row.status) === status);
+      return { status, units: roundMoney(rows.reduce((sum, row) => sum + row.units, 0)), capital: rows.some((row) => row.capital == null) ? null : roundMoney(rows.reduce((sum, row) => sum + Number(row.capital), 0)), records: rows };
+    });
+    const insights: Array<{ title: string; detail: string; action: string; level: string; category?: string }> = [];
+    const slow = inventoryRows.filter((row) => row.daysSincePurchase != null && row.daysSincePurchase > 60);
+    if (slow.length) insights.push({ title: 'Capital con más de 60 días', detail: `${slow.length} lotes o equipos siguen sin venderse.`, action: 'Revisar precios y fichas del inventario.', level: 'warning' });
+    const losing = saleRows.filter((row) => row.profit != null && row.profit < 0);
+    if (losing.length) insights.push({ title: 'Ventas con pérdida', detail: `${losing.length} ventas quedaron por debajo de su costo histórico.`, action: 'Revisar las ventas y el precio mínimo.', level: 'warning' });
+    const best = categories.find((row) => row.sample >= 3 && row.grossProfit != null && row.medianDays != null);
+    if (best) insights.push({ title: `Oportunidad en ${best.category}`, detail: `${best.sample} ventas, margen ${best.margin}% y mediana ${best.medianDays} días.`, action: 'Comparar existencias y costos recientes antes de comprar.', level: 'info', category: best.category });
+    if (totals.missingCosts) insights.unshift({ title: 'Costos incompletos', detail: `${totals.missingCosts} ventas no tienen costo verificable.`, action: 'Completar el costo de compra de sus lotes.', level: 'warning' });
+
+    const today = businessToday();
+    const currentMonth = today.slice(0, 7);
+    const projectionRows = ventas.filter((sale) => selectedIds.has(sale.productoId) && sale.fechaVenta).map((sale) => {
+      const historicalCost = saleCost(sale, productsById);
+      const part = seller ? sellerMetrics(sale, seller, 'venta', historicalCost) : null;
+      if (seller && !part) return null;
+      return { date: String(sale.fechaVenta).slice(0, 10), income: part ? part.income : Number(sale.precioVenta || 0), cost: historicalCost == null ? null : part ? part.cost : historicalCost };
+    }).filter(Boolean) as Array<{ date: string; income: number; cost: number | null }>;
+    const completedMonths = [...new Set(projectionRows.map((row) => row.date.slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month) && month < currentMonth))].sort().slice(-3);
+    const projection = completedMonths.length < 3 ? null : (() => {
+      const monthTotals = completedMonths.map((month) => financialTotals(projectionRows.filter((row) => row.date.startsWith(month))));
+      if (monthTotals.some((row) => row.missingCosts)) return null;
+      const currentRows = projectionRows.filter((row) => row.date.startsWith(currentMonth));
+      const currentTotals = financialTotals(currentRows);
+      if (currentTotals.missingCosts) return null;
+      const day = Number(today.slice(8, 10));
+      const daysInMonth = new Date(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 0).getDate();
+      const historyIncome = monthTotals.reduce((sum, row) => sum + row.income, 0) / 3;
+      const historyProfit = monthTotals.reduce((sum, row) => sum + Number(row.grossProfit), 0) / 3;
+      const estimate = (actual: number, history: number) => roundMoney(actual + (history / daysInMonth) * (daysInMonth - day));
+      const range = (actual: number, key: 'income' | 'grossProfit') => {
+        const values = monthTotals.map((row) => Number(row[key] || 0));
+        return [estimate(actual, Math.min(...values)), estimate(actual, Math.max(...values))];
+      };
+      return {
+        income: estimate(currentTotals.income, historyIncome),
+        grossProfit: estimate(Number(currentTotals.grossProfit), historyProfit),
+        incomeRange: range(currentTotals.income, 'income'),
+        grossProfitRange: range(Number(currentTotals.grossProfit), 'grossProfit'),
+        actualIncome: currentTotals.income,
+        actualGrossProfit: currentTotals.grossProfit,
+        sampleMonths: completedMonths,
+        method: 'Real acumulado más promedio diario de los tres meses completos anteriores por los días restantes.',
+      };
+    })();
+    const budget = Number(params.budget || 0);
+    const strategy = params.strategy || 'balanced';
+    const investment = budget > 0 ? categories
+      .filter((row) => row.sample >= 3 && row.cost != null && row.cost > 0 && row.grossProfit != null && row.grossProfit > 0 && row.sold > 0)
+      .map((row) => {
+        const unitCost = row.cost! / row.sold;
+        const unitProfit = row.grossProfit! / row.sold;
+        const speed = row.medianDays == null ? 0 : 1 / Math.max(1, row.medianDays);
+        const score = strategy === 'profit' ? unitProfit / unitCost : strategy === 'speed' ? speed : (unitProfit / unitCost) * speed;
+        return { category: row.category, unitCost: roundMoney(unitCost), unitProfit: roundMoney(unitProfit), medianDays: row.medianDays, sample: row.sample, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map((row) => ({ ...row, affordableUnits: Math.floor(budget / row.unitCost), historicalPotential: roundMoney(Math.floor(budget / row.unitCost) * row.unitProfit) })) : [];
+    const comparableTo = params.to && params.to > today ? today : params.to;
+    const previousRange = params.from && comparableTo && params.from <= comparableTo ? computePreviousRange(params.from, comparableTo) : null;
+    const comparison = previousRange ? (() => {
+      const previousSales = ventas.filter((sale) => selectedIds.has(sale.productoId)
+        && String(sale.fechaVenta || '').slice(0, 10) >= previousRange.from
+        && String(sale.fechaVenta || '').slice(0, 10) <= previousRange.to).map((sale) => {
+        const historicalCost = saleCost(sale, productsById);
+        const part = seller ? sellerMetrics(sale, seller, 'venta', historicalCost) : null;
+        if (seller && !part) return null;
+        return { income: part ? part.income : Number(sale.precioVenta || 0), cost: historicalCost == null ? null : part ? part.cost : historicalCost };
+      }).filter(Boolean) as Array<{ income: number; cost: number | null }>;
+      const previousTotals = financialTotals(previousSales);
+      const previousPurchases = selectedProducts.filter((product) =>
+        dateKey(product.valor?.fechaCompra) >= previousRange.from
+        && dateKey(product.valor?.fechaCompra) <= previousRange.to
+        && (!seller || productoShareForSeller(product, seller) > 0));
+      const previousCapital = previousPurchases.some((product) => productCost(product) == null) ? null
+        : roundMoney(previousPurchases.reduce((sum, product) => sum + productCost(product)! * productoShareForSeller(product, seller), 0));
+      return { range: previousRange, income: previousTotals.income, cost: previousTotals.cost, grossProfit: previousTotals.grossProfit, markup: previousTotals.markup, purchaseCapitalInPeriod: previousCapital };
+    })() : null;
+
+    return {
+      currency: 'PEN', filters: params,
+      definitions: {
+        income: 'Ventas registradas por fecha de venta; no equivale a dinero cobrado.',
+        cost: 'Costo histórico de las unidades vendidas, incluidos los envíos prorrateados registrados.',
+        capital: 'Costo acumulado de todos los productos comprados que coinciden con los filtros de producto y vendedor; no depende del rango de fechas.',
+        inventory: 'Valor al costo del stock actual, independiente del filtro de fecha de venta.',
+      },
+      summary: {
+        capitalInvested, purchaseCapitalInPeriod, inventoryCapital, recoveredCapital, income: totals.income,
+        cost: totals.cost, grossProfit: totals.grossProfit, margin: totals.margin, markup: totals.markup,
+        medianDays: median(days), meanDays: mean(days), profitPerThousand: totals.cost && totals.grossProfit != null ? roundMoney(totals.grossProfit / totals.cost * 1000) : null,
+        operatingExpenses: null, operatingResult: null, cashFlow: null,
+        collectedVerified, collectionCoverage: saleRows.length ? roundMoney(coveredSaleIds.size / saleRows.length * 100) : null,
+        missingCosts: totals.missingCosts, missingPurchaseCosts: allPurchaseMissing, missingInventoryCosts: inventoryMissing,
+        expenseStatus: 'Los gastos existentes no separan de forma verificable negocio y gastos personales.',
+        cashStatus: 'Los registros de cobros y pagos no cubren todas las operaciones.',
+      },
+      evolution, categories, models: aggregateSales('model'), states: aggregateSales('state'), inventory: { aging, byStatus: inventoryByStatus, records: inventoryRows },
+      sales: saleRows,
+      purchases: allPurchases.map((product) => ({
+        id: product.id, name: productDisplayClean(product),
+        purchaseDate: dateKey(product.valor?.fechaCompra),
+        units: (String(product.tipo).toLowerCase() === 'accesorios' ? Number(product.stockInicial || 0) : 1) * productoShareForSeller(product, seller),
+        capital: productCost(product) == null ? null : roundMoney(productCost(product)! * productoShareForSeller(product, seller)),
+      })),
+      insights, projection, investment, comparison,
+    };
+  }
+
   async profit(params: ProfitParams) {
     const groupBy = (params.groupBy || 'month') as GroupBy;
     const tipo = params.tipo || (params.type && params.type !== 'general' ? params.type : undefined);
@@ -1531,7 +1806,8 @@ export class AnalyticsService {
       procesador,
       pantalla,
     });
-    const { ventas: universeVentas } = await this.getAnalyticsUniverseCached();
+    const { productos: universeProductos, ventas: universeVentas } = await this.getAnalyticsUniverseCached();
+    const productsById = new Map(universeProductos.map((product) => [product.id, product]));
     let ventas = universeVentas.filter((v) => {
       if (!v.fechaVenta) return false;
       const fechaVenta = String(v.fechaVenta).slice(0, 10);
@@ -1549,12 +1825,14 @@ export class AnalyticsService {
     const rows: ProfitInput[] = [];
     for (const v of ventas) {
       if (!v.fechaVenta) continue;
+      const historicalCost = saleCost(v, productsById);
+      if (historicalCost == null) continue;
       if (sellerTarget) {
-        const metrics = sellerMetrics(v, sellerTarget, 'venta');
+        const metrics = sellerMetrics(v, sellerTarget, 'venta', historicalCost);
         if (!metrics) continue;
         rows.push({ fechaVenta: v.fechaVenta, income: metrics.income, cost: metrics.cost });
       } else {
-        const costoTotal = Number(v.producto?.valor?.costoTotal ?? 0) || 0;
+        const costoTotal = historicalCost;
         const income = Number(v.precioVenta ?? 0) || 0;
         rows.push({ fechaVenta: v.fechaVenta, income, cost: costoTotal });
       }
@@ -1602,6 +1880,7 @@ export class AnalyticsService {
     });
     const { productos: universeProductos, ventas: universeVentas } =
       await this.getAnalyticsUniverseCached();
+    const productsById = new Map(universeProductos.map((product) => [product.id, product]));
     let ventas = universeVentas.filter((v) => {
       if (!v.fechaVenta) return false;
       const fechaVenta = String(v.fechaVenta).slice(0, 10);
@@ -1638,10 +1917,12 @@ export class AnalyticsService {
 
     for (const v of ventas) {
       if (!v.fechaVenta) continue;
+      const historicalCost = saleCost(v, productsById);
+      if (historicalCost == null) continue;
       const vDateStr = String(v.fechaVenta).slice(0, 10);
       if (!vDateStr) continue;
       if (sellerTarget) {
-        const metrics = sellerMetrics(v, sellerTarget, 'venta');
+        const metrics = sellerMetrics(v, sellerTarget, 'venta', historicalCost);
         if (!metrics) continue;
         const cost = metrics.cost;
         const income = metrics.income;
@@ -1666,7 +1947,7 @@ export class AnalyticsService {
         }
         continue;
       }
-      const cost = Number(v.producto?.valor?.costoTotal ?? 0) || 0;
+      const cost = historicalCost;
       const income = Number(v.precioVenta ?? 0) || 0;
       const profit = income - cost;
 

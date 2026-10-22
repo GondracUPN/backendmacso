@@ -1,3 +1,7 @@
+import { UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 // src/tracking/tracking.controller.ts
 import {
   Controller,
@@ -627,6 +631,7 @@ const fetchEshopexPrePago = async (account: EshopexAccount): Promise<string> => 
   return runFlow(usFlow.baseUrl, usFlow.loginUrl, usFlow.dashboardUrl, usFlow.saldoUrl);
 };
 
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('tracking')
 export class TrackingController {
   constructor(private readonly svc: TrackingService) {}
@@ -848,6 +853,7 @@ export class TrackingController {
     }
   }
 
+  @Roles('admin')
   @Post('eshopex-prepago')
   async startEshopexPrepago(@Body() body: { account?: string }) {
     const accounts = parseAccountsEnv();
@@ -881,6 +887,7 @@ export class TrackingController {
   }
 
   // Crear tracking (requiere productoId en el body)
+  @Roles('admin')
   @Post()
   create(
     @Body(new ValidationPipe({ whitelist: true })) dto: CreateTrackingDto,
@@ -889,6 +896,7 @@ export class TrackingController {
   }
 
   // Upsert por producto: si existe lo actualiza, si no crea uno nuevo
+  @Roles('admin')
   @Put('producto/:pid')
   async upsertByProducto(
     @Param('pid', ParseIntPipe) pid: number,
@@ -903,6 +911,7 @@ export class TrackingController {
   }
 
   // Actualizar por ID
+  @Roles('admin')
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,

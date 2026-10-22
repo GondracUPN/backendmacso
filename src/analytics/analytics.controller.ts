@@ -1,5 +1,7 @@
 ﻿import { AnalyticsService } from './analytics.service';
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, ForbiddenException, Get, Query, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser, JwtUserPayload } from '../auth/decorators/current-user.decorator';
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -94,6 +96,35 @@ export class AnalyticsController {
       pantalla,
       vendedor,
     });
+  }
+
+  @Get('finance')
+  @UseGuards(JwtAuthGuard)
+  async finance(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('groupBy') groupBy?: 'day' | 'month' | 'year',
+    @Query('tipo') tipo?: string,
+    @Query('gama') gama?: string,
+    @Query('procesador') procesador?: string,
+    @Query('pantalla') pantalla?: string,
+    @Query('estado') estado?: string,
+    @Query('ram') ram?: string,
+    @Query('ssd') ssd?: string,
+    @Query('estadoTracking') estadoTracking?: string,
+    @Query('vendedor') vendedor?: string,
+    @Query('budget') budget?: string,
+    @Query('strategy') strategy?: 'profit' | 'speed' | 'balanced',
+    @CurrentUser() user?: JwtUserPayload,
+  ) {
+    let scopedSeller = vendedor;
+    if (user?.role !== 'admin') {
+      const username = String(user?.username || '').toLowerCase();
+      if (username.includes('renato')) scopedSeller = 'Renato';
+      else if (username.includes('gonzalo')) scopedSeller = 'Gonzalo';
+      else throw new ForbiddenException('No se pudo determinar el vendedor autorizado.');
+    }
+    return this.svc.financialDashboard({ from, to, groupBy, tipo, gama, procesador, pantalla, estado, ram, ssd, estadoTracking, vendedor: scopedSeller, budget: budget ? Number(budget) : undefined, strategy });
   }
 
   @Get('profit/compare')

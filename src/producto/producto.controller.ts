@@ -1,3 +1,4 @@
+import { UseGuards } from '@nestjs/common';
 // src/producto/producto.controller.ts
 import { Controller, Post, Get, Patch, Param, Body, Delete, HttpException, HttpStatus, Query } from "@nestjs/common";
 import { ProductoService } from './producto.service';
@@ -8,16 +9,19 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('productos')
 export class ProductoController {
   constructor(private readonly productoService: ProductoService) {}
 
-  // Crear producto sin autenticación (solicitado para "Servicios" público)
+  // Escrituras comerciales reservadas a administración.
+  @Roles('admin')
   @Post()
   create(@Body() dto: CreateProductoDto) {
     return this.productoService.create(dto);
   }
 
+  @Roles('admin')
   @Post('lote')
   createLote(@Body() dto: CreateProductoLoteDto) {
     return this.productoService.createLote(dto);
@@ -49,16 +53,18 @@ export class ProductoController {
 
   // Resumen completo para gestiÇün de productos
   @Get('resumen')
-    async resumen(@Query('refresh') refresh?: string) {
-    return this.productoService.resumenCached(refresh === 'true');
+    async resumen(@Query('refresh') refresh?: string, @Query('anio') anio?: string) {
+    return this.productoService.resumenCached(refresh === 'true', anio);
   }
 
   // Sincroniza al Catálogo todos los productos disponibles (recogidos y sin venta)
+  @Roles('admin')
   @Post('catalog-sync')
   async catalogSync() {
     return this.productoService.syncDisponiblesConCatalogo();
   }
 
+  @Roles('admin')
   @Post('catalog-sync/recalculate')
   async recalculateCatalogInventory() {
     return this.productoService.syncDisponiblesConCatalogo(true);
@@ -69,6 +75,7 @@ export class ProductoController {
     return this.productoService.findPendientesCatalogo();
   }
 
+  @Roles('admin')
   @Post('recalcular-envios-nueva-tarifa')
   async recalcularEnviosNuevaTarifa(@Body() body?: { cutoffDate?: string }) {
     return this.productoService.recalcularEnviosNuevaTarifa(body?.cutoffDate);
@@ -79,38 +86,51 @@ export class ProductoController {
     return this.productoService.findPersonalEshopex();
   }
 
+  @Roles('admin')
   @Post('personal-eshopex')
   guardarPersonalEshopex(@Body() body: any) {
     return this.productoService.upsertPersonalEshopex(body);
   }
 
+  @Roles('admin')
   @Patch('personal-eshopex/:id')
   actualizarPersonalEshopex(@Param('id') id: string, @Body() body: any) {
     return this.productoService.updatePersonalEshopex(+id, body);
   }
 
+  @Roles('admin')
   @Delete('personal-eshopex/:id')
   borrarPersonalEshopex(@Param('id') id: string) {
     return this.productoService.removePersonalEshopex(+id);
   }
 
+  @Roles('admin')
   @Patch(':id/despacho-casillero')
   marcarDespachoCasillero(@Param('id') id: string) {
     return this.productoService.marcarDespachoCasillero(+id);
   }
 
+  @Roles('admin')
   @Patch(':id/despacho-casillero/anular')
   anularDespachoCasillero(@Param('id') id: string) {
     return this.productoService.anularDespachoCasillero(+id);
   }
 
   // Editar producto (sin auth para flujo Servicios)
+  @Roles('admin')
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateProductoDto) {
     return this.productoService.update(+id, dto);
   }
 
   // Solo admin borra
+  @Roles('admin')
+  @Post(':id/archivar')
+  archivar(@Param('id') id: string, @Body() dto: { motivo: string }) {
+    return this.productoService.archivar(+id, dto.motivo);
+  }
+
+  @Roles('admin')
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.productoService.remove(+id);

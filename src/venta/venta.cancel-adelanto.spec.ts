@@ -8,6 +8,7 @@ describe('VentaService.cancelAdelanto', () => {
     const advanceRepo = {
       findOne: jest.fn(async () => adelanto),
       remove: jest.fn(async () => undefined),
+      save: jest.fn(async (row) => row),
     };
     const incomeRepo = {
       find: jest.fn(async () => [{ id: 10 }, { id: 11 }]),
@@ -28,8 +29,8 @@ describe('VentaService.cancelAdelanto', () => {
     return { service, advanceRepo, incomeRepo, transaction, cache };
   };
 
-  it('elimina el adelanto pendiente y solo sus ingresos dentro de una transacción', async () => {
-    const adelanto = { id: 4, productoId: 9, completadoAt: null, ventaId: null };
+  it('cancela la reserva conservando su historial y retira solo sus ingresos de Gastos', async () => {
+    const adelanto: any = { id: 4, productoId: 9, completadoAt: null, ventaId: null, montoAdelanto: 300 };
     const { service, advanceRepo, incomeRepo, transaction, cache } = setup(adelanto);
 
     await service.cancelAdelanto(4);
@@ -39,7 +40,10 @@ describe('VentaService.cancelAdelanto', () => {
       where: { concepto: 'ingreso', notas: expect.objectContaining({ _value: '__SALE_ADVANCE__:4:%' }) },
     });
     expect(incomeRepo.remove).toHaveBeenCalledWith([{ id: 10 }, { id: 11 }]);
-    expect(advanceRepo.remove).toHaveBeenCalledWith(adelanto);
+    expect(advanceRepo.remove).not.toHaveBeenCalled();
+    expect(advanceRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      id: 4, canceladoAt: expect.any(Date), montoDevuelto: 300, fechaDevolucion: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    }));
     expect(cache.del).toHaveBeenCalledWith('productos:stats');
   });
 
@@ -48,6 +52,12 @@ describe('VentaService.cancelAdelanto', () => {
     await expect(service.cancelAdelanto(4)).rejects.toBeInstanceOf(BadRequestException);
     expect(incomeRepo.remove).not.toHaveBeenCalled();
     expect(advanceRepo.remove).not.toHaveBeenCalled();
+  });
+
+  it('no permite devolver más de lo adelantado', async () => {
+    const { service, advanceRepo } = setup({ id: 4, completadoAt: null, ventaId: null, montoAdelanto: 300 } as any);
+    await expect(service.cancelAdelanto(4, { montoDevuelto: 301 })).rejects.toBeInstanceOf(BadRequestException);
+    expect(advanceRepo.save).not.toHaveBeenCalled();
   });
 
   it('avisa si el adelanto no existe', async () => {

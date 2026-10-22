@@ -18,7 +18,12 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "typeorm": "typeorm-ts-node-commonjs -d ./typeorm.config.ts"
+    "typeorm": "typeorm-ts-node-commonjs -d ./typeorm.config.ts",
+    "reconcile:catalog-sales": "ts-node -r tsconfig-paths/register src/scripts/reconcile-catalog-sales.ts",
+    "migration:show": "typeorm-ts-node-commonjs -d ./typeorm.config.ts migration:show",
+    "migration:run": "typeorm-ts-node-commonjs -d ./typeorm.config.ts migration:run",
+    "migration:revert": "typeorm-ts-node-commonjs -d ./typeorm.config.ts migration:revert",
+    "finanzas:backfill": "ts-node -r tsconfig-paths/register src/scripts/finanzas-backfill.ts"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.1",

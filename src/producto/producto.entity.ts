@@ -62,6 +62,20 @@ export class Producto {
   @Column({ type: 'boolean', default: false })
   despachoCasillero: boolean;
 
+  // 'venta_rapida' = accesorio sin inventario previo creado al registrar una venta rápida.
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  origen?: string | null;
+
+  // Cierre sin borrar historial: 'perdido' | 'cancelado' | 'no_comercializable'.
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  cierreMotivo?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  archivadoAt?: Date | null;
+
+  @Column({ type: 'text', nullable: true })
+  archivoMotivo?: string | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   despachoCasilleroAt?: Date | null;
 

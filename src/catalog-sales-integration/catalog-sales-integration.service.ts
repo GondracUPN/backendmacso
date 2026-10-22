@@ -9,6 +9,7 @@ import { Producto } from '../producto/producto.entity';
 import { VentaService } from '../venta/venta.service';
 import { Card } from '../cards/card.entity';
 import { User } from '../auth/entities/user.entity';
+import { catalogSyncHeaders } from '../common/catalog-sync-auth';
 
 const DEBIT_PAYMENT_OPTIONS = [
   { tipo: 'bcp' },
@@ -194,7 +195,14 @@ export class CatalogSalesIntegrationService {
   async pending() {
     await this.ensureTable();
     const schema = process.env.DB_SCHEMA || 'public';
-    await this.dataSource.transaction(async (manager) => {
+    // Las dos limpiezas solo cambian algo si hay cancelaciones esperando confirmación;
+    // sin ellas se evita abrir una transacción de escritura en cada consulta del panel.
+    const cancelacionesPendientes = await this.dataSource.query(
+      `SELECT 1 FROM "${schema}"."catalog_sale_events"
+       WHERE "eventType" = 'sale.cancelled' AND "status" = 'pending_cancellation_confirmation'
+       LIMIT 1`,
+    );
+    if (cancelacionesPendientes.length) await this.dataSource.transaction(async (manager) => {
       await manager.query(
         `UPDATE "${schema}"."catalog_sale_events" original
          SET "status" = 'superseded_by_cancellation', "updatedAt" = now()
@@ -284,7 +292,11 @@ export class CatalogSalesIntegrationService {
   async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown, submittedIncomeParts?: unknown) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
-    if (['confirmed', 'cancelled'].includes(event.status)) return event;
+    if (['confirmed', 'cancelled'].includes(event.status)) {
+      // Reintento: vuelve a avisar al catálogo por si el aviso anterior se perdió.
+      await this.notifyCatalogStatus(String(event.eventId || ''), event.status);
+      return event;
+    }
 
     try {
       if (event.eventType === 'sale.created') {
@@ -361,7 +373,7 @@ export class CatalogSalesIntegrationService {
           ventaId = originalEvent?.remoteVentaId ? Number(originalEvent.remoteVentaId) : null;
         }
         if (ventaId) {
-          await this.ventaService.remove(ventaId);
+          await this.ventaService.remove(ventaId, 'Cancelación solicitada desde el catálogo');
         } else if (originalEvent) {
           await this.dataSource.query(
             `UPDATE "${schema}"."catalog_sale_events"
@@ -385,7 +397,47 @@ export class CatalogSalesIntegrationService {
       );
       throw error;
     }
-    return this.getEvent(id);
+    const finalEvent = await this.getEvent(id);
+    // Sin este aviso el catálogo seguía mostrando «Pendiente en Servicios».
+    if (['confirmed', 'cancelled'].includes(finalEvent.status)) {
+      await this.notifyCatalogStatus(String(finalEvent.eventId || ''), finalEvent.status);
+    }
+    return finalEvent;
+  }
+
+  /**
+   * Reenvía al catálogo el estado final de los eventos ya resueltos (confirmados,
+   * anulados o rechazados). Sirve para corregir ventas confirmadas antes de que
+   * confirm() avisara. Es idempotente: el catálogo solo actualiza el estado.
+   * Se ejecuta a mano con `npm run reconcile:catalog-sales` (no tiene ruta HTTP).
+   * Se detiene tras varios fallos seguidos para no insistir si el catálogo no responde.
+   */
+  async reconcileCatalogStatuses(limit = 500, maxConsecutiveFailures = 5) {
+    const schema = process.env.DB_SCHEMA || 'public';
+    const max = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+    const events = await this.dataSource.query(
+      `SELECT "eventId", "status" FROM "${schema}"."catalog_sale_events"
+        WHERE "status" IN ('confirmed', 'cancelled', 'rejected') AND "eventId" IS NOT NULL
+        ORDER BY "updatedAt" DESC LIMIT $1`,
+      [max],
+    );
+    let notified = 0;
+    let consecutiveFailures = 0;
+    const failed: string[] = [];
+    for (const event of events) {
+      const ok = await this.notifyCatalogStatus(String(event.eventId || ''), String(event.status));
+      if (ok) {
+        notified += 1;
+        consecutiveFailures = 0;
+        continue;
+      }
+      failed.push(String(event.eventId));
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        return { ok: false, total: events.length, notified, failed, stoppedEarly: true };
+      }
+    }
+    return { ok: failed.length === 0, total: events.length, notified, failed, stoppedEarly: false };
   }
 
   async setExchangeRate(id: string, submittedExchangeRate?: unknown) {
@@ -420,6 +472,7 @@ export class CatalogSalesIntegrationService {
         headers: {
           'content-type': 'application/json',
           'x-macso-event-id': eventId,
+          ...catalogSyncHeaders(),
         },
         body: JSON.stringify({ status }),
         signal: AbortSignal.timeout(8000),

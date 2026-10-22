@@ -1,7 +1,7 @@
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { ProductoService } from './producto.service';
+import { ProductoService, normalizeResumenYear, purchaseYearOf } from './producto.service';
 import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
@@ -162,6 +162,7 @@ describe('ProductoService', () => {
     const query = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
     };
@@ -562,5 +563,47 @@ describe('ProductoService', () => {
       if (originalUrl === undefined) delete process.env.CATALOG_SYNC_URL;
       else process.env.CATALOG_SYNC_URL = originalUrl;
     }
+  });
+  it('limita el resumen a los productos comprados en el año pedido', async () => {
+    const reservedQuery: any = { select: () => reservedQuery, where: () => reservedQuery, getRawMany: async () => [] };
+    productoRepo.createQueryBuilder.mockReturnValue(reservedQuery);
+    const producto = (id: number, fechaCompra: string, extra: any = {}) => ({
+      id, tipo: 'iphone', envioGrupoId: null,
+      valor: { fechaCompra, valorProducto: 100, valorDec: 50, costoEnvio: 10, costoTotal: 400 },
+      tracking: [{ id, estado: 'recogido' }],
+      ...extra,
+    });
+    productoRepo.find.mockResolvedValue([
+      producto(1, '2025-03-10'),
+      producto(2, '2026-01-05'),
+      producto(3, '2026-02-01', { tipo: 'accesorios' }),
+    ]);
+    ventaRepo.find.mockImplementation(async (opts: any) => {
+      const ventas = [
+        { productoId: 1, precioVenta: 900, ganancia: 300 },
+        { productoId: 2, precioVenta: 800, ganancia: 200 },
+        { productoId: 3, precioVenta: 50, ganancia: 20 },
+      ];
+      const ids: number[] | undefined = opts?.where?.productoId?.value;
+      return ids ? ventas.filter((v) => ids.includes(v.productoId)) : ventas;
+    });
+
+    const r = await service.resumen('2026');
+
+    expect(r.total).toBe(1);
+    expect(r.vendido).toBe(1);
+    expect(r.totalGastadoUsd).toBe(100);
+    expect(r.totalVentaPen).toBe(850);
+    expect(r.gananciaPen).toBe(200);
+  });
+
+  it('reconoce el año de compra y solo acepta años válidos', () => {
+    expect(purchaseYearOf('2025-12-31')).toBe('2025');
+    expect(purchaseYearOf(new Date(2026, 0, 1))).toBe('2026');
+    expect(purchaseYearOf(null)).toBeNull();
+    expect(normalizeResumenYear('2026')).toBe('2026');
+    expect(normalizeResumenYear('sin-fecha')).toBe('sin-fecha');
+    expect(normalizeResumenYear('todos')).toBeNull();
+    expect(normalizeResumenYear("1; DROP")).toBeNull();
   });
 });

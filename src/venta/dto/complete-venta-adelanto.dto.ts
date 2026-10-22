@@ -1,4 +1,4 @@
-import { IsArray, IsDateString, IsIn, IsNumber, IsOptional, ValidateNested } from 'class-validator';
+import { IsArray, IsDateString, IsIn, IsNumber, IsOptional, ValidateNested, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { SaleIncomePartDto } from './create-venta.dto';
 
@@ -6,7 +6,7 @@ export class CompleteVentaAdelantoDto {
   @IsDateString()
   fechaVenta: string; // YYYY-MM-DD
 
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 4 }) @Min(0.0001) @Max(1000)
   tipoCambio: number;
 
   @IsOptional()

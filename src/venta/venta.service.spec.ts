@@ -1,4 +1,5 @@
 import { VentaService } from './venta.service';
+import { withTransactionMocks } from './venta-transaction.test-helper';
 import { Producto } from '../producto/producto.entity';
 
 describe('VentaService.create', () => {
@@ -10,13 +11,15 @@ describe('VentaService.create', () => {
       stockInicial: 3,
       stockActual: 3,
       vendedor: 'Gonzalo',
-      valor: { valorProducto: 90, costoEnvio: 10, fechaCompra: '2026-07-01' },
+      valor: { valorProducto: 90, costoEnvio: 10, costoTotal: 100, fechaCompra: '2026-07-01' },
       tracking: [{ fechaRecogido: '2026-06-15' }],
     };
-    const firstLot = { id: 12, tipo: 'accesorios', codigoInventario: 12, stockInicial: 5, stockActual: 5, valor: { valorProducto: 100, costoEnvio: 20, fechaCompra: '2026-05-01' }, tracking: [{ fechaRecogido: '2026-07-10' }] };
+    const firstLot = { id: 12, tipo: 'accesorios', vendedor: 'Gonzalo', codigoInventario: 12, stockInicial: 5, stockActual: 5, valor: { valorProducto: 100, costoEnvio: 20, costoTotal: 120, fechaCompra: '2026-05-01' }, tracking: [{ fechaRecogido: '2026-07-10' }] };
+    const otherOwnerLot = { ...firstLot, id: 13, vendedor: 'Renato', valor: { ...firstLot.valor, fechaCompra: '2026-01-01' } };
     const lots = [
       firstLot,
       locked,
+      otherOwnerLot,
     ];
     const transactionProductRepo = {
       find: jest.fn(async () => lots),
@@ -48,13 +51,13 @@ describe('VentaService.create', () => {
     };
     const ventaRepo = { findOne: jest.fn(async () => null) };
     const cache = { del: jest.fn(async () => undefined) };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       ventaRepo as any,
       {} as any,
       productoRepo as any,
       {} as any,
       cache as any,
-    );
+    ));
 
     const result = await service.create({
       productoId: 40,
@@ -68,15 +71,38 @@ describe('VentaService.create', () => {
     expect(result).toEqual(expect.objectContaining({
       productoId: 40,
       cantidad: 2,
-      ganancia: 0,
-      porcentajeGanancia: 0,
-      distribucionStock: [{ productoId: 12, cantidad: 2 }],
+      ganancia: 252,
+      porcentajeGanancia: 525,
+      distribucionStock: [{ productoId: 12, cantidad: 2, costoUnitario: 24 }],
     }));
     expect(firstLot.stockActual).toBe(3);
     expect(locked.stockActual).toBe(3);
+    expect(otherOwnerLot.stockActual).toBe(5);
     expect(transactionProductRepo.find).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: expect.anything() },
     }));
+
+    const selected = await service.create({
+      productoId: 40,
+      loteInicialId: 40,
+      tipoCambio: 4,
+      fechaVenta: '2026-08-14',
+      precioVenta: 300,
+      cantidad: 2,
+      vendedor: 'Gonzalo',
+    });
+    expect(selected.distribucionStock).toEqual([{ productoId: 40, cantidad: 2, costoUnitario: 100 / 3 }]);
+    expect(selected.ganancia).toBe(233.33);
+    expect(locked.stockActual).toBe(1);
+    await expect(service.create({
+      productoId: 40, tipoCambio: 1, fechaVenta: '2026-10-19', precioVenta: 100,
+      cantidad: 1, vendedor: 'Renato',
+    })).rejects.toThrow('corresponde al comprador');
+    await expect(service.create({
+      productoId: 40, tipoCambio: 1, fechaVenta: '2026-10-19', precioVenta: 100,
+      cantidad: 5, vendedor: 'Gonzalo',
+    })).rejects.toThrow('Stock insuficiente');
+    expect(otherOwnerLot.stockActual).toBe(5);
   });
 
   it('registra el ingreso de Gonzalo desde el backend sin sesión de Gastos', async () => {
@@ -99,7 +125,7 @@ describe('VentaService.create', () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce({ id: 1, username: 'Admin', role: 'admin' }),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       ventaRepo as any,
       {} as any,
       {} as any,
@@ -107,7 +133,7 @@ describe('VentaService.create', () => {
       {} as any,
       gastoRepo as any,
       userRepo as any,
-    );
+    ));
 
     const result = await service.create({
       productoId: 44,
@@ -148,7 +174,7 @@ describe('VentaService.create', () => {
       }),
       remove: jest.fn(),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       { findOne: jest.fn(async () => sale) } as any,
       {} as any,
       { findOne: jest.fn(async () => ({ tipo: 'celular' })) } as any,
@@ -156,7 +182,7 @@ describe('VentaService.create', () => {
       {} as any,
       gastoRepo as any,
       { findOne: jest.fn(async () => ({ id: 1, username: 'Gonzalo' })) } as any,
-    );
+    ));
 
     await service.create({
       productoId: 45, tipoCambio: 3.7, fechaVenta: '2026-10-07', precioVenta: 1000,
@@ -184,13 +210,13 @@ describe('VentaService.create', () => {
       save: jest.fn(),
     };
     const productoRepo = { findOne: jest.fn() };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       ventaRepo as any,
       {} as any,
       productoRepo as any,
       {} as any,
       {} as any,
-    );
+    ));
 
     const result = await service.create({
       productoId: 42,
@@ -218,13 +244,13 @@ describe('VentaService.create', () => {
       }),
     };
     const valor = { valorProducto: 300, costoEnvio: 50 };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       ventaRepo as any,
       {} as any,
       { findOne: jest.fn(async () => ({ id: 43, vendedor: 'Gonzalo', valor })) } as any,
       { save: jest.fn(async (data) => data) } as any,
       { del: jest.fn(async () => undefined) } as any,
-    );
+    ));
 
     const result = await service.create({
       productoId: 43,
@@ -262,7 +288,7 @@ describe('VentaService.completeAdelanto', () => {
       create: jest.fn((data) => data),
       save: jest.fn(async (data) => { advance = { id: 5, ...data }; return advance; }),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       { findOne: jest.fn(async () => null), create: jest.fn((data) => data), save: jest.fn(async (data) => ({ id: 9, ...data })) } as any,
       adelantoRepo as any,
       { findOne: jest.fn(async () => product) } as any,
@@ -270,9 +296,10 @@ describe('VentaService.completeAdelanto', () => {
       { del: jest.fn(async () => undefined) } as any,
       gastoRepo as any,
       { findOne: jest.fn(async () => ({ id: 1, username: 'Gonzalo' })) } as any,
-    );
+    ));
 
     await service.createAdelanto({ productoId: 20, montoAdelanto: 500, fechaAdelanto: '2026-09-01', montoVenta: 2000, incomeBank: 'bcp' });
+    withTransactionMocks(service);
     await service.addAdelantoCuota(5, { montoCuota: 300, fechaCuota: '2026-09-03', incomeBank: 'interbank' });
     expect(incomes.filter((row) => row.notas.startsWith('__SALE_ADVANCE__:')).map((row) => [row.fecha, row.monto, row.tarjeta])).toEqual([
       ['2026-09-01', '500.00', 'bcp'], ['2026-09-03', '300.00', 'interbank'],
@@ -317,14 +344,15 @@ describe('VentaService.completeAdelanto', () => {
     const cache = {
       del: jest.fn(async () => undefined),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       ventaRepo as any,
       adelantoRepo as any,
       productoRepo as any,
       valorRepo as any,
       cache as any,
-    );
+    ));
 
+    withTransactionMocks(service);
     const saved = await service.completeAdelanto(8, {
       fechaVenta: '2026-07-01',
       tipoCambio: 3.5,
@@ -403,13 +431,13 @@ describe('VentaService.completeAdelanto', () => {
         detalle: { gama: 'Pro', procesador: 'M3 Pro', tamano: '14' },
       })),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       ventaRepo as any,
       {} as any,
       productoRepo as any,
       {} as any,
       {} as any,
-    );
+    ));
 
     const result = await service.findSimilarSold(100, 8);
 
@@ -456,7 +484,7 @@ describe('VentaService.completeAdelanto', () => {
       take: jest.fn(() => queryBuilder),
       getMany: jest.fn(async () => candidates),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       { createQueryBuilder: jest.fn(() => queryBuilder) } as any,
       {} as any,
       {
@@ -468,7 +496,7 @@ describe('VentaService.completeAdelanto', () => {
       } as any,
       {} as any,
       {} as any,
-    );
+    ));
 
     const result = await service.findSimilarSold(100, 8);
 
@@ -490,16 +518,18 @@ describe('VentaService.completeAdelanto', () => {
       take: jest.fn(() => queryBuilder),
       getMany: jest.fn(async () => candidates),
     };
-    const service = new VentaService(
+    const service = withTransactionMocks(new VentaService(
       { createQueryBuilder: jest.fn(() => queryBuilder) } as any,
       {} as any,
       { findOne: jest.fn(async () => ({ id: 399, tipo: 'accesorios', detalle: { modelo: 'AirTag - Apple AirTag (2nd Generation)' } })) } as any,
       {} as any,
       {} as any,
-    );
+    ));
 
     const result = await service.findSimilarSold(399, 8);
 
     expect(result.map((sale) => sale.id)).toEqual([31, 32]);
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('p.soloInventario = false');
+    expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('v.productoId <> :productoId', expect.anything());
   });
 });

@@ -1,3 +1,4 @@
+import { reservaActivaSql, ventaActivaSql } from '../venta/estado-comercial';
 import {
   BadRequestException,
   Injectable,
@@ -51,14 +52,15 @@ export class InventarioService {
             WHERE t."productoId" = p.id
               AND (t.estado = :recogido OR t."fechaRecogido" IS NOT NULL)
           )
-          AND NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)
+          AND NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id AND ${ventaActivaSql()})
           AND NOT EXISTS (
             SELECT 1 FROM venta_adelanto va
-            WHERE va."productoId" = p.id AND va."completadoAt" IS NULL
+            WHERE va."productoId" = p.id AND ${reservaActivaSql()}
           )
         ))`,
         { recogido: 'recogido' },
       )
+      .andWhere('p."archivadoAt" IS NULL').andWhere("COALESCE(p.\"cierreMotivo\", '') <> 'no_comercializable'")
       .orderBy('p.id', 'DESC')
       .getMany();
 
@@ -222,11 +224,11 @@ export class InventarioService {
         )`,
         { recogido: 'recogido' },
       )
-      .andWhere('NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)')
+      .andWhere(`NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id AND ${ventaActivaSql()})`)
       .andWhere(
         `NOT EXISTS (
           SELECT 1 FROM venta_adelanto va
-          WHERE va."productoId" = p.id AND va."completadoAt" IS NULL
+          WHERE va."productoId" = p.id AND ${reservaActivaSql()}
         )`,
       )
       .orderBy('i."productoId"', 'DESC')

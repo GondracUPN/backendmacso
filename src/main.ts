@@ -462,7 +462,6 @@ async function bootstrap() {
       await dataSource.query(
         `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "tipoCambioRenato" numeric(10,4)`,
       );
-      await dataSource.query(`DROP INDEX IF EXISTS "${schema}"."idx_venta_producto_unique"`);
       await dataSource.query(
         `ALTER TABLE "${schema}"."venta" ADD COLUMN IF NOT EXISTS "cantidad" integer NOT NULL DEFAULT 1`,
       );

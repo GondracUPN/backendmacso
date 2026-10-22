@@ -8,11 +8,12 @@ import { ProductoDetalle } from '../producto/producto-detalle.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { Producto } from '../producto/producto.entity';
+import { Gasto } from '../gastos/entities/gasto.entity';
 
 @Module({
   imports: [
     CacheModule.register(),
-    TypeOrmModule.forFeature([Producto, ProductoValor, ProductoDetalle, Tracking, Venta]),
+    TypeOrmModule.forFeature([Producto, ProductoValor, ProductoDetalle, Tracking, Venta, Gasto]),
   ],
   controllers: [AnalyticsController],
   providers: [AnalyticsService],

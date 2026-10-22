@@ -1,3 +1,4 @@
+import { addMonth } from '../schedules/month-date';
 ﻿import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConflictException } from '@nestjs/common';
@@ -12,6 +13,7 @@ import { UpsertGastoBudgetDto } from './dto/upsert-gasto-budget.dto';
 import { Role } from '../auth/entities/user.entity';
 import { ScheduledCharge } from '../schedules/scheduled-charge.entity';
 import { CatalogService } from '../catalog/catalog.service';
+import { validarVinculos } from '../finanzas/finanzas-vinculos';
 
 function normConcept(con?: string) {
   const raw = String(con || '').trim().toLowerCase();
@@ -118,14 +120,7 @@ export class GastosService {
     return this.catalogService.isExpenseConceptAllowed(concepto, metodoPago);
   }
 
-  private addMonth(dateStr: string): string {
-    const d = new Date(dateStr + 'T00:00:00');
-    d.setMonth(d.getMonth() + 1);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }
+  private addMonth(dateStr: string, anchorDay?: number): string { return addMonth(dateStr, anchorDay); }
 
   async create(userId: number, dto: CreateGastoDto) {
     const concepto = normConcept(dto.concepto);
@@ -171,9 +166,13 @@ export class GastosService {
       }
     }
 
+    await validarVinculos(this.repo.manager, dto);
     const gasto = this.repo.create({
       userId,
       concepto,
+      clasificacionFinanciera: dto.clasificacionFinanciera ?? null,
+      ventaVinculadaId: dto.ventaVinculadaId ?? null,
+      productoVinculadoId: dto.productoVinculadoId ?? null,
       // detalleGusto eliminado: se usa notas
       cuotasMeses: concepto === 'deuda_cuotas' ? (dto.cuotasMeses ?? null) : null,
       moneda,
@@ -238,7 +237,7 @@ export class GastosService {
           metodoPago,
           moneda,
           monto: Number(dto.monto).toFixed(2),
-          tarjeta: metodoPago === 'credito' ? (dto.tarjeta ?? null) : null,
+          tarjeta: dto.tarjeta ?? null,
           tarjetaPago: metodoPago === 'debito' ? (dto.tarjetaPago ?? null) : null,
         };
 
@@ -264,6 +263,7 @@ export class GastosService {
             moneda: key.moneda as any,
             monto: key.monto as any,
             nextDate: this.addMonth(dto.fecha),
+            anchorDay: Number(dto.fecha.slice(8, 10)),
             lastDate: dto.fecha,
             remaining: null,
             tarjeta: key.tarjeta as any,
@@ -274,7 +274,8 @@ export class GastosService {
         } else {
           existing.lastDate = dto.fecha;
           if (!existing.nextDate || existing.nextDate <= dto.fecha) {
-            existing.nextDate = this.addMonth(dto.fecha);
+            existing.anchorDay = existing.anchorDay || Number(dto.fecha.slice(8, 10));
+            existing.nextDate = this.addMonth(dto.fecha, existing.anchorDay);
           }
           existing.active = true;
           await this.schedulesRepo.save(existing);
@@ -461,6 +462,11 @@ export class GastosService {
     }
 
     if (dto.notas !== undefined) g.notas = dto.notas ?? null;
+
+    await validarVinculos(this.repo.manager, dto);
+    if (dto.clasificacionFinanciera !== undefined) g.clasificacionFinanciera = dto.clasificacionFinanciera || null;
+    if (dto.ventaVinculadaId !== undefined) g.ventaVinculadaId = dto.ventaVinculadaId || null;
+    if (dto.productoVinculadoId !== undefined) g.productoVinculadoId = dto.productoVinculadoId || null;
 
     if (dto.tipoCambioDia !== undefined) {
       g.tasaUsdPen = Number(dto.tipoCambioDia).toFixed(4) as any;

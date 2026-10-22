@@ -221,3 +221,53 @@ describe('CatalogSalesIntegrationService.setExchangeRate', () => {
     );
   });
 });
+
+describe('CatalogSalesIntegrationService aviso al catalogo', () => {
+  const makeService = () => {
+    const state: any = {
+      id: 'evt-1', eventId: 'catalog-evt-1', eventType: 'sale.created', sku: 'MS-366',
+      status: 'pending_confirmation', amount: '2200.00', soldAt: '2026-09-02T12:00:00.000Z', createdAt: '2026-09-02T12:01:00.000Z',
+    };
+    const dataSource = {
+      query: jest.fn(async (sql: string) => {
+        if (sql.includes('WHERE "id" = $1 LIMIT 1')) return [{ ...state }];
+        if (sql.includes(`SET "status" = 'confirmed'`)) state.status = 'confirmed';
+        if (sql.includes(`"status" IN ('confirmed', 'cancelled', 'rejected')`)) {
+          return [{ eventId: 'a', status: 'confirmed' }, { eventId: 'b', status: 'cancelled' }];
+        }
+        return [];
+      }),
+    };
+    const service = new CatalogSalesIntegrationService(
+      dataSource as any,
+      { findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' })) } as any,
+      { find: jest.fn(async () => [{ tipo: 'bcp' }]) } as any,
+      { findOne: jest.fn(async () => ({ id: 1 })) } as any,
+      { update: jest.fn(), create: jest.fn(async () => ({ id: 92 })) } as any,
+    );
+    const notify = jest.spyOn(service as any, 'notifyCatalogStatus').mockResolvedValue(true);
+    return { service, notify };
+  };
+
+  it('avisa al catalogo cuando se confirma la venta', async () => {
+    const { service, notify } = makeService();
+    await service.confirm('evt-1', 3.75, 'bcp');
+    expect(notify).toHaveBeenCalledWith('catalog-evt-1', 'confirmed');
+  });
+
+  it('reenvia los estados finales para reconciliar ventas antiguas', async () => {
+    const { service, notify } = makeService();
+    const result = await service.reconcileCatalogStatuses();
+    expect(notify).toHaveBeenCalledWith('a', 'confirmed');
+    expect(notify).toHaveBeenCalledWith('b', 'cancelled');
+    expect(result).toEqual(expect.objectContaining({ total: 2, notified: 2, ok: true }));
+  });
+
+  it('se detiene tras varios fallos seguidos', async () => {
+    const { service, notify } = makeService();
+    notify.mockResolvedValue(false);
+    const result = await service.reconcileCatalogStatuses(500, 1);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({ ok: false, stoppedEarly: true, notified: 0 }));
+  });
+});

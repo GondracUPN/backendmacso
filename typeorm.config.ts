@@ -27,4 +27,8 @@ export default new DataSource({
     // Fallback when compiled
     join(__dirname, '**/*.entity.{ts,js}'),
   ],
+  // Migraciones explícitas. Nunca se ejecutan solas al arrancar: usar
+  // `npm run migration:run` tras respaldar la base (ver docs/finanzas.md).
+  migrations: [join(__dirname, 'src/migrations/*.{ts,js}')],
+  migrationsTableName: 'typeorm_migrations',
 });

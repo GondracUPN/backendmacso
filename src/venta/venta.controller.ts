@@ -1,3 +1,7 @@
+import { UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import {
   Controller,
   Post,
@@ -16,7 +20,11 @@ import { UpdateVentaDto } from './dto/update-venta.dto';
 import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
 import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
+import { CancelVentaAdelantoDto } from './dto/cancel-venta-adelanto.dto';
+import { DevolverVentaDto, EliminarVentaDto } from './dto/devolver-venta.dto';
+import { CurrentUser, JwtUserPayload } from '../auth/decorators/current-user.decorator';
 
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('ventas')
 export class VentaController {
   constructor(private readonly svc: VentaService) {}
@@ -39,16 +47,19 @@ export class VentaController {
     });
   }
 
+  @Roles('admin')
   @Post()
-  create(@Body() dto: CreateVentaDto) {
-    return this.svc.create(dto);
+  async create(@Body() dto: CreateVentaDto) {
+    return this.svc.resultadoVenta(await this.svc.create(dto));
   }
 
+  @Roles('admin')
   @Post('adelanto')
   createAdelanto(@Body() dto: CreateVentaAdelantoDto) {
     return this.svc.createAdelanto(dto);
   }
 
+  @Roles('admin')
   @Post('adelanto/:id/cuotas')
   addAdelantoCuota(
     @Param('id', ParseIntPipe) id: number,
@@ -57,6 +68,31 @@ export class VentaController {
     return this.svc.addAdelantoCuota(id, dto);
   }
 
+  @Get('adelanto/:id')
+  findAdelanto(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.resumenAdelanto(id);
+  }
+
+  @Roles('admin')
+  @Patch('adelanto/:id/cuotas/:index')
+  updateAdelantoCuota(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: AddVentaAdelantoCuotaDto,
+  ) {
+    return this.svc.updateAdelantoCuota(id, index, dto);
+  }
+
+  @Roles('admin')
+  @Delete('adelanto/:id/cuotas/:index')
+  deleteAdelantoCuota(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('index', ParseIntPipe) index: number,
+  ) {
+    return this.svc.deleteAdelantoCuota(id, index);
+  }
+
+  @Roles('admin')
   @Post('adelanto/:id/completar')
   completeAdelanto(
     @Param('id', ParseIntPipe) id: number,
@@ -65,9 +101,11 @@ export class VentaController {
     return this.svc.completeAdelanto(id, dto);
   }
 
+  // Cancela la reserva conservando su historial; por defecto devuelve todo lo adelantado hoy.
+  @Roles('admin')
   @Delete('adelanto/:id')
-  cancelAdelanto(@Param('id', ParseIntPipe) id: number) {
-    return this.svc.cancelAdelanto(id);
+  cancelAdelanto(@Param('id', ParseIntPipe) id: number, @Body() dto?: CancelVentaAdelantoDto) {
+    return this.svc.cancelAdelanto(id, dto || {});
   }
 
   @Get('producto/:pid')
@@ -133,13 +171,26 @@ export class VentaController {
     return this.svc.getSalePayments(id);
   }
 
-  @Patch(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVentaDto) {
-    return this.svc.update(id, dto);
+  @Get(':id/devoluciones')
+  devoluciones(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.listarDevoluciones(id);
   }
 
+  @Roles('admin')
+  @Patch(':id')
+  async update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVentaDto) {
+    return this.svc.resultadoVenta(await this.svc.update(id, dto));
+  }
+
+  @Roles('admin')
+  @Post(':id/devoluciones')
+  devolver(@Param('id', ParseIntPipe) id: number, @Body() dto: DevolverVentaDto, @CurrentUser() user: JwtUserPayload) {
+    return this.svc.devolver(id, dto, user.userId);
+  }
+
+  @Roles('admin')
   @Delete(':id')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.svc.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @Body() dto: EliminarVentaDto) {
+    return this.svc.remove(id, dto.motivo);
   }
 }

@@ -1,7 +1,8 @@
+import { reservaActivaSql, ventaActivaSql } from '../venta/estado-comercial';
 ﻿import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, MoreThan, Repository } from 'typeorm';
+import { In, MoreThan, Not, Repository } from 'typeorm';
 import type { Cache } from 'cache-manager';
 import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
@@ -14,6 +15,7 @@ import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
 import { Inventario } from '../inventario/inventario.entity';
 import * as crypto from 'node:crypto';
+import { catalogSyncHeaders } from '../common/catalog-sync-auth';
 import { isAccessoryStock, normalizeIncludedAccessories } from './accessory-rules';
 
 function normalizeEstado(str?: string | null): string {
@@ -58,6 +60,19 @@ function shouldSyncVentaVendedor(current?: string | null): boolean {
 }
 
 const TARIFA_CUTOFF_DATE = '2026-05-01';
+
+/** Año de compra ('2026') o null; misma regla que el filtro de año del frontend. */
+export function purchaseYearOf(value: unknown): string | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : String(value.getFullYear());
+  const match = String(value ?? '').match(/^(\d{4})/);
+  return match ? match[1] : null;
+}
+
+/** Acepta '2026' o 'sin-fecha'; cualquier otro valor significa todos los años. */
+export function normalizeResumenYear(anio?: string | null): string | null {
+  const value = String(anio ?? '').trim().toLowerCase();
+  return /^\d{4}$/.test(value) || value === 'sin-fecha' ? value : null;
+}
 
 @Injectable()
 export class ProductoService {
@@ -353,6 +368,7 @@ export class ProductoService {
       .leftJoinAndSelect('p.valor', 'v')
       .leftJoinAndSelect('p.tracking', 't')
       .where('p.soloInventario = false')
+      .andWhere('p."archivadoAt" IS NULL')
       .orderBy('p.id', 'DESC');
 
     let items: Producto[] = [];
@@ -736,7 +752,15 @@ export class ProductoService {
 
   /** Elimina un producto (y cascada en detalle/valor/tracking si estÃ¡ configurada) */
   async remove(id: number): Promise<void> {
-    const producto = await this.productoRepo.findOne({
+    await this.productoRepo.manager.transaction(async (manager) => {
+    await manager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [id]);
+    const [historial] = await manager.query(`SELECT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = $1
+      OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(v."distribucionStock", '[]'::jsonb)) x WHERE (x->>'productoId')::int = $1))
+      OR EXISTS (SELECT 1 FROM venta_adelanto WHERE "productoId" = $1)
+      OR EXISTS (SELECT 1 FROM gastos WHERE producto_vinculado_id = $1) AS existe`, [id]);
+    if (historial.existe) throw new BadRequestException('El producto tiene historial comercial o financiero. Archívalo con un motivo.');
+    const repo = manager.getRepository(Producto);
+    const producto = await repo.findOne({
       where: { id },
       relations: ['detalle', 'valor', 'tracking'],
     });
@@ -746,12 +770,23 @@ export class ProductoService {
     }
 
     const envioGrupoId = producto.envioGrupoId || null;
-    await this.productoRepo.remove(producto);
+    await repo.remove(producto);
 
     if (envioGrupoId) {
       await this.recalcEnvioGrupo(envioGrupoId);
     }
     await this.invalidateListCache();
+    });
+  }
+
+  async archivar(id: number, motivo: string) {
+    if (!motivo || motivo.trim().length < 3) throw new BadRequestException('Indica el motivo del archivo.');
+    const producto = await this.productoRepo.findOneBy({ id });
+    if (!producto) throw new NotFoundException('Producto no encontrado.');
+    producto.archivadoAt = new Date(); producto.archivoMotivo = motivo.trim();
+    const saved = await this.productoRepo.save(producto);
+    await this.invalidateListCache();
+    return saved;
   }
 
   async recalcularEnviosNuevaTarifa(cutoffDate = TARIFA_CUTOFF_DATE) {
@@ -1046,17 +1081,17 @@ export class ProductoService {
       this.ventaRepo
         .createQueryBuilder('v')
         .innerJoin('v.producto', 'p')
-        .where("LOWER(p.tipo) <> 'accesorios'")
+        .where("LOWER(p.tipo) <> 'accesorios'").andWhere(ventaActivaSql())
         .getCount(),
       this.ventaRepo
         .createQueryBuilder('v')
-        .select('COALESCE(SUM(v.precioVenta),0)', 's')
+        .select('COALESCE(SUM(v."precioVenta" - COALESCE(v."precioDevuelto", 0)),0)', 's').andWhere(ventaActivaSql())
         .getRawOne(),
       this.ventaRepo
         .createQueryBuilder('v')
         .innerJoin('v.producto', 'p')
-        .select('COALESCE(SUM(v.ganancia),0)', 's')
-        .where("LOWER(p.tipo) <> 'accesorios'")
+        .select('COALESCE(SUM(CASE WHEN v."costoPendiente" THEN 0 ELSE v.ganancia + COALESCE(v."costoDevuelto", 0) - COALESCE(v."precioDevuelto", 0) END),0)', 's')
+        .where("LOWER(p.tipo) <> 'accesorios'").andWhere(ventaActivaSql())
         .getRawOne(),
     ]);
 
@@ -1065,7 +1100,9 @@ export class ProductoService {
       .createQueryBuilder('p')
       .where("LOWER(p.tipo) <> 'accesorios'")
       .andWhere('EXISTS (SELECT 1 FROM tracking t WHERE t."productoId" = p.id AND (t.estado = :rec OR t."fechaRecogido" IS NOT NULL))', { rec: 'recogido' })
-      .andWhere('NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id)')
+      .andWhere(`NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id AND ${ventaActivaSql()})`)
+      .andWhere('p."archivadoAt" IS NULL').andWhere("COALESCE(p.\"cierreMotivo\", '') <> 'no_comercializable'")
+      .andWhere(`NOT EXISTS (SELECT 1 FROM venta_adelanto va WHERE va."productoId" = p.id AND ${reservaActivaSql()})`)
       .getCount();
 
     const totalVentas = Number((sumVentaRaw as any)?.s ?? 0);
@@ -1074,9 +1111,10 @@ export class ProductoService {
     return { disponibles, vendidos, totalVentas, gananciaTotal };
   }
 
-  async resumenCached(refresh?: boolean) {
-    if (refresh) return this.resumen();
-    const key = 'productos:resumen';
+  async resumenCached(refresh?: boolean, anio?: string) {
+    const year = normalizeResumenYear(anio);
+    if (refresh) return this.resumen(year);
+    const key = year ? `productos:resumen:${year}` : 'productos:resumen';
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 60_000;
@@ -1085,37 +1123,47 @@ export class ProductoService {
       const age = now - (cached.cachedAt || 0);
       if (age > revalidateMs && !this.inflight.has(key)) {
         this.inflight.add(key);
-        this.resumen()
+        this.resumen(year)
           .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
           .finally(() => this.inflight.delete(key));
       }
       return cached.data;
     }
-    const data = await this.resumen();
+    const data = await this.resumen(year);
     await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
     return data;
   }
 
-  async resumen() {
-    const productos = await this.productoRepo.find({
+  /** Resumen de productos; con `anio` ('2026' o 'sin-fecha') solo cuenta productos comprados ese año. */
+  async resumen(anio?: string | null) {
+    const todos = await this.productoRepo.find({
       relations: ['valor', 'tracking'],
       order: { id: 'DESC' },
     });
-    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
+    const visibles = todos.filter((p) => !p.archivadoAt && p.cierreMotivo !== 'no_comercializable');
+    const productos = anio
+      ? visibles.filter((p: any) => (purchaseYearOf(p?.valor?.fechaCompra) ?? 'sin-fecha') === anio)
+      : visibles;
+    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any, where: { estadoComercial: Not('cancelada') } });
     const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
-    const [sumVentaRaw, sumGanRaw] = await Promise.all([
-      this.ventaRepo
-        .createQueryBuilder('v')
-        .select('COALESCE(SUM(v.precioVenta),0)', 's')
-        .getRawOne(),
-      this.ventaRepo
-        .createQueryBuilder('v')
-        .innerJoin('v.producto', 'p')
-        .select('COALESCE(SUM(v.ganancia),0)', 's')
-        .where("LOWER(p.tipo) <> 'accesorios'")
-        .getRawOne(),
-    ]);
+    const [sumVentaRaw, sumGanRaw] = anio
+      ? await this.sumVentasDeProductos(productos)
+      : await Promise.all([
+        this.ventaRepo
+          .createQueryBuilder('v')
+          .select('COALESCE(SUM(v."precioVenta" - COALESCE(v."precioDevuelto", 0)),0)', 's').andWhere(ventaActivaSql())
+          .getRawOne(),
+        this.ventaRepo
+          .createQueryBuilder('v')
+          .innerJoin('v.producto', 'p')
+          .select('COALESCE(SUM(CASE WHEN v."costoPendiente" THEN 0 ELSE v.ganancia + COALESCE(v."costoDevuelto", 0) - COALESCE(v."precioDevuelto", 0) END),0)', 's')
+          .where("LOWER(p.tipo) <> 'accesorios'").andWhere(ventaActivaSql())
+          .getRawOne(),
+      ]);
 
+    const reservedRows = await this.productoRepo.createQueryBuilder('p').select('p.id', 'id')
+      .where(`EXISTS (SELECT 1 FROM venta_adelanto va WHERE va."productoId" = p.id AND ${reservaActivaSql()})`).getRawMany();
+    const reservados = new Set(reservedRows.map((row: any) => Number(row.id)));
     let total = 0;
     let sinTracking = 0;
     let enCamino = 0;
@@ -1146,7 +1194,7 @@ export class ProductoService {
       if (!estado || estado === 'comprado_sin_tracking') sinTracking += 1;
       if (estado === 'comprado_en_camino') enCamino += 1;
       if (estado === 'en_eshopex') enEshopex += 1;
-      if (estado === 'recogido' && !vendidosSet.has(p.id)) disponible += 1;
+      if (estado === 'recogido' && !vendidosSet.has(p.id) && !reservados.has(p.id)) disponible += 1;
 
       const v: any = p.valor || {};
       totalGastadoUsd += Number(v.valorProducto ?? 0) || 0;
@@ -1172,6 +1220,23 @@ export class ProductoService {
       totalVentaPen,
       gananciaPen,
     };
+  }
+
+  /** Mismas sumas que el resumen general, limitadas a las ventas de los productos dados. */
+  private async sumVentasDeProductos(productos: any[]): Promise<[{ s: number }, { s: number }]> {
+    const tipoPorId = new Map<number, string>(productos.map((p: any) => [p.id, String(p.tipo || '').trim().toLowerCase()]));
+    if (!tipoPorId.size) return [{ s: 0 }, { s: 0 }];
+    const ventas = await this.ventaRepo.find({
+      select: { productoId: true, precioVenta: true, ganancia: true, precioDevuelto: true, costoDevuelto: true, costoPendiente: true } as any,
+      where: { productoId: In([...tipoPorId.keys()]), estadoComercial: Not('cancelada') } as any,
+    });
+    let venta = 0;
+    let ganancia = 0;
+    for (const v of ventas as any[]) {
+      venta += Number(v.precioVenta || 0) - Number(v.precioDevuelto || 0);
+      if (tipoPorId.get(v.productoId) !== 'accesorios' && !v.costoPendiente) ganancia += Number(v.ganancia || 0) + Number(v.costoDevuelto || 0) - Number(v.precioDevuelto || 0);
+    }
+    return [{ s: venta }, { s: ganancia }];
   }
 
   private buildTitle(p: any): string {
@@ -1364,7 +1429,7 @@ export class ProductoService {
   }
 
   async findPendientesCatalogo(includeAlreadySent = false): Promise<Producto[]> {
-    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any });
+    const ventasMin = await this.ventaRepo.find({ select: { productoId: true } as any, where: { estadoComercial: Not('cancelada') } });
     const vendidosSet = new Set<number>(ventasMin.map((v: any) => v.productoId));
     const productos = await this.productoRepo.find({
       where: includeAlreadySent
@@ -1420,7 +1485,9 @@ export class ProductoService {
         const sku = `svc-${p.id}`;
         if (apiBase) {
           try {
-            const r = await fetch(`${apiBase}/api/sync/exists?sku=${encodeURIComponent(sku)}`);
+            const r = await fetch(`${apiBase}/api/sync/exists?sku=${encodeURIComponent(sku)}`, {
+              headers: catalogSyncHeaders(),
+            });
             const j = await r.json().catch(() => ({} as any));
             if (j && j.exists && (!recalculateExisting || !j.canRecalculate)) {
               await this.productoRepo.update(
@@ -1531,6 +1598,7 @@ export class ProductoService {
           headers: {
             'Content-Type': 'application/json',
             'x-idempotency-key': idem,
+            ...catalogSyncHeaders(),
           },
           body,
         });
