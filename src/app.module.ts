@@ -24,6 +24,7 @@ import { EbaySearchState } from './ebay-search-state.entity';
 import { EbayViewedItem } from './ebay-viewed-item.entity';
 import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catalog-sales-integration.module';
 import { FinanzasModule } from './finanzas/finanzas.module';
+import { PerformanceSqlLogger } from './common/request-performance';
 
 @Module({
   imports: [
@@ -62,7 +63,7 @@ import { FinanzasModule } from './finanzas/finanzas.module';
           schema: cfg.get<string>('DB_SCHEMA') || 'public',
           // Por defecto solo errores y avisos; DB_LOG=true muestra todo el SQL para depurar.
           logging: cfg.get<string>('DB_LOG') === 'true' ? true : ['error', 'warn'],
-          logger: 'advanced-console',
+          logger: new PerformanceSqlLogger(cfg.get<string>('DB_LOG') === 'true' ? true : ['error', 'warn']),
         };
       },
     }),

@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { json, text } from 'express';
 import { ensureFinancialSchema } from './db/financial-schema';
+import { RequestPerformanceInterceptor } from './common/request-performance';
 import {
   assertExpectedDbTargetOrThrow,
   assertRequiredColumnsOrThrow,
@@ -20,6 +21,7 @@ async function bootstrap() {
 
   const cfg = app.get(ConfigService);
   const dataSource = app.get(DataSource);
+  app.useGlobalInterceptors(new RequestPerformanceInterceptor());
   app.use('/tm/amazon-template', text({ type: 'text/plain', limit: '3mb' }));
   app.use(json({ limit: '14mb' }));
 
@@ -36,8 +38,14 @@ async function bootstrap() {
       : true, // en desarrollo aceptar cualquier origen (localhost, 127.0.0.1, LAN)
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Server-Timing', 'Timing-Allow-Origin'],
     credentials: false, // pon true solo si usas cookies/sesión
     optionsSuccessStatus: 204,
+  });
+
+  app.use((_req, res, next) => {
+    res.setHeader('Timing-Allow-Origin', isProd ? frontendUrl : '*');
+    next();
   });
 
   // Validación global de DTOs
