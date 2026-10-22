@@ -29,4 +29,5 @@ COPY package*.json ./
 # App uses process.env.PORT; defaults to 3001
 EXPOSE 3001
 
-CMD ["node", "dist/src/main.js"]
+COPY tools/typeorm-cli.cjs ./tools/typeorm-cli.cjs
+CMD ["npm", "run", "start:deploy"]

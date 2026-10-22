@@ -11,9 +11,9 @@ export type DbBootInfo = {
 type EnvLike = Record<string, string | undefined>;
 
 const DEFAULT_REQUIRED_COLUMNS: Record<string, string[]> = {
-  producto: ['accesorios', 'vendedor'],
+  producto: ['accesorios', 'vendedor', 'archivadoAt'],
   tracking: ['estatus_esho'],
-  venta: ['tipoCambioGonzalo', 'tipoCambioRenato'],
+  venta: ['tipoCambioGonzalo', 'tipoCambioRenato', 'operacionHash', 'costoCompletadoTotal'],
 };
 
 const normalizeList = (raw?: string | null) =>
@@ -107,22 +107,16 @@ export const assertRequiredColumnsOrThrow = async (
   const requiredColumns = parseRequiredColumns(rawRequiredColumns);
   const missing: string[] = [];
 
+  const rows = await dataSource.query(
+    `SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = ANY($2::text[])`,
+    [schema, Object.keys(requiredColumns)],
+  );
+  const currentColumns = new Set(rows.map((row: { table_name: string; column_name: string }) =>
+    `${row.table_name}.${row.column_name}`));
   for (const [table, columns] of Object.entries(requiredColumns)) {
-    const rows = await dataSource.query(
-      `SELECT column_name
-       FROM information_schema.columns
-       WHERE table_schema = $1 AND table_name = $2`,
-      [schema, table],
-    );
-
-    const currentColumns = new Set(
-      rows.map((row: { column_name?: string }) => String(row?.column_name || '').trim()),
-    );
-
     for (const column of columns) {
-      if (!currentColumns.has(column)) {
-        missing.push(`${table}.${column}`);
-      }
+      if (!currentColumns.has(`${table}.${column}`)) missing.push(`${table}.${column}`);
     }
   }
 

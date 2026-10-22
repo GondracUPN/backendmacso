@@ -27,8 +27,9 @@ export default new DataSource({
     // Fallback when compiled
     join(__dirname, '**/*.entity.{ts,js}'),
   ],
-  // CLI conservado por compatibilidad. El arranque prepara el esquema financiero
-  // mediante ajustes idempotentes, sin requerir migration:run (docs/finanzas.md).
+  // Cada migracion transaccional se confirma por separado; los indices concurrentes
+  // declaran transaction=false y se ejecutan fuera de una transaccion.
   migrations: [join(__dirname, 'src/migrations/*.{ts,js}')],
+  migrationsTransactionMode: 'each',
   migrationsTableName: 'typeorm_migrations',
 });

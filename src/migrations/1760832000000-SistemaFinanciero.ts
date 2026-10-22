@@ -14,6 +14,8 @@ export class SistemaFinanciero1760832000000 implements MigrationInterface {
   name = 'SistemaFinanciero1760832000000';
 
   public async up(q: QueryRunner): Promise<void> {
+    const schema = (q.connection.options as { schema?: string }).schema || 'public';
+    await q.query(`SELECT set_config('search_path', $1, true)`, [`"${schema.replace(/"/g, '""')}"`]);
     await ensureSistemaFinanciero(q);
   }
 

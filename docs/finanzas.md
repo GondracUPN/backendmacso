@@ -21,20 +21,15 @@ El neto esperado descuenta comisiones, por eso una venta con tarjeta de S/ 3,000
 
 ## Despliegue
 
-El backend completa las tablas, columnas e índices de finanzas al arrancar, siguiendo los ajustes automáticos que ya usa servicios. No requiere ejecutar migraciones manuales ni usa una tabla de historial de migraciones para este arranque. Los cambios se aplican en una transacción sobre `DB_SCHEMA` (por defecto `public`), antes de atender peticiones; si fallan, el backend no empieza a servir con un esquema incompleto.
+El esquema se prepara durante el despliegue con migraciones idempotentes. El servidor HTTP no ejecuta DDL al arrancar.
 
-```bash
-# 1. Respaldo (pg_dump 15 o superior)
-pg_dump -Fc --no-owner --no-acl -d "$DATABASE_URL" -f respaldo-antes-finanzas.dump
+1. Respaldar la base desde el entorno de despliegue.
+2. Compilar: `npm run build`.
+3. Ejecutar `npm run typeorm -- migration:run` con `NODE_ENV=production` en la imagen compilada. Las migraciones usan transacciones individuales; los indices concurrentes se ejecutan sin transaccion.
+4. Arrancar `npm run start:prod`. El Dockerfile utiliza `start:deploy`, que hace los pasos 3 y 4 y detiene el despliegue si falla una migracion. Si Koyeb permite un hook de release, usar alli el paso 3 y dejar solo `start:prod` para reinicios.
+5. Opcional: `SCHEMA_BOOT_CHECK=true` comprueba columnas mediante una sola consulta. Se conserva el guard de destino esperado.
 
-# 2. Desplegar y arrancar el backend; comprobar [BOOT][FINANCIAL_SCHEMA] ok.
-
-# 3. Importar como "sin verificar" los cobros que Gastos ya registra (primero simula)
-npm run finanzas:backfill
-npm run finanzas:backfill -- --apply
-```
-
-Los archivos y comandos de migración se conservan por compatibilidad con instalaciones que los hayan usado; no forman parte del despliegue habitual. No ejecutar `migration:revert` para deshacer un despliegue: elimina tablas, columnas y lo registrado en ellas.
+No ejecutar `migration:revert` como rollback habitual: varias migraciones financieras eliminan tablas y datos. El backfill financiero sigue siendo manual y separado del despliegue.
 
 ## Datos históricos
 
