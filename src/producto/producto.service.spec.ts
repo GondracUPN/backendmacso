@@ -13,13 +13,18 @@ import { Inventario } from '../inventario/inventario.entity';
 const repositoryMock = () => ({
   create: jest.fn((value) => value),
   save: jest.fn(),
-  find: jest.fn(),
+  find: jest.fn().mockResolvedValue([]),
   findOne: jest.fn(),
   findOneOrFail: jest.fn(),
   delete: jest.fn(),
   update: jest.fn(),
   count: jest.fn(),
-  createQueryBuilder: jest.fn(),
+  createQueryBuilder: jest.fn(() => {
+    const qb: any = {};
+    for (const method of ['leftJoin', 'select', 'where', 'andWhere', 'orderBy']) qb[method] = () => qb;
+    qb.getOne = jest.fn().mockResolvedValue(null);
+    return qb;
+  }),
 });
 
 describe('ProductoService', () => {
@@ -210,6 +215,10 @@ describe('ProductoService', () => {
       tracking: [{ id: 1, estado: 'recogido' }],
     } as any;
     productoRepo.find.mockResolvedValue([existing]);
+    const matching: any = {};
+    for (const method of ['leftJoin', 'select', 'where', 'andWhere', 'orderBy']) matching[method] = () => matching;
+    matching.getOne = jest.fn().mockResolvedValue({ id: 12, codigoInventario: 12 });
+    productoRepo.createQueryBuilder.mockReturnValue(matching);
     detalleRepo.save.mockImplementation(async (value) => ({ id: 21, ...value }));
     valorRepo.save.mockImplementation(async (value) => ({ id: 22, ...value }));
     productoRepo.save.mockImplementation(async (value) => ({ id: 40, ...value }));

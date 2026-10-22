@@ -631,12 +631,12 @@ export class VentaService {
   }
 
   async getSalePayments(id: number) {
-    const sale = await this.findOne(id);
-    const incomes = this.gastoRepo
-      ? (await this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } })).filter((income) => !isAdvanceIncome(income))
-      : [];
-    const advance = typeof this.adelantoRepo?.findOne === 'function'
-      ? await this.adelantoRepo.findOne({ where: { ventaId: id } }) : null;
+    const [sale, incomeRows, advance] = await Promise.all([
+      this.findOne(id),
+      this.gastoRepo ? this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } }) : Promise.resolve([]),
+      typeof this.adelantoRepo?.findOne === 'function' ? this.adelantoRepo.findOne({ where: { ventaId: id } }) : Promise.resolve(null),
+    ]);
+    const incomes = incomeRows.filter((income) => !isAdvanceIncome(income));
     const types = ['direct', 'card', 'debt', 'cash'] as const;
     const parts = types.map((type) => ({
       type,
@@ -846,6 +846,7 @@ export class VentaService {
     }
 
     qb.andWhere('v."estadoComercial" <> :cancelada', { cancelada: 'cancelada' });
+    if (!productoIds?.length) qb.innerJoin(Producto, 'activeProduct', 'activeProduct.id = v.productoId AND activeProduct.archivadoAt IS NULL');
     return qb.getMany();
   }
 
@@ -863,6 +864,7 @@ export class VentaService {
       qb.andWhere('a.productoId IN (:...productoIds)', { productoIds });
     }
 
+    if (!productoIds?.length) qb.andWhere('producto."archivadoAt" IS NULL');
     return qb.getMany();
   }
 
@@ -1234,12 +1236,40 @@ export class VentaService {
 
   async resumenAdelanto(id: number) {
     const adelanto = await this.findAdelanto(id);
-    const producto = await this.productoRepo.findOne({ where: { id: adelanto.productoId } });
-    const venta = adelanto.ventaId ? await this.findOne(adelanto.ventaId) : null;
-    const rows = this.gastoRepo ? await this.gastoRepo.find({ where: [
-      { concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${id}:%`) },
-      ...(venta ? [{ concepto: 'ingreso', saleId: venta.id }] : []),
-    ] }) : [];
+    const [producto, venta, rows] = await Promise.all([
+      this.productoRepo.findOne({ where: { id: adelanto.productoId } }),
+      adelanto.ventaId ? this.findOne(adelanto.ventaId) : Promise.resolve(null),
+      this.gastoRepo ? this.gastoRepo.find({ where: [
+        { concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${id}:%`) },
+        ...(adelanto.ventaId ? [{ concepto: 'ingreso', saleId: adelanto.ventaId }] : []),
+      ] }) : Promise.resolve([]),
+    ]);
+    return this.buildAdelantoResumen(adelanto, producto, venta, rows);
+  }
+
+  async resumenAdelantos(ids: number[]) {
+    if (!ids.length) return [];
+    const adelantos = await this.adelantoRepo.find({ where: { id: In(ids) } });
+    if (!adelantos.length) return [];
+    const saleIds = adelantos.map((item) => item.ventaId).filter((id): id is number => Boolean(id));
+    const [productos, ventas, rows] = await Promise.all([
+      this.productoRepo.find({ where: { id: In(adelantos.map((item) => item.productoId)) } }),
+      saleIds.length ? this.ventaRepo.find({ where: { id: In(saleIds) } }) : Promise.resolve([]),
+      this.gastoRepo ? this.gastoRepo.find({ where: [
+        ...adelantos.map((item) => ({ concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${item.id}:%`) })),
+        ...(saleIds.length ? [{ concepto: 'ingreso', saleId: In(saleIds) }] : []),
+      ] }) : Promise.resolve([]),
+    ]);
+    const productMap = new Map(productos.map((item) => [item.id, item]));
+    const saleMap = new Map(ventas.map((item) => [item.id, item]));
+    return adelantos.map((item) => this.buildAdelantoResumen(item,
+      productMap.get(item.productoId) || null, saleMap.get(item.ventaId!) || null,
+      rows.filter((row) => String(row.notas || '').startsWith(`__SALE_ADVANCE__:${item.id}:`) || Boolean(item.ventaId && row.saleId === item.ventaId)),
+    ));
+  }
+
+  private buildAdelantoResumen(adelanto: VentaAdelanto, producto: Producto | null, venta: Venta | null, rows: Gasto[]) {
+    const id = adelanto.id;
     const cuotas = adelanto.cuotas?.length ? adelanto.cuotas : [
       { fecha: adelanto.fechaAdelanto, monto: Number(adelanto.montoAdelanto) } as VentaAdelantoCuota,
     ];

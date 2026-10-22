@@ -112,6 +112,9 @@ export class ProductoService {
   }
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
+  private loteTransaction = false;
+  private loteAccessoryCode: number | null | undefined;
+
   async create(data: CreateProductoDto): Promise<Producto> {
     if (data.soloInventario && !isAccessoryStock(data.tipo)) {
       throw new BadRequestException('Solo los accesorios pueden quedar exclusivamente en Inventario.');
@@ -124,7 +127,7 @@ export class ProductoService {
     }
 
     const accessoryDisplayCode = isAccessoryStock(data.tipo)
-      ? await this.findAccessoryDisplayCode(data, rawDetalle)
+      ? (this.loteAccessoryCode !== undefined ? this.loteAccessoryCode : await this.findAccessoryDisplayCode(data, rawDetalle))
       : null;
 
     // 1) Guardar detalle
@@ -243,32 +246,35 @@ export class ProductoService {
     const model = this.normalizeAccessoryMatch(rawDetalle?.modelo);
     if (!model) return null;
 
-    const candidates = (await this.productoRepo.find({
-      where: { tipo: data.tipo },
-      relations: ['detalle', 'valor', 'tracking'],
-      order: { id: 'ASC' },
-    })) || [];
-    const estado = this.normalizeAccessoryMatch(data.estado);
-    const existing = candidates.find((product) =>
-      Number(product.stockActual || 0) > 0
-      && this.normalizeAccessoryMatch(product.detalle?.modelo) === model
-      && this.normalizeAccessoryMatch(product.estado) === estado
-      && Boolean(product.soloInventario) === Boolean(data.soloInventario),
-    );
+    const existing = await this.productoRepo.createQueryBuilder('p')
+      .leftJoin('p.detalle', 'd')
+      .select(['p.id', 'p.codigoInventario'])
+      .where('p.tipo = :tipo', { tipo: data.tipo })
+      .andWhere('p.stockActual > 0')
+      .andWhere("regexp_replace(lower(trim(COALESCE(d.modelo, ''))), '\\s+', ' ', 'g') = :model", { model })
+      .andWhere("regexp_replace(lower(trim(COALESCE(p.estado, ''))), '\\s+', ' ', 'g') = :estado", { estado: this.normalizeAccessoryMatch(data.estado) })
+      .andWhere('p.soloInventario = :solo', { solo: Boolean(data.soloInventario) })
+      .orderBy('p.id', 'ASC').getOne();
     if (existing) return Number(existing.codigoInventario || existing.id);
-
-    // Los accesorios llevan una numeración propia (ACC-1, ACC-2, ...),
-    // independiente del id/MS de los equipos. Se reutiliza el primer hueco
-    // libre para instalaciones que ya tenían accesorios con códigos antiguos.
-    const usedCodes = new Set(
-      candidates.map((product) => Number(product.codigoInventario)).filter((code) => Number.isInteger(code) && code > 0),
-    );
+    const codes = await this.productoRepo.find({
+      where: { tipo: data.tipo }, select: { codigoInventario: true }, loadEagerRelations: false,
+    });
+    const usedCodes = new Set(codes.map((p) => Number(p.codigoInventario)).filter((n) => Number.isInteger(n) && n > 0));
     let nextCode = 1;
     while (usedCodes.has(nextCode)) nextCode += 1;
     return nextCode;
   }
 
   async createLote(data: CreateProductoLoteDto): Promise<Producto[]> {
+    if (!this.loteTransaction && this.productoRepo.manager) {
+      return this.productoRepo.manager.transaction(async (manager) => {
+        const scoped = new ProductoService(manager.getRepository(Producto), manager.getRepository(ProductoDetalle),
+          manager.getRepository(ProductoValor), manager.getRepository(Tracking), manager.getRepository(Venta),
+          manager.getRepository(PersonalEshopex), manager.getRepository(Inventario), this.cache);
+        scoped.loteTransaction = true;
+        return scoped.createLote(data);
+      });
+    }
     const totalDistribuido = data.distribucion.reduce(
       (sum, item) => sum + Number(item.cantidad || 0),
       0,
@@ -279,6 +285,9 @@ export class ProductoService {
       );
     }
 
+    if (isAccessoryStock(data.producto.tipo)) {
+      this.loteAccessoryCode = await this.findAccessoryDisplayCode(data.producto, data.producto.detalle as any || null);
+    }
     const repartirImporte = (total: number, cantidad: number): number[] => {
       const totalCentavos = Math.round(Number(total || 0) * 100);
       const baseCentavos = Math.floor(totalCentavos / cantidad);

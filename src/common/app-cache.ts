@@ -54,6 +54,8 @@ export class CacheInvalidationInterceptor implements NestInterceptor {
   constructor(private readonly cache: Cache) {}
   intercept(context: ExecutionContext, next: CallHandler) {
     const method = context.switchToHttp().getRequest().method;
+    const path = context.switchToHttp().getRequest().path;
+    if (method === 'POST' && ['/ventas/ultimas', '/ventas/adelantos/ultimos', '/ventas/adelantos/resumen'].includes(path)) return next.handle();
     if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return next.handle();
     return next.handle().pipe(
       concatMap(async (value) => { await invalidateProductos(this.cache); return value; }),

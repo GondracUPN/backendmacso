@@ -96,10 +96,9 @@ export class CardsService {
 
   // Resumen por tarjeta en S/
   async getSummary(userId: number) {
-    const cards = await this.findAllByUser(userId);
-    if (!cards.length) return [];
-
-    const gastos = await this.gastosRepo
+    const [cards, gastos, concepts] = await Promise.all([
+      this.findAllByUser(userId),
+      this.gastosRepo
       .createQueryBuilder('g')
       .select([
         'g.id',
@@ -124,12 +123,15 @@ export class CardsService {
         {},
       )
       .orderBy('g.fecha', 'ASC')
-      .getMany();
+      .getMany(),
+      this.catalogService.listExpenseConcepts().catch(() => []),
+    ]);
+    if (!cards.length) return [];
 
     const USD_PEN_RATE = 3.7;
     const conceptCategories = new Map<string, string>();
     try {
-      const concepts = await this.catalogService.listExpenseConcepts();
+
       for (const concept of concepts || []) {
         conceptCategories.set(normalizeConcept(concept.value), normalizeCategory(concept.metadata?.category));
       }

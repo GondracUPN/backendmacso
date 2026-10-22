@@ -784,6 +784,9 @@ export class FinanzasLedgerService {
               monto: Number(adelanto.montoAdelanto),
             },
           ];
+    const cuentas = await manager.getRepository(CuentaFinanciera).find();
+    const cuentaPorCodigo = (codigo: string) => cuentas.find((c) => c.codigo === codigo)
+      || cuentas.find((c) => c.legacyCodigo === codigo && TIPOS_DISPONIBLES.includes(c.tipo as any));
     const deseados: Array<Partial<VentaPago> & { idempotencyKey: string }> = [];
     for (const [i, cuota] of cuotas.entries()) {
       if (
@@ -792,7 +795,7 @@ export class FinanzasLedgerService {
         !(toCents(cuota.monto) > 0)
       )
         continue;
-      const cuenta = await this.cuentaPorCodigo(manager, cuota.banco || 'bcp');
+      const cuenta = cuentaPorCodigo(cuota.banco || 'bcp');
       deseados.push({
         idempotencyKey: `adelanto:${adelanto.id}:${i}`,
         adelantoId: adelanto.id,
@@ -846,11 +849,14 @@ export class FinanzasLedgerService {
       })
     ).filter((p) => gestionada(p.idempotencyKey));
     const claves = new Set(deseados.map((d) => d.idempotencyKey));
+    const currentKeys = new Set(actuales.map((p) => p.idempotencyKey));
+    const missingKeys = [...claves].filter((key) => !currentKeys.has(key));
+    const outsideScope = missingKeys.length
+      ? await repo.find({ where: { idempotencyKey: In(missingKeys) } }) : [];
+    const byKey = new Map([...actuales, ...outsideScope].map((p) => [p.idempotencyKey, p]));
     for (const d of deseados) {
       if (!(toCents(d.montoPen) > 0)) continue;
-      const existente =
-        actuales.find((p) => p.idempotencyKey === d.idempotencyKey) ||
-        (await repo.findOne({ where: { idempotencyKey: d.idempotencyKey } }));
+      const existente = byKey.get(d.idempotencyKey);
       if (existente) {
         const cambios: Partial<VentaPago> = {};
         if (toCents(existente.montoPen) !== toCents(d.montoPen))

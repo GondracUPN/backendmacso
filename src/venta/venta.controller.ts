@@ -29,6 +29,35 @@ import { CurrentUser, JwtUserPayload } from '../auth/decorators/current-user.dec
 export class VentaController {
   constructor(private readonly svc: VentaService) {}
 
+  private parseIds(value: unknown): number[] {
+    const values = Array.isArray(value) ? value : String(value || '').split(',');
+    const ids = [...new Set(values.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (ids.length > 2000) throw new BadRequestException('Maximo 2000 ids por lote');
+    return ids;
+  }
+
+  @Get('adelantos/resumen')
+  resumenAdelantos(@Query('ids') ids?: string) {
+    return this.svc.resumenAdelantos(this.parseIds(ids));
+  }
+
+  @Post('adelantos/resumen')
+  resumenAdelantosBatch(@Body('ids') ids: number[]) {
+    return this.svc.resumenAdelantos(this.parseIds(ids));
+  }
+
+  @Post('ultimas')
+  latestByProductoBatch(@Body('ids') ids: number[]) {
+    const parsed = this.parseIds(ids);
+    return this.svc.findLatestByProductos(parsed.length ? parsed : undefined);
+  }
+
+  @Post('adelantos/ultimos')
+  latestAdelantosBatch(@Body('ids') ids: number[]) {
+    const parsed = this.parseIds(ids);
+    return this.svc.findLatestAdelantosByProductos(parsed.length ? parsed : undefined);
+  }
+
   // GET /ventas?from=YYYY-MM-DD&to=YYYY-MM-DD&unassigned=true&productoId=123&vendedor=gonzalo
   @Get()
   list(
