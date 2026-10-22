@@ -26,6 +26,7 @@ import { EbayViewedItem } from './ebay-viewed-item.entity';
 import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catalog-sales-integration.module';
 import { FinanzasModule } from './finanzas/finanzas.module';
 import { PerformanceSqlLogger } from './common/request-performance';
+import { AppCacheInvalidator } from './common/app-cache';
 
 @Module({
   imports: [
@@ -87,6 +88,6 @@ import { PerformanceSqlLogger } from './common/request-performance';
     FinanzasModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, AppCacheInvalidator],
 })
 export class AppModule {}

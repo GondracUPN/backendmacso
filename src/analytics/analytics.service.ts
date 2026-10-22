@@ -1,4 +1,4 @@
-import { appCacheKey, invalidateProductos } from '../common/app-cache';
+import { appCacheKey } from '../common/app-cache';
 import { Injectable, Inject, Optional } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -20,6 +20,10 @@ import {
   computePreviousRange,
   type CompareMetric,
 } from './profit-compare.utils';
+
+const ANALYTICS_UNIVERSE_TTL_MS = 45_000;
+const FX_SUCCESS_TTL_MS = 3_600_000;
+const FX_FALLBACK_TTL_MS = 300_000;
 
 type Params = {
   fromCompra?: string;
@@ -473,7 +477,7 @@ export class AnalyticsService {
   }
 
   private async getAnalyticsUniverseCached(): Promise<AnalyticsUniverse> {
-    return this.rememberCached('analytics:universe:v3', 45_000, async () => {
+    return this.rememberCached('analytics:universe:v3', ANALYTICS_UNIVERSE_TTL_MS, async () => {
       const [productos, ventas] = await Promise.all([
         this.prodRepo.find({
           relations: ['valor', 'detalle', 'tracking'],
@@ -2090,7 +2094,7 @@ export class AnalyticsService {
             authMode: 'public-eapi',
             reason: '',
           };
-          await this.cache.set(cacheKey, result, 3_600_000);
+          await this.cache.set(cacheKey, result, FX_SUCCESS_TTL_MS);
           return result;
         } catch (e: any) {
           clearTimeout(timeout);
@@ -2165,7 +2169,7 @@ export class AnalyticsService {
             continue;
           }
           parsed.authMode = attempt.authMode;
-          await this.cache.set(cacheKey, parsed, 3_600_000);
+          await this.cache.set(cacheKey, parsed, FX_SUCCESS_TTL_MS);
           return parsed;
         } catch (e: any) {
           clearTimeout(timeout);
@@ -2186,7 +2190,7 @@ export class AnalyticsService {
         authMode: null,
         reason,
       };
-      await this.cache.set(cacheKey, fallback, 300_000);
+      await this.cache.set(cacheKey, fallback, FX_FALLBACK_TTL_MS);
       return fallback;
     }
   }

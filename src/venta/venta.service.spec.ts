@@ -1,6 +1,17 @@
 import { VentaService } from './venta.service';
 import { withTransactionMocks } from './venta-transaction.test-helper';
 import { Producto } from '../producto/producto.entity';
+import { appCacheKey, registerCacheInvalidation } from '../common/app-cache';
+
+test('un commit de venta invalida la lista compartida entre modulos', async () => {
+  const cache: any = { del: jest.fn() };
+  const dataSource: any = { subscribers: [] };
+  const key = appCacheKey(cache, 'productos:list:all');
+  const subscriber = registerCacheInvalidation(dataSource, cache);
+  await subscriber.afterTransactionCommit!({} as any);
+  expect(cache.del).toHaveBeenCalledWith(key);
+  expect(appCacheKey(cache, 'productos:list:all')).not.toBe(key);
+});
 
 describe('VentaService.create', () => {
   it('usa el costo unitario fijo del lote con la compra más antigua', async () => {

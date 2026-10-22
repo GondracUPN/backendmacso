@@ -84,6 +84,22 @@ describe('ProductoService', () => {
     expect(cache.set).toHaveBeenLastCalledWith(expect.stringContaining('productos:stats'), expect.any(Object), 300_000);
   });
 
+  it('una lista fria usa una consulta y una lista caliente no consulta la base', async () => {
+    const memory = new Map();
+    const cache = (service as any).cache;
+    cache.get.mockImplementation(async (key) => memory.get(key));
+    cache.set.mockImplementation(async (key, value) => { memory.set(key, value); });
+    const qb: any = {};
+    for (const method of ['leftJoinAndSelect', 'where', 'andWhere', 'orderBy']) qb[method] = () => qb;
+    qb.getMany = jest.fn().mockResolvedValue([]);
+    productoRepo.createQueryBuilder.mockReturnValue(qb);
+    await service.findAll();
+    expect(qb.getMany).toHaveBeenCalledTimes(1);
+    qb.getMany.mockClear();
+    await service.findAll();
+    expect(qb.getMany).not.toHaveBeenCalled();
+  });
+
   it('permite editar manualmente el costo de envío del producto', async () => {
     const producto = {
       id: 50,

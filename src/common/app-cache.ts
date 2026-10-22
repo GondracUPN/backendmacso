@@ -1,4 +1,5 @@
-import { CallHandler, ExecutionContext, NestInterceptor } from '@nestjs/common';
+import { CallHandler, ExecutionContext, Inject, Injectable, NestInterceptor, OnModuleInit } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { DataSource, EntitySubscriberInterface } from 'typeorm';
 import { catchError, concatMap, from, throwError } from 'rxjs';
@@ -47,6 +48,12 @@ export function registerCacheInvalidation(dataSource: DataSource, cache: Cache) 
   };
   dataSource.subscribers.push(subscriber);
   return subscriber;
+}
+
+@Injectable()
+export class AppCacheInvalidator implements OnModuleInit {
+  constructor(private readonly dataSource: DataSource, @Inject(CACHE_MANAGER) private readonly cache: Cache) {}
+  onModuleInit() { registerCacheInvalidation(this.dataSource, this.cache); }
 }
 
 /** Incluye handlers que escriben mediante SQL directo y errores con cambios parciales. */
