@@ -196,7 +196,7 @@ export class ProductoService {
     const savedProducto = await this.productoRepo.save(producto);
     if (accessoryStock && !savedProducto.codigoInventario) {
       savedProducto.codigoInventario = savedProducto.id;
-      await this.productoRepo.save(savedProducto);
+      await this.productoRepo.update(savedProducto.id, { codigoInventario: savedProducto.id });
     }
 
     // 5) Prorratear envío si corresponde
@@ -205,7 +205,10 @@ export class ProductoService {
     } else if (valor) {
       valor.costoEnvioProrrateado = valor.costoEnvio;
       valor.costoTotalProrrateado = valor.costoTotal;
-      await this.valorRepo.save(valor);
+      await this.valorRepo.update(valor.id, {
+        costoEnvioProrrateado: valor.costoEnvio,
+        costoTotalProrrateado: valor.costoTotal,
+      });
     }
 
     // Los accesorios entran a Inventario de inmediato. Las compras simples

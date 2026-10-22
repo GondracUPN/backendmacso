@@ -264,6 +264,10 @@ describe('ProductoService', () => {
 
     expect(result).toEqual(expect.objectContaining({ id: 40, codigoInventario: 12, stockActual: 3 }));
     expect(existing).toEqual(expect.objectContaining({ id: 12, stockInicial: 5, stockActual: 2 }));
+    expect(valorRepo.save).toHaveBeenCalledTimes(1);
+    expect(valorRepo.update).toHaveBeenCalledWith(22, expect.objectContaining({
+      costoEnvioProrrateado: expect.any(Number), costoTotalProrrateado: expect.any(Number),
+    }));
     expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ codigoInventario: 12, stockInicial: 3, stockActual: 3 }));
     expect(trackingRepo.save).toHaveBeenCalledWith(expect.objectContaining({
       productoId: 40,
