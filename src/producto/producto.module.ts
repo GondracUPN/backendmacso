@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { CacheModule } from '@nestjs/cache-manager';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Producto } from './producto.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
@@ -12,9 +11,7 @@ import { PersonalEshopex } from './personal-eshopex.entity';
 import { Inventario } from '../inventario/inventario.entity';
 
 @Module({
-  imports: [
-    CacheModule.register(),
-    TypeOrmModule.forFeature([
+  imports: [ TypeOrmModule.forFeature([
       Producto,
       ProductoDetalle,
       ProductoValor,

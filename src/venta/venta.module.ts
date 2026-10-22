@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { CacheModule } from '@nestjs/cache-manager';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Venta } from './venta.entity';
 import { VentaAdelanto } from './venta-adelanto.entity';
@@ -13,7 +12,7 @@ import { User } from '../auth/entities/user.entity';
 import { FinanzasCoreModule } from '../finanzas/finanzas-core.module';
 
 @Module({
-  imports: [CacheModule.register(), TypeOrmModule.forFeature([Venta, VentaAdelanto, VentaDevolucion, Producto, ProductoValor, Gasto, User]), FinanzasCoreModule],
+  imports: [ TypeOrmModule.forFeature([Venta, VentaAdelanto, VentaDevolucion, Producto, ProductoValor, Gasto, User]), FinanzasCoreModule],
   providers: [VentaService],
   controllers: [VentaController],
   exports: [VentaService],

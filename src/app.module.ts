@@ -1,5 +1,6 @@
 // app.module.ts
 import { Module } from '@nestjs/common';
+import { CacheModule } from '@nestjs/cache-manager';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { join } from 'path';
@@ -28,6 +29,7 @@ import { PerformanceSqlLogger } from './common/request-performance';
 
 @Module({
   imports: [
+    CacheModule.register({ isGlobal: true, ttl: 60_000 }),
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: [

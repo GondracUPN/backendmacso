@@ -1,3 +1,4 @@
+import { appCacheKey, invalidateProductos } from '../common/app-cache';
 import { reservaActivaSql, ventaActivaSql } from '../venta/estado-comercial';
 ﻿import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
@@ -77,8 +78,8 @@ export function normalizeResumenYear(anio?: string | null): string | null {
 @Injectable()
 export class ProductoService {
   // Cache corto para listados (mitiga lecturas repetidas en red/DB lenta)
-  private readonly listCacheKeys = new Set<string>();
-  private readonly listCacheTtlSeconds = 30;
+
+  private readonly LIST_CACHE_TTL_MS = 60_000;
 
   constructor(
     @InjectRepository(Producto)
@@ -103,15 +104,11 @@ export class ProductoService {
 
   private buildListCacheKey(estatus?: string | null): string {
     const normalized = normalizeEstado(estatus);
-    return `productos:list:${normalized || 'all'}`;
+    return appCacheKey(this.cache, `productos:list:${normalized || 'all'}`);
   }
 
   private async invalidateListCache(): Promise<void> {
-    const keys = Array.from(this.listCacheKeys.values());
-    this.listCacheKeys.clear();
-    await Promise.all(
-      keys.map((k) => this.cache.del(k).catch(() => undefined)),
-    );
+    await invalidateProductos(this.cache);
   }
 
   /** Crea un nuevo producto + detalle + valor + tracking inicial */
@@ -397,8 +394,7 @@ export class ProductoService {
     });
 
     if (!estatus) {
-      await this.cache.set(cacheKey, items, this.listCacheTtlSeconds);
-      this.listCacheKeys.add(cacheKey);
+      await this.cache.set(cacheKey, items, this.LIST_CACHE_TTL_MS);
       return items;
     }
 
@@ -427,8 +423,7 @@ export class ProductoService {
       return normalizeEstado(last?.estado) === target;
     });
 
-    await this.cache.set(cacheKey, result, this.listCacheTtlSeconds);
-    this.listCacheKeys.add(cacheKey);
+    await this.cache.set(cacheKey, result, this.LIST_CACHE_TTL_MS);
     return result;
   }
 
@@ -1054,23 +1049,23 @@ export class ProductoService {
   private readonly inflight = new Set<string>();
 
   async statsCached() {
-    const key = 'productos:stats';
+    const key = appCacheKey(this.cache, 'productos:stats');
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 60_000; // refresco en background cada 1 min
-    const ttlSeconds = 300; // mantener 5 min en cache
+    const CACHE_TTL_MS = 300_000; // mantener 5 min en cache
     if (cached?.data) {
       const age = now - (cached.cachedAt || 0);
       if (age > revalidateMs && !this.inflight.has(key)) {
         this.inflight.add(key);
         this.stats()
-          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
+          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, CACHE_TTL_MS))
           .finally(() => this.inflight.delete(key));
       }
       return cached.data;
     }
     const data = await this.stats();
-    await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
+    await this.cache.set(key, { data, cachedAt: now }, CACHE_TTL_MS);
     return data;
   }
 
@@ -1114,23 +1109,23 @@ export class ProductoService {
   async resumenCached(refresh?: boolean, anio?: string) {
     const year = normalizeResumenYear(anio);
     if (refresh) return this.resumen(year);
-    const key = year ? `productos:resumen:${year}` : 'productos:resumen';
+    const key = appCacheKey(this.cache, year ? `productos:resumen:${year}` : 'productos:resumen');
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 60_000;
-    const ttlSeconds = 300;
+    const CACHE_TTL_MS = 300_000;
     if (cached?.data) {
       const age = now - (cached.cachedAt || 0);
       if (age > revalidateMs && !this.inflight.has(key)) {
         this.inflight.add(key);
         this.resumen(year)
-          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
+          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, CACHE_TTL_MS))
           .finally(() => this.inflight.delete(key));
       }
       return cached.data;
     }
     const data = await this.resumen(year);
-    await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
+    await this.cache.set(key, { data, cachedAt: now }, CACHE_TTL_MS);
     return data;
   }
 

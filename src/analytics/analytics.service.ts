@@ -1,3 +1,4 @@
+import { appCacheKey, invalidateProductos } from '../common/app-cache';
 import { Injectable, Inject, Optional } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -450,9 +451,10 @@ export class AnalyticsService {
 
   private async rememberCached<T>(
     key: string,
-    ttlSeconds: number,
+    CACHE_TTL_MS: number,
     loader: () => Promise<T>,
   ): Promise<T> {
+    key = appCacheKey(this.cache, key);
     const cached = await this.cache.get<T>(key);
     if (cached) return cached;
 
@@ -461,7 +463,7 @@ export class AnalyticsService {
 
     const promise = loader()
       .then(async (value) => {
-        await this.cache.set(key, value, ttlSeconds);
+        await this.cache.set(key, value, CACHE_TTL_MS);
         return value;
       })
       .finally(() => this.sharedInflight.delete(key));
@@ -471,7 +473,7 @@ export class AnalyticsService {
   }
 
   private async getAnalyticsUniverseCached(): Promise<AnalyticsUniverse> {
-    return this.rememberCached('analytics:universe:v3', 45, async () => {
+    return this.rememberCached('analytics:universe:v3', 45_000, async () => {
       const [productos, ventas] = await Promise.all([
         this.prodRepo.find({
           relations: ['valor', 'detalle', 'tracking'],
@@ -497,25 +499,25 @@ export class AnalyticsService {
 
   // Stale‑while‑revalidate wrapper for the heavy summary aggregation
   async summaryCached(params: Params) {
-    const key = this.buildKey('analytics:summary:v6', params);
+    const key = appCacheKey(this.cache, this.buildKey('analytics:summary:v6', params));
     const cached: any = await this.cache.get(key);
     const now = Date.now();
     const revalidateMs = 120_000; // recompute in background every 2 min if accessed
-    const ttlSeconds = 600; // keep in cache 10 min (served as stale if needed)
+    const CACHE_TTL_MS = 600_000; // keep in cache 10 min (served as stale if needed)
 
     if (cached?.data) {
       const age = now - (cached.cachedAt || 0);
       if (age > revalidateMs && !this.inflight.has(key)) {
         this.inflight.add(key);
         this.summary(params)
-          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, ttlSeconds))
+          .then((data) => this.cache.set(key, { data, cachedAt: Date.now() }, CACHE_TTL_MS))
           .finally(() => this.inflight.delete(key));
       }
       return cached.data;
     }
 
     const data = await this.summary(params);
-    await this.cache.set(key, { data, cachedAt: now }, ttlSeconds);
+    await this.cache.set(key, { data, cachedAt: now }, CACHE_TTL_MS);
     return data;
   }
 
@@ -2025,7 +2027,7 @@ export class AnalyticsService {
 
   async sunatExchangeRate(date?: string) {
     const dateKey = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : 'today';
-    const cacheKey = `analytics:sunat:fx:v2:${dateKey}`;
+    const cacheKey = appCacheKey(this.cache, `analytics:sunat:fx:v2:${dateKey}`);
     const cached = await this.cache.get<any>(cacheKey);
     if (cached) return cached;
 
@@ -2088,7 +2090,7 @@ export class AnalyticsService {
             authMode: 'public-eapi',
             reason: '',
           };
-          await this.cache.set(cacheKey, result, 3600);
+          await this.cache.set(cacheKey, result, 3_600_000);
           return result;
         } catch (e: any) {
           clearTimeout(timeout);
@@ -2163,7 +2165,7 @@ export class AnalyticsService {
             continue;
           }
           parsed.authMode = attempt.authMode;
-          await this.cache.set(cacheKey, parsed, 3600);
+          await this.cache.set(cacheKey, parsed, 3_600_000);
           return parsed;
         } catch (e: any) {
           clearTimeout(timeout);
@@ -2184,7 +2186,7 @@ export class AnalyticsService {
         authMode: null,
         reason,
       };
-      await this.cache.set(cacheKey, fallback, 300);
+      await this.cache.set(cacheKey, fallback, 300_000);
       return fallback;
     }
   }
