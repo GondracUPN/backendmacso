@@ -19,28 +19,26 @@ El neto esperado descuenta comisiones, por eso una venta con tarjeta de S/ 3,000
 - **Transferencias y ajustes (saldo inicial)**: `movimientos_financieros`.
 - **Reembolsos**: `reembolsos` + `reembolso_eventos`. Si llega a una tarjeta de crédito se crea un ingreso a crédito en Gastos (`__REFUND__:…`) que reduce su deuda; no es depósito.
 
-## Despliegue (orden obligatorio)
+## Despliegue
 
-El backend nuevo lee columnas nuevas: **ejecutar la migración antes de desplegar el código**.
+El backend completa las tablas, columnas e índices de finanzas al arrancar, siguiendo los ajustes automáticos que ya usa servicios. No requiere ejecutar migraciones manuales ni usa una tabla de historial de migraciones para este arranque. Los cambios se aplican en una transacción sobre `DB_SCHEMA` (por defecto `public`), antes de atender peticiones; si fallan, el backend no empieza a servir con un esquema incompleto.
 
 ```bash
 # 1. Respaldo (pg_dump 15 o superior)
 pg_dump -Fc --no-owner --no-acl -d "$DATABASE_URL" -f respaldo-antes-finanzas.dump
 
-# 2. Revisar y ejecutar la migración (aditiva, idempotente, reversible)
-npm run migration:show
-npm run migration:run
+# 2. Desplegar y arrancar el backend; comprobar [BOOT][FINANCIAL_SCHEMA] ok.
 
 # 3. Importar como "sin verificar" los cobros que Gastos ya registra (primero simula)
 npm run finanzas:backfill
 npm run finanzas:backfill -- --apply
 ```
 
-`npm run migration:revert` elimina las tablas y columnas nuevas (y lo registrado en ellas).
+Los archivos y comandos de migración se conservan por compatibilidad con instalaciones que los hayan usado; no forman parte del despliegue habitual. No ejecutar `migration:revert` para deshacer un despliegue: elimina tablas, columnas y lo registrado en ellas.
 
 ## Datos históricos
 
-- La migración marca todas las ventas existentes con `conciliacionHistorica = 'pendiente'`. No se crean pagos ficticios ni fechas de depósito.
+- Cuando se crea por primera vez la columna de conciliación, el ajuste de arranque marca las ventas existentes con `conciliacionHistorica = 'pendiente'`. Los siguientes arranques conservan su estado. No se crean pagos ficticios ni fechas de depósito.
 - La importación usa solo fechas ya registradas en Gastos y deja los pagos con `verificado = false`: no cuentan como caja ni como margen hasta confirmarlos (Análisis → Finanzas y cobros → Conciliación). Esas ventas tampoco cuentan como saldo por cobrar.
 - Opciones de conciliación: registros correctos, cobrado en fecha conocida, cobrado sin fecha (no entra a ningún mes), sigue debiendo, o vincular un ingreso suelto de Gastos (sugerencias por importe y fecha) sin copiarlo.
 - `cancelAdelanto` ya no borra la reserva: la marca cancelada y registra la devolución en el libro de pagos.

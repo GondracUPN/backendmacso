@@ -5,6 +5,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { json, text } from 'express';
+import { ensureFinancialSchema } from './db/financial-schema';
 import {
   assertExpectedDbTargetOrThrow,
   assertRequiredColumnsOrThrow,
@@ -535,6 +536,11 @@ async function bootstrap() {
     console.log('[BOOT][DB_ENV] error', (e as any)?.message || e);
     if (shouldBlockBoot) throw e;
   }
+
+  // Completar las columnas y tablas comerciales antes de atender peticiones.
+  // Si falla, detener el arranque para no servir consultas con un esquema incompleto.
+  await ensureFinancialSchema(dataSource);
+  console.log('[BOOT][FINANCIAL_SCHEMA] ok');
 
   const port = Number(process.env.PORT || cfg.get<string>('PORT') || 3001);
   await app.listen(port, '0.0.0.0');
