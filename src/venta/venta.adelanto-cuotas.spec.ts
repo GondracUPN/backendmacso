@@ -162,6 +162,35 @@ describe('Adelantos con varias cuotas', () => {
     await expect(service.getSalePayments(405)).resolves.toMatchObject({ advanceAmount: 1950, parts: [{ type: 'direct', amount: 650 }] });
   });
 
+  it.each(['__SALE_INCOME__:279:405', '__SALE_INCOME__:279:405:direct', '__SALE_INCOME__:279', '__SALE_INCOME__:279:direct', '279'])('recupera el cuarto pago histórico sin saleId: %s', async (reference) => {
+    const { service, saleRows, gastoRepo } = setup();
+    await reservar(service);
+    await service.completeAdelanto(10, { fechaVenta: '2026-09-11', tipoCambio: 3.5, incomeBank: 'bcp' });
+    Object.assign(saleRows()[0], { saleId: null, notas: reference });
+    gastoRepo.save.mockClear();
+    const summary = await service.resumenAdelanto(10);
+    expect(summary).toMatchObject({ precio: 2600, cobrado: 2600, falta: 0 });
+    expect(summary.pagos.map((pago) => pago.monto)).toEqual([700, 600, 650, 650]);
+    expect(gastoRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('no inventa el cierre ni atribuye un ingreso antiguo de otra fecha', async () => {
+    const { service, saleRows } = setup();
+    await reservar(service);
+    await service.completeAdelanto(10, { fechaVenta: '2026-09-11', tipoCambio: 3.5, incomeBank: 'bcp' });
+    Object.assign(saleRows()[0], { saleId: null, notas: '__SALE_INCOME__:279', fecha: '2025-09-11' });
+    expect(await service.resumenAdelanto(10)).toMatchObject({ cobrado: 1950, falta: 650 });
+  });
+
+  it('mantiene pendiente el saldo de cierre a crédito hasta recibirlo', async () => {
+    const { service, saleRows } = setup();
+    await reservar(service);
+    await service.completeAdelanto(10, { fechaVenta: '2026-09-11', tipoCambio: 3.5, incomeBank: 'bcp', incomePaymentType: 'card' });
+    expect(await service.resumenAdelanto(10)).toMatchObject({ cobrado: 1950, falta: 650 });
+    saleRows()[0].saleReceivedAmount = '200.00';
+    expect(await service.resumenAdelanto(10)).toMatchObject({ cobrado: 2150, falta: 450 });
+  });
+
   it('edita y elimina cuotas de una venta completada ajustando el saldo cobrado', async () => {
     const { service, incomes, advanceRows, saleRows, getAdvance } = setup();
     await reservar(service);

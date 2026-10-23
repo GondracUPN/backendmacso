@@ -1234,6 +1234,23 @@ export class VentaService {
     return saved;
   }
 
+  private cierreReferences(adelanto: VentaAdelanto) {
+    if (!adelanto.ventaId) return [];
+    const bases = [`__SALE_INCOME__:${adelanto.productoId}:${adelanto.ventaId}`, `__SALE_INCOME__:${adelanto.productoId}`];
+    return [String(adelanto.productoId), ...bases.flatMap((base) => [base, ...['direct', 'card', 'debt', 'cash'].map((type) => `${base}:${type}`)])];
+  }
+
+  private isResumenCierre(row: Gasto, adelanto: VentaAdelanto, venta: Venta | null) {
+    if (!venta || isAdvanceIncome(row)) return false;
+    if (row.saleId === venta.id) return true;
+    if (row.saleId != null || row.metodoPago !== 'debito') return false;
+    const reference = String(row.notas || '');
+    if (!this.cierreReferences(adelanto).includes(reference)) return false;
+    const canonical = `__SALE_INCOME__:${adelanto.productoId}:${venta.id}`;
+    return reference === canonical || reference.startsWith(`${canonical}:`)
+      || String(row.fecha).slice(0, 10) === String(venta.fechaVenta).slice(0, 10);
+  }
+
   async resumenAdelanto(id: number) {
     const adelanto = await this.findAdelanto(id);
     const [producto, venta, rows] = await Promise.all([
@@ -1241,7 +1258,10 @@ export class VentaService {
       adelanto.ventaId ? this.findOne(adelanto.ventaId) : Promise.resolve(null),
       this.gastoRepo ? this.gastoRepo.find({ where: [
         { concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${id}:%`) },
-        ...(adelanto.ventaId ? [{ concepto: 'ingreso', saleId: adelanto.ventaId }] : []),
+        ...(adelanto.ventaId ? [
+          { concepto: 'ingreso', saleId: adelanto.ventaId },
+          { concepto: 'ingreso', metodoPago: 'debito' as const, saleId: IsNull(), notas: In(this.cierreReferences(adelanto)) },
+        ] : []),
       ] }) : Promise.resolve([]),
     ]);
     return this.buildAdelantoResumen(adelanto, producto, venta, rows);
@@ -1257,14 +1277,17 @@ export class VentaService {
       saleIds.length ? this.ventaRepo.find({ where: { id: In(saleIds) } }) : Promise.resolve([]),
       this.gastoRepo ? this.gastoRepo.find({ where: [
         ...adelantos.map((item) => ({ concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${item.id}:%`) })),
-        ...(saleIds.length ? [{ concepto: 'ingreso', saleId: In(saleIds) }] : []),
+        ...(saleIds.length ? [
+          { concepto: 'ingreso', saleId: In(saleIds) },
+          { concepto: 'ingreso', metodoPago: 'debito' as const, saleId: IsNull(), notas: In(adelantos.flatMap((item) => this.cierreReferences(item))) },
+        ] : []),
       ] }) : Promise.resolve([]),
     ]);
     const productMap = new Map(productos.map((item) => [item.id, item]));
     const saleMap = new Map(ventas.map((item) => [item.id, item]));
     return adelantos.map((item) => this.buildAdelantoResumen(item,
       productMap.get(item.productoId) || null, saleMap.get(item.ventaId!) || null,
-      rows.filter((row) => String(row.notas || '').startsWith(`__SALE_ADVANCE__:${item.id}:`) || Boolean(item.ventaId && row.saleId === item.ventaId)),
+      rows.filter((row) => String(row.notas || '').startsWith(`__SALE_ADVANCE__:${item.id}:`) || this.isResumenCierre(row, item, saleMap.get(item.ventaId!) || null)),
     ));
   }
 
@@ -1279,16 +1302,22 @@ export class VentaService {
       editable: !cuota.pagoId && !adelanto.canceladoAt,
       gastoIds: rows.filter((row) => row.notas === `__SALE_ADVANCE__:${id}:${index}`).map((row) => row.id),
     }));
-    const cierre = rows.filter((row) => row.saleId === venta?.id && !isAdvanceIncome(row));
+    const cierre = rows.filter((row) => this.isResumenCierre(row, adelanto, venta));
     if (cierre.length) pagos.push({
       index: -1, fecha: String(venta!.fechaVenta),
       monto: cierre.reduce((sum, row) => sum + toCents(row.monto), 0) / 100,
       banco: cierre[0].tarjeta || 'bcp', tipoPago: cierre[0].salePaymentType || 'direct',
-      origen: 'cierre', editable: !adelanto.canceladoAt && new Set(cierre.map((row) => row.salePaymentType)).size === 1,
+      origen: 'cierre', editable: !adelanto.canceladoAt && cierre.every((row) => row.saleId === venta!.id) && new Set(cierre.map((row) => row.salePaymentType)).size === 1,
       gastoIds: cierre.map((row) => row.id),
     });
     const precio = Number(venta?.precioVenta ?? adelanto.montoVenta);
-    const cobrado = pagos.reduce((sum, pago) => sum + toCents(pago.monto), 0) / 100;
+    const received = (row: Gasto) => row.salePaymentType === 'card' || row.salePaymentType === 'debt'
+      ? toCents(row.saleReceivedAmount) : toCents(row.saleReceivedAmount ?? row.monto);
+    const cobrado = pagos.reduce((sum, pago) => {
+      const linked = rows.filter((row) => pago.gastoIds.includes(row.id));
+      if (linked.length) return sum + linked.reduce((total, row) => total + received(row), 0);
+      return sum + (pago.tipoPago === 'card' || pago.tipoPago === 'debt' ? 0 : toCents(pago.monto));
+    }, 0) / 100;
     const falta = Math.max(0, toCents(precio) - toCents(cobrado)) / 100;
     return { ...adelanto, producto: { id: producto?.id, nombre: buildProductoNombre(producto),
       codigo: `MS-${producto?.codigoInventario || adelanto.productoId}`, vendedor: producto?.vendedor },
