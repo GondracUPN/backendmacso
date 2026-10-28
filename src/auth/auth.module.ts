@@ -15,10 +15,17 @@ import { AdminSeedProvider } from './admin-seed.provider';
     TypeOrmModule.forFeature([User]),
     JwtModule.registerAsync({
       inject: [ConfigService],
-      useFactory: (cfg: ConfigService) => ({
-        secret: cfg.get<string>('JWT_SECRET') || 'dev-secret',
-        signOptions: { expiresIn: cfg.get<string>('JWT_EXPIRES') || '7d' },
-      }),
+      useFactory: (cfg: ConfigService) => {
+        const env = (cfg.get<string>('NODE_ENV') || 'development').toLowerCase();
+        const expires = cfg.get<string>('JWT_EXPIRES') || '7d';
+        const unlimited = expires.toLowerCase() === 'never';
+        return {
+          secret: cfg.get<string>('JWT_SECRET') || 'dev-secret',
+          signOptions: unlimited && env === 'development'
+            ? {}
+            : { expiresIn: unlimited ? '7d' : expires },
+        };
+      },
     }),
   ],
   controllers: [AuthController],

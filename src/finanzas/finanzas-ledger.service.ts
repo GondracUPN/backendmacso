@@ -630,7 +630,8 @@ export class FinanzasLedgerService {
     const venta = await manager
       .getRepository(Venta)
       .findOne({ where: { id: ventaId } });
-    if (!venta) return;
+    // Una venta anulada no vuelve a derivar ni reactivar pagos.
+    if (!venta || venta.anuladaAt) return;
     const gastoRepo = manager.getRepository(Gasto);
     // Las filas de adelanto también llevan sale_id: sus pagos se derivan de la reserva.
     const rows = (
@@ -775,6 +776,8 @@ export class FinanzasLedgerService {
           .getRepository(Venta)
           .findOne({ where: { id: adelanto.ventaId } })
       : null;
+    // Las cuotas se conservan como historial, pero sus pagos quedaron anulados con la venta.
+    if (venta?.anuladaAt) return;
     const cuotas =
       Array.isArray(adelanto.cuotas) && adelanto.cuotas.length
         ? adelanto.cuotas
@@ -947,6 +950,37 @@ export class FinanzasLedgerService {
       await repo.update(pago.id, { estado: estadoPago(actualizado!) });
       restante -= devolver;
     }
+  }
+
+  /**
+   * Anulación completa de una venta: todos sus pagos (de la venta y de la reserva que la
+   * originó, incluidos los que tienen liquidaciones o devoluciones) dejan de aportar.
+   * Los eventos se conservan como historial; todas las lecturas los excluyen al
+   * estar anulado su pago, por lo que no se registra ninguna devolución compensatoria.
+   */
+  async anularPagosVenta(
+    manager: EntityManager,
+    ventaId: number,
+    adelantoId: number | null | undefined,
+    motivo: string,
+  ): Promise<number> {
+    const repo = manager.getRepository(VentaPago);
+    const where = [
+      { ventaId, anuladoAt: IsNull() },
+      ...(adelantoId ? [{ adelantoId, anuladoAt: IsNull() }] : []),
+    ];
+    const pagos = await repo.find({ where, order: { id: 'ASC' } });
+    const anuladoAt = new Date();
+    for (const pago of pagos) {
+      await repo.update(pago.id, {
+        anuladoAt,
+        estado: 'anulado',
+        observacion: [pago.observacion, `Venta ${ventaId} anulada: ${motivo}`]
+          .filter(Boolean)
+          .join(' · '),
+      });
+    }
+    return pagos.length;
   }
 
   /** Al eliminar una venta se conservan sus pagos como anulados (sin borrar historia). */

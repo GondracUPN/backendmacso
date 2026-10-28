@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { join } from 'path';
 import { ProductoModule } from './producto/producto.module';
+import { AccesoriosModule } from './accesorios/accesorios.module';
 import { TrackingModule } from './tracking/tracking.module';
 import { VentaModule } from './venta/venta.module';
 import { AuthModule } from './auth/auth.module';
@@ -16,6 +17,7 @@ import { SchedulesModule } from './schedules/schedules.module';
 import { OcrModule } from './ocr/ocr.module';
 import { SickwModule } from './sickw/sickw.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { AppleCatalogModule } from './apple-catalog/apple-catalog.module';
 import { InventarioModule } from './inventario/inventario.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -78,12 +80,14 @@ import { AppCacheInvalidator } from './common/app-cache';
     CardsModule,
     VentaModule,
     ProductoModule,
+    AccesoriosModule,
     TrackingModule,
     AnalyticsModule,
     SchedulesModule,
     OcrModule,
     SickwModule,
     CatalogModule,
+    AppleCatalogModule,
     InventarioModule,
     CatalogSalesIntegrationModule,
     FinanzasModule,

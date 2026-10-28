@@ -97,7 +97,7 @@ export class CatalogSalesIntegrationService {
   async receive(eventId: string, payload: any) {
     await this.ensureTable();
     const eventType = String(payload?.eventType || '');
-    if (!['sale.created', 'sale.cancelled'].includes(eventType)) {
+    if (!['sale.created', 'sale.cancelled', 'sale.updated'].includes(eventType)) {
       throw new BadRequestException('eventType invalido');
     }
     const catalogSaleId = String(payload?.catalogSaleId || '').trim();
@@ -112,22 +112,40 @@ export class CatalogSalesIntegrationService {
       throw new BadRequestException('Fecha invalida');
     }
     const schema = process.env.DB_SCHEMA || 'public';
+    // El catálogo reutiliza el mismo eventId en cada edición de una venta, así
+    // que la edición se aplica siempre en vez de tratarse como duplicado.
+    if (eventType === 'sale.updated') {
+      return this.applySaleUpdate(schema, eventId, payload, catalogSaleId, sku, amount, soldAt);
+    }
     const existing = await this.dataSource.query(
       `SELECT * FROM "${schema}"."catalog_sale_events" WHERE "eventId" = $1 LIMIT 1`,
       [eventId],
     );
     if (existing[0]) {
       const stored = existing[0];
+      // Reenvío de un alta aún sin confirmar: conserva el precio y la fecha más recientes.
+      if (eventType === 'sale.created' && ['pending_confirmation', 'failed'].includes(stored.status)) {
+        await this.dataSource.query(
+          `UPDATE "${schema}"."catalog_sale_events"
+              SET "amount" = $2, "soldAt" = $3, "payload" = $4::jsonb, "updatedAt" = now()
+            WHERE "id" = $1`,
+          [stored.id, amount, soldAt, JSON.stringify(payload)],
+        );
+        return { ok: true, status: stored.status, duplicate: true };
+      }
       if (eventType === 'sale.created' && stored.status === 'rejected') {
         await this.dataSource.query(
           `UPDATE "${schema}"."catalog_sale_events"
               SET "status" = 'pending_confirmation', "error" = NULL,
-                  "exchangeRate" = $2, "payload" = $3::jsonb, "updatedAt" = now()
+                  "exchangeRate" = $2, "payload" = $3::jsonb, "amount" = $4, "soldAt" = $5,
+                  "updatedAt" = now()
             WHERE "id" = $1`,
           [
             stored.id,
             Number.isFinite(exchangeRate) ? exchangeRate : Number(stored.exchangeRate || 0),
             JSON.stringify(payload),
+            amount,
+            soldAt,
           ],
         );
         return { ok: true, status: 'pending_confirmation', duplicate: true, reopened: true };
@@ -189,6 +207,75 @@ export class CatalogSalesIntegrationService {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
       [eventId, catalogSaleId, eventType, sku, payload?.title || null, amount, Number.isFinite(exchangeRate) ? exchangeRate : 0, soldAt, status, remoteVentaId, JSON.stringify(payload)],
     );
+    return { ok: true, status };
+  }
+
+  /**
+   * Aplica una venta editada en el catálogo (precio o fecha):
+   * - alta pendiente o rechazada: se corrigen sus datos para cuando se confirme;
+   * - venta confirmada: se actualiza la venta real (recalcula ganancia e ingresos);
+   * - venta anulada: no hay nada que actualizar.
+   * Se guarda con estado propio (nunca pendiente) para que no aparezca en el
+   * panel ni se confunda con una anulación al confirmar.
+   */
+  private async applySaleUpdate(
+    schema: string,
+    eventId: string,
+    payload: any,
+    catalogSaleId: string,
+    sku: string,
+    amount: number,
+    soldAt: Date,
+  ) {
+    const original = (await this.dataSource.query(
+      `SELECT "id", "status", "remoteVentaId", "payload" FROM "${schema}"."catalog_sale_events"
+       WHERE "catalogSaleId" = $1 AND "eventType" = 'sale.created'
+       ORDER BY "createdAt" DESC LIMIT 1`,
+      [catalogSaleId],
+    ))[0];
+    // Sin alta todavía: el catálogo lo reintentará más tarde.
+    if (!original) throw new NotFoundException('La venta aún no llegó a Servicios');
+
+    const refreshOriginal = () => this.dataSource.query(
+      `UPDATE "${schema}"."catalog_sale_events"
+          SET "amount" = $2, "soldAt" = $3, "payload" = $4::jsonb, "updatedAt" = now()
+        WHERE "id" = $1`,
+      [original.id, amount, soldAt, JSON.stringify({ ...(original.payload || {}), amount, soldAt: soldAt.toISOString() })],
+    );
+
+    let status = 'update_ignored';
+    let remoteVentaId: number | null = null;
+    let error: string | null = null;
+    if (['pending_confirmation', 'failed', 'rejected'].includes(original.status)) {
+      await refreshOriginal();
+      status = 'update_applied_to_pending';
+    } else if (original.status === 'confirmed' && original.remoteVentaId) {
+      remoteVentaId = Number(original.remoteVentaId);
+      try {
+        await this.ventaService.update(remoteVentaId, {
+          precioVenta: amount,
+          fechaVenta: soldAt.toISOString().slice(0, 10),
+        } as any);
+        await refreshOriginal();
+        status = 'update_applied';
+      } catch (err) {
+        // Pagos combinados, adelantos o devoluciones: Servicios no lo cambia solo.
+        error = err instanceof Error ? err.message : 'No se pudo actualizar la venta';
+        status = 'update_failed';
+      }
+    }
+
+    await this.dataSource.query(
+      `INSERT INTO "${schema}"."catalog_sale_events"
+       ("eventId", "catalogSaleId", "eventType", "sku", "title", "amount", "exchangeRate", "soldAt", "status", "remoteVentaId", "payload", "error")
+       VALUES ($1,$2,'sale.updated',$3,$4,$5,0,$6,$7,$8,$9::jsonb,$10)
+       ON CONFLICT ("eventId") DO UPDATE
+       SET "amount" = EXCLUDED."amount", "soldAt" = EXCLUDED."soldAt", "status" = EXCLUDED."status",
+           "remoteVentaId" = EXCLUDED."remoteVentaId", "payload" = EXCLUDED."payload",
+           "error" = EXCLUDED."error", "updatedAt" = now()`,
+      [eventId, catalogSaleId, sku, payload?.title || null, amount, soldAt, status, remoteVentaId, JSON.stringify(payload), error],
+    );
+    if (error) throw new BadRequestException(`No se pudo actualizar la venta en Servicios: ${error}`);
     return { ok: true, status };
   }
 
@@ -292,6 +379,8 @@ export class CatalogSalesIntegrationService {
   async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown, submittedIncomeParts?: unknown) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
+    // Las ediciones se aplican al recibirse; confirmarlas caería en la rama de anulación.
+    if (event.eventType === 'sale.updated') throw new BadRequestException('Las ediciones de venta no se confirman');
     if (['confirmed', 'cancelled'].includes(event.status)) {
       // Reintento: vuelve a avisar al catálogo por si el aviso anterior se perdió.
       await this.notifyCatalogStatus(String(event.eventId || ''), event.status);
@@ -485,6 +574,7 @@ export class CatalogSalesIntegrationService {
 
   async reject(id: string) {
     const event = await this.getEvent(id);
+    if (event.eventType === 'sale.updated') throw new BadRequestException('Las ediciones de venta no se rechazan');
     const schema = process.env.DB_SCHEMA || 'public';
     await this.dataSource.query(
       `UPDATE "${schema}"."catalog_sale_events" SET "status" = 'rejected', "updatedAt" = now() WHERE "id" = $1`,

@@ -32,4 +32,6 @@ export class UpdateInventarioDto {
   @IsOptional() @IsString() @MaxLength(3000) observaciones?: string | null;
   @IsOptional() @IsBoolean() fotosTomadas?: boolean;
   @IsOptional() @IsBoolean() marketplaceSubido?: boolean;
+  /** Guardado de ficha completa: exige los identificadores requeridos por el modelo. Sin él es un borrador. */
+  @IsOptional() @IsBoolean() exigirCompleta?: boolean;
 }

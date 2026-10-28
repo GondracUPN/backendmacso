@@ -3,6 +3,8 @@ import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
 
 @Entity()
 export class ProductoValor {
+  @Column({ type: 'numeric', precision: 12, scale: 6, nullable: true })
+  tipoCambioCompra?: number | null;
   @PrimaryGeneratedColumn()
   id: number;
 

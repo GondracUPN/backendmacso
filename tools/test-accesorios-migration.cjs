@@ -1,0 +1,64 @@
+// Disposable PostgreSQL/WASM only. Never connects to an application database.
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const { PGlite } = require(path.resolve(__dirname, '../../tmp/accesorios-db/node_modules/@electric-sql/pglite'));
+const { ReferenciasAccesorios1792537800000 } = require('../dist/src/migrations/1792537800000-ReferenciasAccesorios');
+
+const { VinculosAccesorios1792537900000 } = require('../dist/src/migrations/1792537900000-VinculosAccesorios');
+const links = new VinculosAccesorios1792537900000();
+(async () => {
+  const db = new PGlite();
+  try {
+    await db.exec('CREATE TABLE producto (id integer PRIMARY KEY); CREATE TABLE producto_valor (id integer PRIMARY KEY, "valorSoles" numeric); INSERT INTO producto VALUES (7); INSERT INTO producto_valor VALUES (9,123.45)');
+    const runner = { connection: { options: {} }, query: (sql) => db.exec(sql) };
+    const migration = new ReferenciasAccesorios1792537800000();
+    await migration.up(runner);
+    assert.equal((await db.query('SELECT "referenciaId" FROM producto WHERE id=7')).rows[0].referenciaId, null);
+    assert.deepEqual((await db.query('SELECT "tipoCambioCompra", "valorSoles"::text FROM producto_valor WHERE id=9')).rows[0], { tipoCambioCompra: null, valorSoles: '123.45' });
+    await db.query(`INSERT INTO accesorio_referencia (categoria,marca,modelo,estado,originalidad) VALUES (' Cable ','Apple','USB-C','nuevo','original')`);
+    await assert.rejects(db.query(`INSERT INTO accesorio_referencia (categoria,marca,modelo,estado,originalidad) VALUES ('cable',' apple ','usb-c','NUEVO','original')`), (error) => error.code === '23505');
+    await db.exec(`ALTER TABLE producto ADD tipo text DEFAULT 'accesorios', ADD "codigoInventario" integer;
+      CREATE TABLE venta (id integer PRIMARY KEY, "productoId" integer, "fechaVenta" date, cantidad integer, "cantidadDevuelta" integer DEFAULT 0, "precioVenta" numeric, "precioDevuelto" numeric DEFAULT 0, "estadoComercial" text DEFAULT 'activa', "distribucionStock" jsonb);
+      CREATE TABLE venta_devoluciones (id integer PRIMARY KEY, cantidad integer, monto numeric);
+      INSERT INTO producto VALUES (8,null,'accesorios',7),(9,null,'accesorios',9),(10,null,'accesorios',9);
+      UPDATE producto SET "codigoInventario"=7 WHERE id=7;
+      INSERT INTO venta VALUES (1,7,'2026-01-01',3,1,90,30,'activa','[{"productoId":7,"cantidad":3,"costoUnitario":10}]'),(2,8,'2026-02-01',1,0,99,0,'cancelada','[]'),(3,7,'2026-03-01',1,1,70,70,'activa','[]'),(4,10,'2026-01-02',2,1,50,25,'activa','[]');
+      INSERT INTO venta_devoluciones VALUES (1,1,30);`);
+    const protectedData = async () => (await db.query(`SELECT (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM venta v) ventas,(SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM producto_valor c) costos,(SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM venta_devoluciones d) devoluciones`)).rows;
+    const history = await protectedData();
+    await db.query('UPDATE producto SET "referenciaId"=1 WHERE id IN (7,8)');
+    const { AccesoriosService } = require('../dist/src/accesorios/accesorios.service');
+    const lots = [{id:7,codigoInventario:7,referenciaId:1,tipo:'accesorios',vendedor:'Gonzalo',stockActual:1,stockInicial:3},{id:9,codigoInventario:9,tipo:'accesorios',vendedor:'Renato',stockActual:1,stockInicial:2}];
+    const reads=[];
+    const service=new AccesoriosService({getRepository:entity=>({find:async()=>{reads.push(entity.name);return entity.name==='Producto'?lots:[];}}),query:async sql=>{reads.push('sales');return (await db.query(sql)).rows;}},{},{});
+    const operational=await service.operativo();
+    assert.equal(reads.length,3);
+    assert.deepEqual(operational.map(row=>[row.codigo,row.ultimaVenta.id,row.ultimaVenta.cantidad,row.ultimaVenta.precioUnitario]),[[7,1,2,30],[9,4,1,25]]);
+    assert.deepEqual(await protectedData(),history);
+    await assert.rejects(db.query('DELETE FROM accesorio_referencia WHERE id=1'), (error) => ['23503', '23001'].includes(error.code));
+    await links.up(runner);
+    await db.query(`INSERT INTO accesorio_vinculo_propuesta ("productoId",grupo,"productoIds",snapshot,"snapshotHash",puntuacion,motivo) VALUES (7,'7:gonzalo','[7]','[]','hash',100,'prueba')`);
+    await assert.rejects(db.query(`INSERT INTO accesorio_vinculo_propuesta ("productoId",grupo,"productoIds",snapshot,"snapshotHash",puntuacion,motivo) VALUES (7,'7:gonzalo','[7]','[]','hash',100,'duplicada')`), error => error.code==='23505');
+    await db.query(`INSERT INTO accesorio_vinculo_auditoria ("productoId","referenciaIdNuevo",accion,"loteId",usuario) VALUES (7,1,'vincular',1,'admin')`);
+    await assert.rejects(db.query('DELETE FROM accesorio_vinculo_propuesta WHERE id=1'), error => ['23503','23001'].includes(error.code));
+    await db.query(`INSERT INTO accesorio_vinculo_auditoria ("productoId","referenciaIdAnterior",accion,"loteId",usuario,"revierteAuditoriaId") VALUES (7,1,'desvincular',1,'admin',1)`);
+    await assert.rejects(db.query(`INSERT INTO accesorio_vinculo_auditoria ("productoId",accion,usuario,"revierteAuditoriaId") VALUES (7,'desvincular','admin',1)`), error => error.code==='23505');
+    assert.equal((await db.query('SELECT "valorSoles"::text FROM producto_valor')).rows[0].valorSoles,'123.45');
+    await links.down(runner);
+    assert.deepEqual(await protectedData(),history);
+    await migration.down(runner);
+    assert.equal((await db.query('SELECT id FROM producto WHERE id=7')).rows[0].id, 7);
+    assert.equal((await db.query('SELECT "valorSoles"::text FROM producto_valor')).rows[0].valorSoles, '123.45');
+    await migration.up(runner);
+    await links.up(runner);
+    await links.down(runner);
+    await migration.down(runner);
+    await db.exec('CREATE SCHEMA acc_test; CREATE TABLE acc_test.producto (id integer PRIMARY KEY); CREATE TABLE acc_test.producto_valor (id integer PRIMARY KEY)');
+    runner.connection.options.schema = 'acc_test';
+    await migration.up(runner);
+    await links.up(runner);
+    await links.down(runner);
+    await migration.down(runner);
+    console.log('PASS: migraciones fases 2 y 3 up/down dos veces y esquema alternativo, unicidad normalizada, FK RESTRICT, DISTINCT ON con ventas canceladas/devueltas y datos antiguos intactos.');
+  } finally { await db.close(); }
+})().catch((error) => { console.error(error); process.exitCode = 1; });

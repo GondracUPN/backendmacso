@@ -13,3 +13,7 @@ export class DevolverVentaDto {
 export class EliminarVentaDto {
   @IsString() @Length(3, 1000) motivo: string;
 }
+
+export class AnularVentaDto {
+  @IsOptional() @IsString() @Length(0, 1000) motivo?: string;
+}

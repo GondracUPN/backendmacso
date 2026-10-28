@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { CatalogSalesIntegrationService } from './catalog-sales-integration.service';
 
 describe('CatalogSalesIntegrationService.confirm', () => {
@@ -269,5 +269,103 @@ describe('CatalogSalesIntegrationService aviso al catalogo', () => {
     const result = await service.reconcileCatalogStatuses(500, 1);
     expect(notify).toHaveBeenCalledTimes(1);
     expect(result).toEqual(expect.objectContaining({ ok: false, stoppedEarly: true, notified: 0 }));
+  });
+});
+
+describe('CatalogSalesIntegrationService venta editada en el catalogo', () => {
+  const payload = {
+    eventType: 'sale.updated',
+    catalogSaleId: 'sale-1',
+    sku: 'MS-366',
+    title: 'MacBook',
+    amount: 2350,
+    exchangeRate: 3.75,
+    soldAt: '2026-09-03T17:00:00.000Z',
+  };
+
+  const makeService = (original: any, options?: { updateError?: Error }) => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const dataSource = {
+      query: jest.fn(async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes('WHERE "id" = $1 LIMIT 1')) return [{ id: 'upd-row', eventType: 'sale.updated', status: 'update_applied' }];
+        if (sql.includes(`"eventType" = 'sale.created'`) && sql.includes('ORDER BY')) return original ? [original] : [];
+        return [];
+      }),
+    };
+    const ventaService = {
+      update: options?.updateError
+        ? jest.fn(async () => { throw options.updateError; })
+        : jest.fn(async () => ({ id: 91 })),
+      create: jest.fn(),
+      remove: jest.fn(),
+    };
+    const service = new CatalogSalesIntegrationService(dataSource as any, {} as any, {} as any, {} as any, ventaService as any);
+    jest.spyOn(service, 'ensureTable').mockResolvedValue();
+    const notify = jest.spyOn(service as any, 'notifyCatalogStatus').mockResolvedValue(true);
+    return { service, ventaService, queries, notify };
+  };
+
+  const originalUpdate = (queries: Array<{ sql: string; params: unknown[] }>) =>
+    queries.filter(({ sql, params }) => sql.includes('UPDATE') && params[0] === 'created-1');
+
+  it('corrige el precio de un alta aun pendiente sin tocar la venta real', async () => {
+    const { service, ventaService, queries } = makeService({ id: 'created-1', status: 'pending_confirmation', payload: { amount: 2200 } });
+
+    const result = await service.receive('upd-evt', payload);
+
+    expect(result).toEqual({ ok: true, status: 'update_applied_to_pending' });
+    expect(ventaService.update).not.toHaveBeenCalled();
+    expect(originalUpdate(queries)[0].params[1]).toBe(2350);
+  });
+
+  it('actualiza precio y fecha de una venta ya confirmada', async () => {
+    const { service, ventaService, queries, notify } = makeService({ id: 'created-1', status: 'confirmed', remoteVentaId: 91 });
+
+    const result = await service.receive('upd-evt', payload);
+
+    expect(result).toEqual({ ok: true, status: 'update_applied' });
+    expect(ventaService.update).toHaveBeenCalledWith(91, { precioVenta: 2350, fechaVenta: '2026-09-03' });
+    expect(originalUpdate(queries)).toHaveLength(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('aplica cada edicion aunque el catalogo repita el mismo eventId', async () => {
+    const { service, ventaService } = makeService({ id: 'created-1', status: 'confirmed', remoteVentaId: 91 });
+
+    await service.receive('upd-evt', payload);
+    await service.receive('upd-evt', { ...payload, amount: 2400 });
+
+    expect(ventaService.update).toHaveBeenCalledTimes(2);
+    expect(ventaService.update).toHaveBeenLastCalledWith(91, expect.objectContaining({ precioVenta: 2400 }));
+  });
+
+  it('informa el error cuando Servicios no puede cambiar la venta sola', async () => {
+    const { service, queries } = makeService(
+      { id: 'created-1', status: 'confirmed', remoteVentaId: 91 },
+      { updateError: new BadRequestException('Para cambiar el precio de una venta con pagos combinados, indica también los nuevos importes de cobro.') },
+    );
+
+    await expect(service.receive('upd-evt', payload)).rejects.toThrow(/pagos combinados/);
+    expect(originalUpdate(queries)).toHaveLength(0);
+    expect(queries.some(({ params }) => params.includes('update_failed'))).toBe(true);
+  });
+
+  it('no hace nada si la venta ya fue anulada', async () => {
+    const { service, ventaService } = makeService({ id: 'created-1', status: 'superseded_by_cancellation' });
+    await expect(service.receive('upd-evt', payload)).resolves.toEqual({ ok: true, status: 'update_ignored' });
+    expect(ventaService.update).not.toHaveBeenCalled();
+  });
+
+  it('pide reintentar si el alta aun no llego', async () => {
+    const { service } = makeService(null);
+    await expect(service.receive('upd-evt', payload)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('confirmar o rechazar una edicion nunca anula la venta', async () => {
+    const { service, ventaService } = makeService(null);
+    await expect(service.confirm('upd-row', 3.75, 'bcp')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reject('upd-row')).rejects.toBeInstanceOf(BadRequestException);
+    expect(ventaService.remove).not.toHaveBeenCalled();
   });
 });

@@ -195,6 +195,7 @@ export class ClasificarGastoDto {
 }
 
 export class ItemVentaRapidaDto {
+  @IsOptional() @IsString() @Length(64, 64) cotizacionToken?: string;
   @IsOptional() @IsInt() productoId?: number;
   @ValidateIf((o) => !o.productoId) @IsString() @Length(2, 120) nombre?: string;
   @IsInt() @Min(1) cantidad: number;

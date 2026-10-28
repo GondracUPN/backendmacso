@@ -488,6 +488,8 @@ export class AnalyticsService {
           .leftJoinAndSelect('v.producto', 'p')
           .leftJoinAndSelect('p.valor', 'val')
           .leftJoinAndSelect('p.detalle', 'det')
+          // Las ventas anuladas no existen para ganancias ni resúmenes.
+          .where('v."anuladaAt" IS NULL')
           .orderBy('v.fechaVenta', 'DESC')
           .addOrderBy('v.id', 'DESC')
           .getMany(),

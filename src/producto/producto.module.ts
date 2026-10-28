@@ -9,6 +9,7 @@ import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
 import { Inventario } from '../inventario/inventario.entity';
+import { AppleCatalogModule } from '../apple-catalog/apple-catalog.module';
 
 @Module({
   imports: [ TypeOrmModule.forFeature([
@@ -20,8 +21,10 @@ import { Inventario } from '../inventario/inventario.entity';
       PersonalEshopex,
       Inventario,
     ]),
+    AppleCatalogModule,
   ],
   controllers: [ProductoController],
   providers: [ProductoService],
+  exports: [ProductoService],
 })
 export class ProductoModule {}

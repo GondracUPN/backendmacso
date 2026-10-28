@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CatalogItem } from './catalog-item.entity';
 
 const normalizeValue = (value: string) =>
@@ -115,7 +115,8 @@ export class CatalogService {
   }
 
   async disable(id: number) {
-    const item = await this.repo.findOne({ where: { id } });
+    // Solo opciones y conceptos: las filas del catálogo Apple se gestionan desde /apple-catalog.
+    const item = await this.repo.findOne({ where: { id, kind: In(['product_option', 'expense_concept']) } });
     if (!item) throw new NotFoundException('Item no encontrado.');
     item.active = false;
     return this.repo.save(item);

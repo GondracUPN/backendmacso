@@ -1,3 +1,5 @@
+import { lockAccessoryTopology } from '../venta/accessory-locks';
+import { resolveAccessoryPrices } from '../venta/accessory-quote';
 import { ConflictException } from '@nestjs/common';
 import { operationHash } from '../venta/operation-hash';
 import {
@@ -386,7 +388,9 @@ export class FinanzasService {
       const ids = [...new Set(distribution.map((part) => part.productoId))].sort((a, b) => a - b);
       await manager.query('SELECT id FROM producto WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [ids]);
       for (const part of distribution.filter((part) => part.costoUnitario == null)) {
-        const p = await manager.getRepository(Producto).findOneByOrFail({ id: part.productoId });
+        const p = await manager.getRepository(Producto).findOneBy({ id: part.productoId });
+        // Un lote eliminado definitivamente solo conserva el costo dentro de la venta.
+        if (!p) { part.costoUnitario = unit; continue; }
         p.valor.monedaCompra = 'PEN';
         p.valor.valorProducto = +(unit * Number(p.stockInicial || part.cantidad)).toFixed(2);
         p.valor.valorSoles = p.valor.valorProducto; p.valor.costoTotal = p.valor.valorProducto;
@@ -677,7 +681,7 @@ export class FinanzasService {
          FROM venta v
          JOIN producto p ON p.id = v."productoId"
          LEFT JOIN producto_detalle d ON d.id = p."detalleId"
-        WHERE v."conciliacionHistorica" = 'pendiente'
+        WHERE v."conciliacionHistorica" = 'pendiente' AND v."anuladaAt" IS NULL
         ORDER BY v."fechaVenta" DESC, v.id DESC
         LIMIT $1 OFFSET $2`,
         [pageSize, offset],
@@ -1018,59 +1022,39 @@ export class FinanzasService {
 
   // ————————————————————————— Venta rápida de accesorios —————————————————————————
 
-  /** Accesorios con stock agrupados por código comercial, con su costo unitario (FIFO del primer lote). */
+  /** Same commercial code and purchase owner as the allocation used by sales. */
   async accesoriosDisponibles() {
     const rows: any[] = await this.dataSource.query(`
-      SELECT p.id, COALESCE(p."codigoInventario", p.id) AS codigo, p."stockActual", p."stockInicial",
+      SELECT p.id, COALESCE(p."codigoInventario", p.id) AS codigo, p."stockActual", p.vendedor, p."referenciaId", to_jsonb(r) AS referencia,
              NULLIF(trim(concat_ws(' ', d."descripcionOtro", d.modelo, d.gama)), '') AS nombre,
-             COALESCE(val."costoTotalProrrateado", val."costoTotal", val."valorSoles") AS costo, val."fechaCompra" AS fecha
+             inv."primerPrecioSoles", inv."ultimoPrecioSoles", inv.id AS "fichaId", inv."updatedAt"
         FROM producto p
         LEFT JOIN producto_detalle d ON d.id = p."detalleId"
-        LEFT JOIN producto_valor val ON val.id = p."valorId"
-       WHERE lower(p.tipo) = 'accesorios' AND p."stockActual" > 0 AND p."cierreMotivo" IS NULL
-       ORDER BY codigo, val."fechaCompra" NULLS LAST, p.id`);
-    const grupos = new Map<
-      number,
-      {
-        productoId: number;
-        codigo: number;
-        nombre: string;
-        stock: number;
-        costoUnitario: number | null;
-      }
-    >();
-    for (const r of rows) {
-      const codigo = Number(r.codigo);
-      const unit =
-        r.costo == null
-          ? null
-          : fromCents(
-              Math.round(
-                toCents(r.costo) / Math.max(1, Number(r.stockInicial || 1)),
-              ),
-            );
-      const g = grupos.get(codigo);
-      if (g) {
-        g.stock += Number(r.stockActual);
-        continue;
-      }
-      grupos.set(codigo, {
-        productoId: Number(r.id),
-        codigo,
-        nombre: r.nombre || `Accesorio MS-${codigo}`,
-        stock: Number(r.stockActual),
-        costoUnitario: unit,
-      });
+        LEFT JOIN inventario inv ON inv."productoId" = p.id
+        LEFT JOIN accesorio_referencia r ON r.id = p."referenciaId"
+       WHERE lower(p.tipo) = 'accesorios'
+         AND p."cierreMotivo" IS NULL AND p."archivadoAt" IS NULL
+         AND (p."referenciaId" IS NULL OR p.origen IS DISTINCT FROM 'accesorio_importado' OR EXISTS (SELECT 1 FROM tracking t WHERE t."productoId"=p.id AND (lower(t.estado::text)='recogido' OR t."fechaRecogido" IS NOT NULL)))
+       ORDER BY p.id`);
+    const groups = new Map<string, any>();
+    for (const row of rows) {
+      const comprador = String(row.vendedor || '').trim();
+      const codigo = Number(row.codigo);
+      const key = (row.referenciaId ? 'ref:' + row.referenciaId : 'code:' + codigo) + ':' + comprador.toLowerCase();
+      const existing = groups.get(key);
+      if (existing) { existing.stock += Number(row.stockActual); existing.fichas.push({ ...row, id: row.fichaId, productoId: row.id }); continue; }
+      groups.set(key, { productoId: Number(row.id), codigo, comprador, referenciaId: row.referenciaId ?? null, referencia: row.referencia, fichas: [{ ...row, id: row.fichaId, productoId: row.id }], nombre: row.nombre || 'Accesorio ACC-' + codigo,
+        stock: Number(row.stockActual), precioPublicado: row.primerPrecioSoles == null ? null : Number(row.primerPrecioSoles),
+        precioMinimo: row.ultimoPrecioSoles == null ? null : Number(row.ultimoPrecioSoles) });
     }
-    return [...grupos.values()].sort((a, b) =>
-      a.nombre.localeCompare(b.nombre),
-    );
+    return [...groups.values()].filter((group) => group.stock > 0).map(({ fichas, referencia, ...group }) => ({ ...group, ...resolveAccessoryPrices({ id: group.productoId, referencia }, fichas) })).sort((a, b) => a.nombre.localeCompare(b.nombre) || a.comprador.localeCompare(b.comprador));
   }
 
   async ventaRapida(dto: VentaRapidaDto, manager?: EntityManager) {
     const grupo = `vr-${dto.idempotencyKey}`.slice(0, 64);
     const clave = (index: number) => `${dto.idempotencyKey}:${index}`;
     if (!manager) return this.dataSource.transaction((em) => this.ventaRapida(dto, em));
+    await lockAccessoryTopology(manager);
     await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [grupo]);
     const hash = operationHash(dto);
     {
@@ -1126,7 +1110,8 @@ export class FinanzasService {
           precioVenta: total,
           cantidad: item.cantidad,
           modalidad: item.cantidad > 1 ? 'mayor' : 'unidad',
-          vendedor: dto.vendedor,
+          vendedor: item.productoId ? undefined : dto.vendedor,
+          cotizacionToken: item.cotizacionToken,
           incomeParts: total > 0 ? [{ type: parte, amount: total }] : undefined,
           incomeBank: cuenta?.legacyCodigo || undefined,
           incomeAccountId: cuenta?.id,

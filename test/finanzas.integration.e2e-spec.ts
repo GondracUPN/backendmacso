@@ -10,7 +10,7 @@ import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { DataSource } from 'typeorm';
+import { DataSource, IsNull, Like } from 'typeorm';
 import * as request from 'supertest';
 import { join } from 'path';
 import { AuthModule } from '../src/auth/auth.module';
@@ -37,6 +37,7 @@ import { ProgramacionesIdempotentes1792537600000 } from '../src/migrations/17925
 import { SchedulesService } from '../src/schedules/schedules.service';
 import { ScheduledCharge } from '../src/schedules/scheduled-charge.entity';
 import { VentaDevolucion } from '../src/venta/venta-devolucion.entity';
+import { AnulacionVentas1792538000000 } from '../src/migrations/1792538000000-AnulacionVentas';
 
 const DB_URL = process.env.FINANZAS_IT_DB_URL;
 // La suite vacía tablas: solo se permite contra una base local.
@@ -305,8 +306,11 @@ suite('Sistema financiero (integración PostgreSQL)', () => {
     expect(detail.finanzas).toMatchObject({ cobradoCliente: 160, saldoPendiente: 0, gananciaFinal: 20 });
     const productos = new ProductoService(ds.getRepository(Producto), {} as any, {} as any, {} as any,
       ds.getRepository(Venta), {} as any, {} as any, { del: async () => {} } as any);
-    await expect(productos.remove(p.id)).rejects.toThrow('historial');
     await expect(ventas.update(v.id, { precioVenta: 200 })).rejects.toThrow('devoluciones');
+    // La papelera borra definitivamente producto, venta, devolución, cobros e ingresos.
+    expect(await productos.remove(p.id)).toMatchObject({ ventas: 1, devoluciones: 1 });
+    expect(await ds.getRepository(Venta).count({ where: { id: v.id } })).toBe(0);
+    expect(await ds.getRepository(Gasto).count({ where: { saleId: v.id } })).toBe(0);
   });
 
   it('reparación: devolución parcial de una venta a crédito reduce la deuda sin inventar un reembolso', async () => {
@@ -1237,7 +1241,7 @@ suite('Sistema financiero (integración PostgreSQL)', () => {
     await migrationDs.initialize();
     const qr = migrationDs.createQueryRunner();
     const migrations = [new IntegridadOperaciones1792537200000(), new DestinoIngresoVenta1792537300000(),
-      new DevolucionesComerciales1792537400000(), new CostosPendientes1792537500000(), new ProgramacionesIdempotentes1792537600000()];
+      new DevolucionesComerciales1792537400000(), new CostosPendientes1792537500000(), new ProgramacionesIdempotentes1792537600000(), new AnulacionVentas1792538000000()];
     await qr.query('CREATE SCHEMA repair_migration_check');
     try {
       await qr.query('CREATE TABLE repair_migration_check.producto (id serial PRIMARY KEY)');
@@ -1253,6 +1257,7 @@ suite('Sistema financiero (integración PostgreSQL)', () => {
       expect((await qr.getTable(schema + '.venta'))!.foreignKeys.find(f => f.columnNames[0] === 'productoId')!.onDelete).toBe('CASCADE');
       for (const migration of migrations) await migration.up(qr);
       expect(await qr.hasColumn(schema + '.venta', 'costoDocumento')).toBe(true);
+      expect(await qr.hasColumn(schema + '.venta', 'anuladaAt')).toBe(true);
     } finally {
       await qr.query('DROP SCHEMA repair_migration_check CASCADE');
       await qr.release(); await migrationDs.destroy();
@@ -1271,6 +1276,186 @@ suite('Sistema financiero (integración PostgreSQL)', () => {
     expect(results[0].id).not.toBe(results[1].id);
     expect((await ds.getRepository(Producto).findOneByOrFail({ id: a.id })).stockActual).toBe(0);
     expect((await ds.getRepository(Producto).findOneByOrFail({ id: b.id })).stockActual).toBe(0);
+  });
+
+  describe('anulación simple de ventas', () => {
+    const activos = (ventaId: number) => ds.getRepository(VentaPago).count({ where: { ventaId, anuladoAt: IsNull() } });
+    const ingresosDe = (ventaId: number) => ds.getRepository(Gasto).count({ where: { saleId: ventaId, concepto: 'ingreso' } });
+
+    it('venta normal cobrada: retira su ingreso, anula pagos y libera el producto', async () => {
+      const p = await crearProducto();
+      await ds.query(`INSERT INTO tracking ("productoId", estado, "fechaRecogido") VALUES ($1, 'recogido', '2050-01-01')`, [p.id]);
+      const inventario = new InventarioService(ds.getRepository(Inventario), ds.getRepository(Producto), { get: () => '' } as any);
+      const productos = new ProductoService(ds.getRepository(Producto), {} as any, {} as any, {} as any,
+        ds.getRepository(Venta), {} as any, {} as any, { del: async () => {} } as any);
+      const disponible = async () => (await inventario.findDisponibles()).some((row) => row.producto.id === p.id);
+      const antes = await productos.stats();
+      const v = await ventas.create({ productoId: p.id, tipoCambio: 3.75, fechaVenta: '2050-01-10', precioVenta: 3000,
+        vendedor: 'Gonzalo', incomeParts: [{ type: 'direct', amount: 3000 }], incomeBank: 'bcp' } as any);
+      expect(await disponible()).toBe(false);
+      expect((await productos.stats()).disponibles).toBe(antes.disponibles - 1);
+      expect(await ingresosDe(v.id)).toBe(1);
+      expect(await activos(v.id)).toBeGreaterThan(0);
+      const anulada = await ventas.anular(v.id, adminId);
+      expect(anulada).toMatchObject({ estadoComercial: 'cancelada', anuladaPor: adminId });
+      expect(await ingresosDe(v.id)).toBe(0);
+      expect(await activos(v.id)).toBe(0);
+      expect(await ds.getRepository(Gasto).count({ where: { saleId: v.id, concepto: 'devolucion_venta' } })).toBe(0);
+      expect(await ventas.findLatestByProductos([v.productoId])).toHaveLength(0);
+      expect((await finanzas.detalleVenta(v.id)).finanzas).toMatchObject({ cobradoCliente: 0, saldoPendiente: 0 });
+      expect(await disponible()).toBe(true);
+      expect((await productos.stats()).disponibles).toBe(antes.disponibles);
+      expect((await ventas.findAll({ productoId: p.id })).length).toBe(0);
+      // Las sincronizaciones posteriores no recrean ingresos ni reactivan pagos.
+      await ledger.sincronizarIngresosVenta(v.id);
+      expect(await activos(v.id)).toBe(0);
+    });
+
+    it('ingresos repartidos entre vendedores y tipos de pago se retiran por completo', async () => {
+      const p = await crearProducto();
+      const v = await ventas.create({ productoId: p.id, tipoCambio: 3.75, fechaVenta: '2050-02-10', precioVenta: 3000, vendedor: 'Ambos',
+        incomeParts: [{ type: 'direct', amount: 2000 }, { type: 'card', amount: 1000 }], incomeBank: 'bcp' } as any);
+      expect(await ingresosDe(v.id)).toBe(4);
+      await ventas.anular(v.id, adminId);
+      expect(await ingresosDe(v.id)).toBe(0);
+      expect(await activos(v.id)).toBe(0);
+    });
+
+    it('venta desde reserva: cancela la reserva y sus pagos sin que reaparezca', async () => {
+      const p = await crearProducto();
+      await ds.getRepository(Producto).update(p.id, { vendedor: 'Gonzalo' });
+      const a = await ventas.createAdelanto({ productoId: p.id, montoAdelanto: 500, montoVenta: 3000, fechaAdelanto: '2050-03-01' });
+      const v = await ventas.completeAdelanto(a.id, { tipoCambio: 3.75, fechaVenta: '2050-03-05', incomeBank: 'bcp', incomePaymentType: 'direct' } as any);
+      const adelantoRows = () => ds.getRepository(Gasto).count({ where: { notas: Like(`__SALE_ADVANCE__:${a.id}:%`) } });
+      const pagosReserva = () => ds.getRepository(VentaPago).count({ where: { adelantoId: a.id, anuladoAt: IsNull() } });
+      expect(await adelantoRows()).toBeGreaterThan(0);
+      expect(await ds.getRepository(Gasto).count({ where: { saleId: v.id, notas: Like('__SALE_INCOME__:%') } })).toBeGreaterThan(0);
+      expect(await pagosReserva()).toBeGreaterThan(0);
+      await ventas.anular(v.id, adminId);
+      const reserva = await ds.getRepository(VentaAdelanto).findOneByOrFail({ id: a.id });
+      expect(reserva.canceladoAt).toBeInstanceOf(Date);
+      expect(await ventas.findLatestAdelantosByProductos([p.id])).toHaveLength(0);
+      expect(await adelantoRows()).toBe(0);
+      expect(await ingresosDe(v.id)).toBe(0);
+      await ledger.sincronizarAdelanto(a.id);
+      expect(await pagosReserva()).toBe(0);
+      expect(await activos(v.id)).toBe(0);
+    });
+
+    it('accesorio con devolución previa: repone solo lo pendiente y retira también la salida de dinero', async () => {
+      const p = await crearProducto({ tipo: 'accesorios', stock: 3, costoTotal: 210 });
+      const v = await ventas.create({ productoId: p.id, tipoCambio: 1, cantidad: 3, precioVenta: 240, fechaVenta: '2050-04-01',
+        vendedor: 'Gonzalo', incomeParts: [{ type: 'direct', amount: 240 }], incomeBank: 'bcp' });
+      await ventas.devolver(v.id, { operacionKey: key('dev-anular'), cantidad: 1, monto: 80, destino: 'disponible',
+        fecha: '2050-04-02', motivo: 'Devolución previa', cuentaId: cuentas.bcp }, adminId);
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: p.id })).stockActual).toBe(1);
+      const [x, y] = await Promise.all([ventas.anular(v.id, adminId), ventas.anular(v.id, adminId)]);
+      expect(x.anuladaAt).toEqual(y.anuladaAt);
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: p.id })).stockActual).toBe(3);
+      expect(await ds.getRepository(Gasto).count({ where: { saleId: v.id } })).toBe(0);
+      expect(await activos(v.id)).toBe(0);
+      expect(await ds.getRepository(VentaDevolucion).count({ where: { ventaId: v.id } })).toBe(1);
+    });
+
+    it('un fallo al retirar ingresos revierte la anulación completa', async () => {
+      const p = await crearProducto({ tipo: 'accesorios', stock: 1, costoTotal: 70 });
+      const v = await ventas.create({ productoId: p.id, tipoCambio: 1, cantidad: 1, precioVenta: 80, fechaVenta: '2050-05-10',
+        vendedor: 'Gonzalo', incomeParts: [{ type: 'direct', amount: 80 }], incomeBank: 'bcp' });
+      await ds.query(`CREATE FUNCTION anular_reject_income() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF OLD.fecha = DATE '2050-05-10' THEN RAISE EXCEPTION 'fallo de anulación inyectado'; END IF; RETURN OLD; END $$`);
+      await ds.query(`CREATE TRIGGER anular_reject_income BEFORE DELETE ON gastos FOR EACH ROW EXECUTE FUNCTION anular_reject_income()`);
+      try {
+        await expect(ventas.anular(v.id, adminId)).rejects.toThrow('fallo de anulación');
+        const actual = await ds.getRepository(Venta).findOneByOrFail({ id: v.id });
+        expect(actual.estadoComercial).toBe('entregada'); expect(actual.anuladaAt).toBeNull();
+        expect((await ds.getRepository(Producto).findOneByOrFail({ id: p.id })).stockActual).toBe(0);
+        expect(await ingresosDe(v.id)).toBe(1);
+        expect(await activos(v.id)).toBe(1);
+      } finally {
+        await ds.query('DROP TRIGGER anular_reject_income ON gastos');
+        await ds.query('DROP FUNCTION anular_reject_income()');
+      }
+    });
+  });
+
+  describe('borrado definitivo desde la papelera', () => {
+    const productosSvc = () => new ProductoService(ds.getRepository(Producto), {} as any, {} as any, {} as any,
+      ds.getRepository(Venta), {} as any, {} as any, { del: async () => {} } as any);
+    const huerfanos = async () => (await ds.query(`SELECT
+      (SELECT count(*) FROM venta v WHERE NOT EXISTS (SELECT 1 FROM producto p WHERE p.id = v."productoId"))::int AS ventas,
+      (SELECT count(*) FROM venta_adelanto a WHERE NOT EXISTS (SELECT 1 FROM producto p WHERE p.id = a."productoId"))::int AS adelantos,
+      (SELECT count(*) FROM venta_pagos vp WHERE (vp.venta_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM venta v WHERE v.id = vp.venta_id))
+         OR (vp.adelanto_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM venta_adelanto a WHERE a.id = vp.adelanto_id)))::int AS pagos,
+      (SELECT count(*) FROM gastos g WHERE (g.sale_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM venta v WHERE v.id = g.sale_id))
+         OR (g.venta_vinculada_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM venta v WHERE v.id = g.venta_vinculada_id))
+         OR (g.producto_vinculado_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM producto p WHERE p.id = g.producto_vinculado_id))
+         OR (g.itf_ingreso_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM gastos i WHERE i.id = g.itf_ingreso_id))
+         OR (g.notas LIKE '\\_\\_SALE\\_ADVANCE\\_\\_:%' AND NOT EXISTS (SELECT 1 FROM venta_adelanto a WHERE g.notas LIKE '\\_\\_SALE\\_ADVANCE\\_\\_:' || a.id || ':%')))::int AS gastos,
+      (SELECT count(*) FROM reembolsos r WHERE NOT EXISTS (SELECT 1 FROM producto p WHERE p.id = r.producto_id))::int AS reembolsos,
+      (SELECT count(*) FROM producto_valor pv WHERE NOT EXISTS (SELECT 1 FROM producto p WHERE p."valorId" = pv.id))::int AS valores`))[0];
+
+    it('sin historial y con grupo de envío: borra el producto y recalcula el grupo', async () => {
+      const a = await crearProducto(); const b = await crearProducto();
+      await ds.getRepository(Producto).update([a.id, b.id], { envioGrupoId: `g-${a.id}` });
+      const antes = await huerfanos();
+      expect(await productosSvc().remove(a.id)).toMatchObject({ productoId: a.id, ventas: 0 });
+      expect(await ds.getRepository(Producto).count({ where: { id: a.id } })).toBe(0);
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: b.id })).envioGrupoId).toBeNull();
+      expect(await huerfanos()).toEqual(antes);
+    });
+
+    it('con venta cobrada, liquidación, adelanto y reembolso: no deja saldos ni registros huérfanos', async () => {
+      const p = await crearProducto();
+      await ds.getRepository(Producto).update(p.id, { vendedor: 'Gonzalo' });
+      const antes = await huerfanos();
+      const a = await ventas.createAdelanto({ productoId: p.id, montoAdelanto: 500, montoVenta: 3000, fechaAdelanto: '2051-01-01' });
+      const v = await ventas.completeAdelanto(a.id, { tipoCambio: 3.75, fechaVenta: '2051-01-05', incomeBank: 'bcp', incomePaymentType: 'card' } as any);
+      const pago = await ledger.registrarPago({ ventaId: v.id, monto: 1000, fechaPago: '2051-01-06', metodo: 'tarjeta', idempotencyKey: key('borrar-pago') });
+      await ledger.registrarEvento(pago.id, { tipo: 'liquidacion', fecha: '2051-01-08', montoBruto: 1000, comision: 30, cuentaId: cuentas.bcp, idempotencyKey: key('borrar-liq') });
+      await finanzas.crearReembolso({ productoId: p.id, costoOriginal: 100, fechaIncidencia: '2051-01-09' } as any);
+      expect(await ds.getRepository(Gasto).count({ where: { saleId: v.id } })).toBeGreaterThan(0);
+
+      const resumen = await productosSvc().remove(p.id);
+
+      expect(resumen).toMatchObject({ ventas: 1, adelantos: 1, liquidaciones: 1, reembolsos: 1 });
+      expect(resumen.pagos).toBeGreaterThan(1);
+      expect(await ds.getRepository(VentaPago).count({ where: { ventaId: v.id } })).toBe(0);
+      expect(await ds.getRepository(VentaPago).count({ where: { adelantoId: a.id } })).toBe(0);
+      expect(await ds.getRepository(Gasto).count({ where: { notas: Like(`__SALE_ADVANCE__:${a.id}:%`) } })).toBe(0);
+      expect(await huerfanos()).toEqual(antes);
+    });
+
+    it('lotes compartidos: repone el otro lote una sola vez y conserva la venta independiente', async () => {
+      const a = await crearProducto({ tipo: 'accesorios', stock: 1, costoTotal: 70 });
+      const b = await crearProducto({ tipo: 'accesorios', stock: 2, costoTotal: 140 });
+      await ds.getRepository(Producto).update([a.id, b.id], { codigoInventario: a.id });
+      const base = { tipoCambio: 1, fechaVenta: '2051-02-10', vendedor: 'Gonzalo' };
+      // Desde el lote a: toma 1 de a y 1 de b; luego, desde b, la última unidad de b.
+      const va = await ventas.create({ ...base, productoId: a.id, loteInicialId: a.id, cantidad: 2, precioVenta: 160 });
+      const vb = await ventas.create({ ...base, productoId: b.id, loteInicialId: b.id, cantidad: 1, precioVenta: 80 });
+      expect(va.distribucionStock!.map((x) => x.productoId).sort()).toEqual([a.id, b.id].sort());
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: b.id })).stockActual).toBe(0);
+      expect(await productosSvc().remove(a.id)).toMatchObject({ ventas: 1, unidadesRepuestas: 1 });
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: b.id })).stockActual).toBe(1);
+      expect(await ds.getRepository(Venta).count({ where: { id: vb.id } })).toBe(1);
+      expect(await ds.getRepository(Gasto).count({ where: { saleId: vb.id } })).toBe(1);
+    });
+
+    it('un fallo al borrar revierte todo', async () => {
+      const v = await crearVenta('2051-03-10', [{ type: 'direct', amount: 3000 }]);
+      await ds.query(`CREATE FUNCTION borrar_reject_producto() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF OLD.id = ${v.productoId} THEN RAISE EXCEPTION 'fallo de borrado inyectado'; END IF; RETURN OLD; END $$`);
+      await ds.query('CREATE TRIGGER borrar_reject_producto BEFORE DELETE ON producto FOR EACH ROW EXECUTE FUNCTION borrar_reject_producto()');
+      try {
+        await expect(productosSvc().remove(v.productoId)).rejects.toThrow('fallo de borrado');
+        expect(await ds.getRepository(Venta).count({ where: { id: v.id } })).toBe(1);
+        expect(await ds.getRepository(Gasto).count({ where: { saleId: v.id } })).toBe(1);
+        expect(await ds.getRepository(VentaPago).count({ where: { ventaId: v.id } })).toBeGreaterThan(0);
+      } finally {
+        await ds.query('DROP TRIGGER borrar_reject_producto ON producto');
+        await ds.query('DROP FUNCTION borrar_reject_producto()');
+      }
+    });
   });
 
 });

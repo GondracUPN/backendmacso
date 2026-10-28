@@ -23,6 +23,8 @@ export class SaleIncomePartDto {
 }
 
 export class CreateVentaDto {
+  @IsOptional() @IsString() @Length(64, 64)
+  cotizacionToken?: string;
   @IsOptional() @IsString() @Length(8, 100)
   operacionKey?: string;
 

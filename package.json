@@ -25,7 +25,10 @@
     "migration:revert": "npm run typeorm -- migration:revert",
     "finanzas:backfill": "ts-node -r tsconfig-paths/register src/scripts/finanzas-backfill.ts",
     "backfill:adelanto-income": "ts-node -r tsconfig-paths/register src/scripts/backfill-adelanto-income.ts",
-    "start:deploy": "npm run typeorm -- migration:run && npm run start:prod"
+    "start:deploy": "npm run typeorm -- migration:run && npm run start:prod",
+    "apple-catalog:coverage": "ts-node -r tsconfig-paths/register src/scripts/apple-catalog-coverage.ts",
+    "apple-catalog:baseline": "node tools/build-appledb-baseline.cjs",
+    "apple-catalog:everymac-seed": "ts-node -T tools/build-everymac-seed.ts"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.1",

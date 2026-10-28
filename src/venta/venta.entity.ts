@@ -126,6 +126,14 @@ export class Venta {
   @Column({ type: 'timestamptz', nullable: true })
   costoCompletadoAt?: Date | null;
 
+  // Anulación completa: la venta queda cancelada sin ingresos ni pagos vigentes.
+  @Column({ type: 'timestamptz', nullable: true })
+  anuladaAt?: Date | null;
+  @Column({ type: 'int', nullable: true })
+  anuladaPor?: number | null;
+  @Column({ type: 'text', nullable: true })
+  anulacionMotivo?: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 }

@@ -3,6 +3,15 @@ const slug = (value: unknown) => clean(value).toLowerCase();
 
 export const isAccessoryStock = (tipo: unknown): boolean => slug(tipo) === 'accesorios';
 
+/** Only explicit descriptions classify originality; an Apple brand is not proof. */
+export function detectAccessoryOriginality(value: unknown): string {
+  const text = slug(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/\b(?:no(?: es)?|sin)\s+original\b|\boriginal\s*\?/.test(text)) return '';
+  const found = [ /\boriginal\b/.test(text) ? 'original' : '', /\bfake\b/.test(text) ? 'fake' : '',
+    /\b(?:compatible|generico)\b/.test(text) ? 'compatible' : '' ].filter(Boolean);
+  return found.length === 1 ? found[0] : '';
+}
+
 const GROUPS: Record<string, string[][]> = {
   macbook: [['Cubo original', 'Cubo fake'], ['Cable original', 'Cable fake']],
   ipad: [['Cubo original', 'Cubo fake'], ['Cable original', 'Cable fake'], ['Magic Keyboard', 'Keyboard Logitech', 'Keyboard otros']],

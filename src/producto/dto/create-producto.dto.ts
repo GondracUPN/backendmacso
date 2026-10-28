@@ -28,6 +28,8 @@ export class CreateProductoDetalleDto {
 }
 
 export class CreateProductoValorDto {
+  // Input only: the converted amount is stored; no new database column.
+  @IsOptional() @IsNumber() @Min(0.0001) tipoCambioCompra?: number;
   @IsNumber() valorProducto: number;
   @IsNumber() valorDec: number;
   @IsNumber() peso: number;
@@ -38,6 +40,7 @@ export class CreateProductoValorDto {
 }
 
 export class CreateProductoDto {
+  @IsOptional() @IsInt() @Min(1) referenciaId?: number;
   @IsString() tipo: string; // macbook, ipad, iphone, watch, otro
   @IsString() estado: string; // nuevo, usado, roto
   @IsOptional() @IsString() vendedor?: string;

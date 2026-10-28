@@ -6,7 +6,15 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-export type CatalogKind = 'product_option' | 'expense_concept';
+// Las filas apple_* pertenecen al catálogo Apple (src/apple-catalog) y comparten tabla sin cambiar el esquema.
+export type CatalogKind =
+  | 'product_option'
+  | 'expense_concept'
+  | 'apple_catalog_state'
+  | 'apple_catalog_snapshot'
+  | 'apple_specs_dataset'
+  | 'apple_catalog_override'
+  | 'apple_everymac_page';
 
 @Entity('app_catalog_items')
 export class CatalogItem {

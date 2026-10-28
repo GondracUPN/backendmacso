@@ -15,19 +15,25 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { VentaService } from './venta.service';
+import { QuoteAccessoryDto } from './dto/quote-accessory.dto';
 import { CreateVentaDto } from './dto/create-venta.dto';
 import { UpdateVentaDto } from './dto/update-venta.dto';
 import { CreateVentaAdelantoDto } from './dto/create-venta-adelanto.dto';
 import { CompleteVentaAdelantoDto } from './dto/complete-venta-adelanto.dto';
 import { AddVentaAdelantoCuotaDto } from './dto/add-venta-adelanto-cuota.dto';
 import { CancelVentaAdelantoDto } from './dto/cancel-venta-adelanto.dto';
-import { DevolverVentaDto, EliminarVentaDto } from './dto/devolver-venta.dto';
+import { AnularVentaDto, DevolverVentaDto, EliminarVentaDto } from './dto/devolver-venta.dto';
 import { CurrentUser, JwtUserPayload } from '../auth/decorators/current-user.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('ventas')
 export class VentaController {
   constructor(private readonly svc: VentaService) {}
+
+  @Post('accesorios/cotizar')
+  quoteAccessory(@Body() dto: QuoteAccessoryDto) {
+    return this.svc.quoteAccessory(dto);
+  }
 
   private parseIds(value: unknown): number[] {
     const values = Array.isArray(value) ? value : String(value || '').split(',');
@@ -215,6 +221,12 @@ export class VentaController {
   @Post(':id/devoluciones')
   devolver(@Param('id', ParseIntPipe) id: number, @Body() dto: DevolverVentaDto, @CurrentUser() user: JwtUserPayload) {
     return this.svc.devolver(id, dto, user.userId);
+  }
+
+  @Roles('admin')
+  @Post(':id/anular')
+  anular(@Param('id', ParseIntPipe) id: number, @Body() dto: AnularVentaDto, @CurrentUser() user: JwtUserPayload) {
+    return this.svc.anular(id, user?.userId, dto?.motivo);
   }
 
   @Roles('admin')

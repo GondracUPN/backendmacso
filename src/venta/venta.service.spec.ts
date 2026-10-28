@@ -2,6 +2,110 @@ import { VentaService } from './venta.service';
 import { withTransactionMocks } from './venta-transaction.test-helper';
 import { Producto } from '../producto/producto.entity';
 import { appCacheKey, registerCacheInvalidation } from '../common/app-cache';
+import { Inventario } from '../inventario/inventario.entity';
+
+function quoteFixture() {
+  const lots: any[] = [
+    { id: 101, codigoInventario: 101, tipo: 'accesorios', vendedor: 'Gonzalo', stockInicial: 2, stockActual: 2, valor: { costoTotal: 20, fechaCompra: '2026-01-01' } },
+    { id: 102, codigoInventario: 101, tipo: 'accesorios', vendedor: 'Gonzalo', stockInicial: 3, stockActual: 3, valor: { costoTotal: 45, fechaCompra: '2026-02-01' } },
+    { id: 103, codigoInventario: 101, tipo: 'accesorios', vendedor: 'Renato', stockInicial: 9, stockActual: 9, valor: { costoTotal: 9, fechaCompra: '2025-01-01' } },
+  ];
+  const builder: any = {};
+  for (const name of ['where', 'select', 'orderBy', 'setLock']) builder[name] = jest.fn(() => builder);
+  builder.getOne = jest.fn(async () => lots[0]);
+  builder.getRawMany = jest.fn(async () => lots.map((lot) => ({ id: lot.id })));
+  const products: any = { findOne: jest.fn(async () => lots[0]), find: jest.fn(async () => lots),
+    save: jest.fn(async (value) => value), createQueryBuilder: jest.fn(() => builder) };
+  const recorded: any[] = [];
+  const sales: any = { find: jest.fn(async () => recorded), findOne: jest.fn(async () => null), create: jest.fn((value) => value), save: jest.fn(async (value) => { const saved = { id: 200, ...value }; recorded.push(saved); return saved; }) };
+  const inventory: any = { find: jest.fn(async () => [{ productoId: 101, primerPrecioSoles: 25, ultimoPrecioSoles: 18 }]) };
+  const manager: any = { getRepository: (entity) => entity === Producto ? products : entity === Inventario ? inventory : sales,
+    transaction: async (run) => run(manager) };
+  products.manager = manager;
+  const service = withTransactionMocks(new VentaService(sales, {} as any, products, {} as any, { del: jest.fn(async () => undefined) } as any));
+  return { service, lots, products, inventory };
+}
+
+test('cotizar 2 a S/10 y 3 a S/15 cuesta S/65 y vender conserva ese costo sin consumir al otro comprador', async () => {
+  const { service, lots } = quoteFixture();
+  const quote = await service.quoteAccessory({ productoId: 101, cantidad: 5, comprador: 'Gonzalo', precioUnitario: 25 });
+  expect(quote).toMatchObject({ costoTotal: 65, total: 125, gananciaBruta: 60, margenSobreVenta: 48, precioMinimo: 18 });
+  expect(quote.lotes).toEqual([{ productoId: 101, cantidad: 2, costoUnitario: 10 }, { productoId: 102, cantidad: 3, costoUnitario: 15 }]);
+  expect(lots.map((lot) => lot.stockActual)).toEqual([2, 3, 9]);
+  await expect(service.quoteAccessory({ productoId: 101, cantidad: 6, comprador: 'Gonzalo' })).rejects.toThrow('Quedan 5');
+  await expect(service.quoteAccessory({ productoId: 101, cantidad: 1, comprador: 'Renato' })).rejects.toThrow('comprador seleccionado');
+  const sale = await service.create({ productoId: 101, cantidad: 5, tipoCambio: 1, fechaVenta: '2026-10-25', precioVenta: 125,
+    cotizacionToken: quote.cotizacionToken });
+  expect(sale.precioVenta - sale.ganancia).toBe(65);
+  expect(sale.distribucionStock).toEqual(quote.lotes);
+  expect(lots.map((lot) => lot.stockActual)).toEqual([0, 0, 9]);
+});
+
+test.each(['stock', 'cost', 'referencia'])('rechaza una cotización cuyo %s cambió antes de consumir stock', async (change) => {
+  const { service, lots, products } = quoteFixture();
+  const quote = await service.quoteAccessory({ productoId: 101, cantidad: 1 });
+  if (change === 'stock') lots[1].stockActual = 2;
+  else if (change === 'referencia') lots.forEach(lot => { lot.referenciaId = 20; });
+  else lots[0].valor.costoTotal = 24;
+  await expect(service.create({ productoId: 101, cantidad: 1, tipoCambio: 1, fechaVenta: '2026-10-25', precioVenta: 25,
+    cotizacionToken: quote.cotizacionToken })).rejects.toThrow('cotización cambió');
+  expect(products.save).not.toHaveBeenCalled();
+});
+
+test('stock cero seguido de reposición mantiene el grupo de referencia en cotización y resumen histórico', async () => {
+  const { service, lots } = quoteFixture();
+  lots.forEach((lot) => { lot.referenciaId = 20; });
+  const quote = await service.quoteAccessory({ productoId: 101, cantidad: 5 });
+  await service.create({ productoId: 101, cantidad: 5, tipoCambio: 1, fechaVenta: '2026-10-25', precioVenta: 125, cotizacionToken: quote.cotizacionToken });
+  lots.push({ ...lots[0], id: 104, stockInicial: 4, stockActual: 4, valor: { costoTotal: 80, fechaCompra: '2026-10-26' } });
+  const replenished = await service.quoteAccessory({ productoId: 101, cantidad: 2 });
+  expect(replenished.lotes).toEqual([{ productoId: 104, cantidad: 2, costoUnitario: 20 }]);
+  const summary = await service.getAccessorySalesSummary(101);
+  expect(summary).toMatchObject({ codigoInventario: 101, unidadesCompradas: 9, unidadesDisponibles: 4, unidadesVendidas: 5 });
+  expect(lots[2].stockActual).toBe(9);
+});
+
+test('la cotización usa precio de otro lote y aplica mayorista desde el umbral de la referencia', async () => {
+  const { service, lots, inventory } = quoteFixture();
+  inventory.find.mockResolvedValue([{ productoId: 102, primerPrecioSoles: 25, ultimoPrecioSoles: 18, updatedAt: '2026-10-20' }]);
+  expect(await service.quoteAccessory({ productoId: 101, cantidad: 1 })).toMatchObject({ precioPublicado: 25, precioMinimo: 18 });
+  lots[0].referencia = { precioPublicadoSoles: 30, precioMinimoSoles: 20, precioMayoristaSoles: 22, cantidadMinimaMayorista: 3 };
+  expect(await service.quoteAccessory({ productoId: 101, cantidad: 2 })).toMatchObject({ precioUnitarioSugerido: 30 });
+  expect(await service.quoteAccessory({ productoId: 101, cantidad: 3 })).toMatchObject({ precioUnitarioSugerido: 22, total: 66, precioMayorista: 22, cantidadMinimaMayorista: 3 });
+});
+
+test('100 ventas recientes ajenas no ocultan un comparable antiguo; filtro anterior al límite y grupos separados', async () => {
+  const reference: any = { id: 1, referenciaId: 20, tipo: 'accesorios', estado: 'nuevo', detalle: { modelo: 'Cable 60W' } };
+  const products: any[] = [reference, ...Array.from({ length: 100 }, (_, i) => ({ id: i + 2, tipo: 'accesorios', detalle: { modelo: 'Apple Pencil' } }))];
+  const sales = products.map((product) => ({ id: product.id, cantidad: 1, precioVenta: 25, fechaVenta: product.id === 1 ? '2020-01-01' : '2026-10-25', producto: product }));
+  const builder: any = {};
+  for (const method of ['leftJoinAndSelect', 'where', 'andWhere', 'orderBy', 'addOrderBy', 'take']) builder[method] = jest.fn(() => builder);
+  builder.getMany = jest.fn(async () => sales);
+  const service = new VentaService({ createQueryBuilder: () => builder } as any, {} as any,
+    { findOne: async () => reference, find: async () => products } as any, {} as any, {} as any);
+  const result = await service.findSimilarSold(1, 8);
+  expect(result.coincidenciaExacta.map((sale) => sale.id)).toEqual([1]);
+  expect(builder.andWhere).toHaveBeenCalledWith('p.id IN (:...candidateIds)', { candidateIds: [1] });
+  expect(builder.take).not.toHaveBeenCalled();
+});
+
+test('comparables incluyen soloInventario y separan variante exacta, familia y devoluciones sin mutar ventas', async () => {
+  const reference: any = { id: 101, tipo: 'accesorios', estado: 'nuevo', soloInventario: true, detalle: { modelo: 'Cargador 20W' } };
+  const make = (id, patch = {}) => ({ id, fechaVenta: '2026-10-20', cantidad: 5, precioVenta: 100, producto: reference, ...patch });
+  const rows: any[] = [make(1, { cantidadDevuelta: 2, precioDevuelto: 40 }), make(2, { estadoComercial: 'cancelada' }),
+    make(3, { cantidadDevuelta: 5 }), make(4, { producto: { ...reference, detalle: { modelo: 'Cargador 30W' } } }),
+    make(5, { producto: { ...reference, estado: 'usado' } })];
+  const builder: any = {};
+  for (const method of ['leftJoinAndSelect', 'where', 'andWhere', 'orderBy', 'addOrderBy', 'take']) builder[method] = jest.fn(() => builder);
+  builder.getMany = jest.fn(async () => rows);
+  const service = new VentaService({ createQueryBuilder: () => builder } as any, {} as any,
+    { findOne: async () => reference, find: async () => rows.map((row) => row.producto) } as any, {} as any, {} as any);
+  const result = await service.findSimilarSold(101);
+  expect(result.coincidenciaExacta).toEqual([expect.objectContaining({ id: 1, cantidad: 3, total: 60, precioUnitario: 20 })]);
+  expect(result.mismaFamilia.map((row) => row.id)).toEqual([4, 5]);
+  expect(rows[0].cantidad).toBe(5);
+  expect(builder.andWhere).not.toHaveBeenCalledWith('p.soloInventario = false');
+});
 
 test('un commit de venta invalida la lista compartida entre modulos', async () => {
   const cache: any = { del: jest.fn() };
@@ -276,6 +380,38 @@ describe('VentaService.create', () => {
   });
 });
 
+describe('VentaService ingreso en Gastos de accesorios', () => {
+  const build = (producto: any) => {
+    const incomes: any[] = [];
+    const gastoRepo = {
+      find: jest.fn(async () => []),
+      create: jest.fn((data) => data),
+      save: jest.fn(async (data) => { const saved = { id: incomes.length + 1, ...data }; incomes.push(saved); return saved; }),
+      remove: jest.fn(),
+    };
+    const service = new VentaService(
+      {} as any, { findOne: jest.fn(async () => null) } as any, { findOne: jest.fn(async () => producto) } as any,
+      {} as any, { del: jest.fn() } as any, gastoRepo as any,
+      { findOne: jest.fn(async () => ({ id: 1, username: 'Gonzalo' })) } as any,
+    );
+    return { service: service as any, incomes };
+  };
+  const venta = { id: 70, productoId: 505, vendedor: 'Gonzalo', fechaVenta: '2026-10-25', precioVenta: 260, ganancia: 44.18, costoPendiente: false };
+
+  it('un accesorio Apple registrado como producto ingresa el total cobrado', async () => {
+    const { service, incomes } = build({ id: 505, tipo: 'accesorios', soloInventario: false });
+    await service.syncSaleIncomeRows(venta, 'bcp', 'direct');
+    expect(incomes.map((row) => row.monto)).toEqual(['260.00']);
+  });
+
+  it('un accesorio simple ingresa solo la ganancia y reparte las partes del cobro', async () => {
+    const { service, incomes } = build({ id: 505, tipo: 'accesorios', soloInventario: true });
+    await service.syncSaleIncomeRows(venta, 'bcp', undefined, undefined, [{ type: 'direct', amount: 200 }, { type: 'cash', amount: 60 }]);
+    expect(incomes.map((row) => [row.salePaymentType, row.monto])).toEqual([['direct', '33.98'], ['cash', '10.20']]);
+    expect(incomes.reduce((sum, row) => sum + Number(row.monto), 0)).toBeCloseTo(44.18, 2);
+  });
+});
+
 describe('VentaService.completeAdelanto', () => {
   it('registra cada adelanto en su fecha y al completar solo ingresa el saldo', async () => {
     const product = { id: 20, tipo: 'iphone', vendedor: 'Gonzalo', codigoInventario: 77, valor: { valorProducto: 100, costoEnvio: 0 } };
@@ -532,15 +668,16 @@ describe('VentaService.completeAdelanto', () => {
     const service = withTransactionMocks(new VentaService(
       { createQueryBuilder: jest.fn(() => queryBuilder) } as any,
       {} as any,
-      { findOne: jest.fn(async () => ({ id: 399, tipo: 'accesorios', detalle: { modelo: 'AirTag - Apple AirTag (2nd Generation)' } })) } as any,
+      { findOne: jest.fn(async () => ({ id: 399, tipo: 'accesorios', detalle: { modelo: 'AirTag - Apple AirTag (2nd Generation)' } })), find: jest.fn(async () => candidates.map((sale) => ({ ...sale.producto, id: sale.id }))) } as any,
       {} as any,
       {} as any,
     ));
 
     const result = await service.findSimilarSold(399, 8);
 
-    expect(result.map((sale) => sale.id)).toEqual([31, 32]);
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith('p.soloInventario = false');
+    expect(result.coincidenciaExacta).toEqual([]);
+    expect(result.mismaFamilia.map((sale) => sale.id)).toEqual([31, 32]);
+    expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('p.soloInventario = false');
     expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('v.productoId <> :productoId', expect.anything());
   });
 });

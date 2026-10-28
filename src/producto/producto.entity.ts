@@ -11,9 +11,16 @@ import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
+import { AccesorioReferencia } from '../accesorios/accesorio-referencia.entity';
 
 @Entity()
 export class Producto {
+  @Column({ type: 'int', nullable: true })
+  referenciaId?: number | null;
+
+  @ManyToOne(() => AccesorioReferencia, { nullable: true, eager: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'referenciaId' })
+  referencia?: AccesorioReferencia | null;
   @PrimaryGeneratedColumn()
   id: number;
 

@@ -1,6 +1,10 @@
+import { lockAccessoryTopology } from '../venta/accessory-locks';
+import { eliminarProductoDefinitivo, EliminacionProducto } from './producto-eliminacion';
+import { AccesorioReferencia } from '../accesorios/accesorio-referencia.entity';
+import { EntityManager } from 'typeorm';
 import { appCacheKey, invalidateProductos } from '../common/app-cache';
 import { reservaActivaSql, ventaActivaSql } from '../venta/estado-comercial';
-﻿import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
+﻿import { Injectable, NotFoundException, Inject, BadRequestException, Optional } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, MoreThan, Not, Repository } from 'typeorm';
@@ -15,6 +19,7 @@ import { Tracking, EstadoTracking } from '../tracking/tracking.entity';
 import { Venta } from '../venta/venta.entity';
 import { PersonalEshopex } from './personal-eshopex.entity';
 import { Inventario } from '../inventario/inventario.entity';
+import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 import * as crypto from 'node:crypto';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
 import { isAccessoryStock, normalizeIncludedAccessories } from './accessory-rules';
@@ -100,7 +105,23 @@ export class ProductoService {
     @InjectRepository(Inventario)
     private readonly inventarioRepo: Repository<Inventario>,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    @Optional() private readonly appleCatalog?: AppleCatalogService,
   ) {}
+
+  private referenceTransaction = false;
+  conManager(manager: EntityManager) {
+    const scoped = new ProductoService(manager.getRepository(Producto), manager.getRepository(ProductoDetalle), manager.getRepository(ProductoValor),
+      manager.getRepository(Tracking), manager.getRepository(Venta), manager.getRepository(PersonalEshopex), manager.getRepository(Inventario), this.cache, this.appleCatalog);
+    scoped.referenceTransaction = true;
+    return scoped;
+  }
+
+  /** Rechaza un detalle incompatible con el catálogo Apple; en edición solo valida lo que cambia. */
+  private async assertDetalleCatalogo(tipo: string, detalle: Record<string, any> | null | undefined, previous?: Record<string, any> | null) {
+    if (!this.appleCatalog || !detalle) return;
+    const { errors } = await this.appleCatalog.validateProductoDetalle(tipo, detalle, previous);
+    if (errors.length) throw new BadRequestException(errors.join(' '));
+  }
 
   private buildListCacheKey(estatus?: string | null): string {
     const normalized = normalizeEstado(estatus);
@@ -119,12 +140,21 @@ export class ProductoService {
     if (data.soloInventario && !isAccessoryStock(data.tipo)) {
       throw new BadRequestException('Solo los accesorios pueden quedar exclusivamente en Inventario.');
     }
+    if (data.referenciaId && !this.referenceTransaction) return this.productoRepo.manager.transaction((em) => this.conManager(em).create(data));
+    if (data.referenciaId) {
+      await lockAccessoryTopology(this.productoRepo.manager);
+      await this.productoRepo.manager.query('SELECT id FROM accesorio_referencia WHERE id = $1 FOR UPDATE', [data.referenciaId]);
+      if (!isAccessoryStock(data.tipo)) throw new BadRequestException('La referencia solo corresponde a accesorios.');
+      const reference = await this.productoRepo.manager.getRepository(AccesorioReferencia).findOneBy({ id: data.referenciaId });
+      if (!reference?.activo) throw new BadRequestException('Referencia no encontrada o inactiva.');
+    }
     const rawDetalle: any = data.detalle ? { ...(data.detalle as any) } : null;
     if (rawDetalle) {
       rawDetalle.tamano = rawDetalle.tamano ?? rawDetalle.tamanio ?? rawDetalle['tama\u00f1o'] ?? null;
       delete rawDetalle.tamanio;
       delete rawDetalle['tama\u00f1o'];
     }
+    await this.assertDetalleCatalogo(data.tipo, rawDetalle);
 
     const accessoryDisplayCode = isAccessoryStock(data.tipo)
       ? (this.loteAccessoryCode !== undefined ? this.loteAccessoryCode : await this.findAccessoryDisplayCode(data, rawDetalle))
@@ -144,7 +174,7 @@ export class ProductoService {
       const monedaCompra = String((data.valor as any).monedaCompra || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
       const valorSoles = monedaCompra === 'PEN'
         ? Number(Number(valorProducto).toFixed(2))
-        : Number((valorProducto * 3.7).toFixed(2));
+        : Number((valorProducto * Number(data.valor.tipoCambioCompra ?? 3.7)).toFixed(2));
       const costoEnvioInformado = Number((data.valor as any).costoEnvio);
       const costoEnvio = Number.isFinite(costoEnvioInformado)
         ? costoEnvioInformado
@@ -160,6 +190,7 @@ export class ProductoService {
         costoEnvio,
         costoTotal,
         monedaCompra,
+        ...(monedaCompra === 'USD' ? { tipoCambioCompra: Number(data.valor.tipoCambioCompra ?? 3.7) } : {}),
       });
       valor = await this.valorRepo.save(valor);
     }
@@ -187,6 +218,7 @@ export class ProductoService {
       stockInicial: cantidad,
       stockActual: cantidad,
       codigoInventario: accessoryDisplayCode,
+      referenciaId: data.referenciaId ?? null,
       soloInventario: !!data.soloInventario,
       envioGrupoId: envioGrupoId || null,
       detalle: detalle || undefined,
@@ -246,6 +278,10 @@ export class ProductoService {
     data: CreateProductoDto,
     rawDetalle: Record<string, any> | null,
   ): Promise<number | null> {
+    if (data.referenciaId) {
+      const previous = await this.productoRepo.findOne({ where: { referenciaId: data.referenciaId }, order: { id: 'ASC' }, loadEagerRelations: false });
+      return previous ? Number(previous.codigoInventario || previous.id) : null;
+    }
     const model = this.normalizeAccessoryMatch(rawDetalle?.modelo);
     if (!model) return null;
 
@@ -253,6 +289,7 @@ export class ProductoService {
       .leftJoin('p.detalle', 'd')
       .select(['p.id', 'p.codigoInventario'])
       .where('p.tipo = :tipo', { tipo: data.tipo })
+      .andWhere('p.referenciaId IS NULL')
       .andWhere('p.stockActual > 0')
       .andWhere("regexp_replace(lower(trim(COALESCE(d.modelo, ''))), '\\s+', ' ', 'g') = :model", { model })
       .andWhere("regexp_replace(lower(trim(COALESCE(p.estado, ''))), '\\s+', ' ', 'g') = :estado", { estado: this.normalizeAccessoryMatch(data.estado) })
@@ -273,7 +310,7 @@ export class ProductoService {
       return this.productoRepo.manager.transaction(async (manager) => {
         const scoped = new ProductoService(manager.getRepository(Producto), manager.getRepository(ProductoDetalle),
           manager.getRepository(ProductoValor), manager.getRepository(Tracking), manager.getRepository(Venta),
-          manager.getRepository(PersonalEshopex), manager.getRepository(Inventario), this.cache);
+          manager.getRepository(PersonalEshopex), manager.getRepository(Inventario), this.cache, this.appleCatalog);
         scoped.loteTransaction = true;
         return scoped.createLote(data);
       });
@@ -582,7 +619,17 @@ export class ProductoService {
     if (!producto) {
       throw new NotFoundException(`Producto con id ${id} no encontrado`);
     }
+    if (dto.detalle || (dto.tipo !== undefined && dto.tipo !== producto.tipo)) {
+      const tipoCambia = dto.tipo !== undefined && dto.tipo !== producto.tipo;
+      await this.assertDetalleCatalogo(
+        dto.tipo ?? producto.tipo,
+        (dto.detalle as any) || (producto.detalle as any) || {},
+        tipoCambia ? null : (producto.detalle as any) || {},
+      );
+    }
 
+    const originalPeso = Number(producto.valor?.peso || 0);
+    const originalDec = Number(producto.valor?.valorDec || 0);
     let envioGrupoId: string | null = producto.envioGrupoId ?? null;
     const oldEnvioGrupo = producto.envioGrupoId || null;
     if ((dto as any).vincularCon) {
@@ -672,12 +719,14 @@ export class ProductoService {
     // 4) Actualizar valor + recÃ¡lculos
     if (dto.valor && producto.valor) {
       const v = producto.valor;
-      Object.assign(v, dto.valor);
+      const previousRate = Number(v.valorProducto) > 0 && Number.isFinite(Number(v.valorSoles)) && v.valorSoles != null ? Number(v.valorSoles) / Number(v.valorProducto) : 3.7;
+      const { tipoCambioCompra, ...storedValue } = dto.valor as any;
+      Object.assign(v, storedValue);
 
       v.monedaCompra = String((v as any).monedaCompra || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
       v.valorSoles = v.monedaCompra === 'PEN'
         ? Number(Number(v.valorProducto).toFixed(2))
-        : Number((v.valorProducto * 3.7).toFixed(2));
+        : Number((v.valorProducto * Number(tipoCambioCompra ?? previousRate)).toFixed(2));
       v.costoEnvio = manualCostoEnvio !== undefined
         ? manualCostoEnvio
         : this.getCostoEnvio(v.peso, v.valorDec, v.fechaCompra);
@@ -687,7 +736,7 @@ export class ProductoService {
     }
 
     // Si está en grupo y se modificó peso o valorDec, sincroniza a todos
-    if (envioGrupoId && dto.valor && (dto.valor.peso !== undefined || dto.valor.valorDec !== undefined)) {
+    if (envioGrupoId && dto.valor && ((dto.valor.peso !== undefined && Number(dto.valor.peso) !== originalPeso) || (dto.valor.valorDec !== undefined && Number(dto.valor.valorDec) !== originalDec))) {
       const pesoRefNum =
         dto.valor.peso !== undefined ? Number(dto.valor.peso) : undefined;
       const decRefNum =
@@ -719,30 +768,33 @@ export class ProductoService {
       }
     }
 
-    if (producto.envioGrupoId && manualCostoEnvioProrrateado !== undefined && producto.valor) {
-      producto.valor.costoEnvioProrrateado = manualCostoEnvioProrrateado;
-      producto.valor.costoTotalProrrateado = Number(
-        (Number(producto.valor.valorSoles || 0) + manualCostoEnvioProrrateado).toFixed(2),
-      );
-      await this.valorRepo.save(producto.valor);
-    } else if (producto.envioGrupoId && manualCostoEnvio === undefined) {
-      await this.recalcEnvioGrupo(producto.envioGrupoId);
-    } else if (producto.envioGrupoId && manualCostoEnvio !== undefined) {
-      // Conserva la edición manual del envío base. El prorrateado actual solo
-      // cambia cuando se envía explícitamente costoEnvioProrrateado.
-    } else if (oldEnvioGrupo) {
-      await this.recalcEnvioGrupo(oldEnvioGrupo);
-      if (producto.valor) {
-        producto.valor.costoEnvioProrrateado = producto.valor.costoEnvio;
-        producto.valor.costoTotalProrrateado = producto.valor.costoTotal;
+    // Metadata-only accessory edits must not recalculate saved lot costs.
+    if (!isAccessoryStock(producto.tipo) || dto.valor || justLinkedToGroup || (dto as any).desvincularEnvio) {
+      if (producto.envioGrupoId && manualCostoEnvioProrrateado !== undefined && producto.valor) {
+        producto.valor.costoEnvioProrrateado = manualCostoEnvioProrrateado;
+        producto.valor.costoTotalProrrateado = Number(
+          (Number(producto.valor.valorSoles || 0) + manualCostoEnvioProrrateado).toFixed(2),
+        );
+        await this.valorRepo.save(producto.valor);
+      } else if (producto.envioGrupoId && manualCostoEnvio === undefined) {
+        await this.recalcEnvioGrupo(producto.envioGrupoId);
+      } else if (producto.envioGrupoId && manualCostoEnvio !== undefined) {
+        // Conserva la edición manual del envío base. El prorrateado actual solo
+        // cambia cuando se envía explícitamente costoEnvioProrrateado.
+      } else if (oldEnvioGrupo) {
+        await this.recalcEnvioGrupo(oldEnvioGrupo);
+        if (producto.valor) {
+          producto.valor.costoEnvioProrrateado = producto.valor.costoEnvio;
+          producto.valor.costoTotalProrrateado = producto.valor.costoTotal;
+          await this.valorRepo.save(producto.valor);
+        }
+      } else if (producto.valor) {
+        producto.valor.costoEnvioProrrateado = manualCostoEnvioProrrateado ?? producto.valor.costoEnvio;
+        producto.valor.costoTotalProrrateado = Number(
+          (Number(producto.valor.valorSoles || 0) + Number(producto.valor.costoEnvioProrrateado || 0)).toFixed(2),
+        );
         await this.valorRepo.save(producto.valor);
       }
-    } else if (producto.valor) {
-      producto.valor.costoEnvioProrrateado = manualCostoEnvioProrrateado ?? producto.valor.costoEnvio;
-      producto.valor.costoTotalProrrateado = Number(
-        (Number(producto.valor.valorSoles || 0) + Number(producto.valor.costoEnvioProrrateado || 0)).toFixed(2),
-      );
-      await this.valorRepo.save(producto.valor);
     }
     if (justLinkedToGroup && producto.envioGrupoId) {
       await this.syncTrackingEnGrupo(producto.envioGrupoId);
@@ -757,33 +809,23 @@ export class ProductoService {
     return this.applyProrrateadoView(updated);
   }
 
-  /** Elimina un producto (y cascada en detalle/valor/tracking si estÃ¡ configurada) */
-  async remove(id: number): Promise<void> {
-    await this.productoRepo.manager.transaction(async (manager) => {
-    await manager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [id]);
-    const [historial] = await manager.query(`SELECT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = $1
-      OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(v."distribucionStock", '[]'::jsonb)) x WHERE (x->>'productoId')::int = $1))
-      OR EXISTS (SELECT 1 FROM venta_adelanto WHERE "productoId" = $1)
-      OR EXISTS (SELECT 1 FROM gastos WHERE producto_vinculado_id = $1) AS existe`, [id]);
-    if (historial.existe) throw new BadRequestException('El producto tiene historial comercial o financiero. Archívalo con un motivo.');
-    const repo = manager.getRepository(Producto);
-    const producto = await repo.findOne({
-      where: { id },
-      relations: ['detalle', 'valor', 'tracking'],
+  /**
+   * Elimina definitivamente un producto junto con sus ventas, reservas, cobros, ingresos en
+   * Gastos y reembolsos exclusivos, en una sola transacción (ver producto-eliminacion.ts).
+   */
+  async remove(id: number): Promise<EliminacionProducto> {
+    const resumen = await this.productoRepo.manager.transaction(async (manager) => {
+      // Borrar un lote cambia la topología de accesorios: requiere el bloqueo exclusivo.
+      await lockAccessoryTopology(manager, true);
+      await manager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [id]);
+      const producto = await manager.getRepository(Producto).findOne({ where: { id }, relations: ['detalle', 'valor'] });
+      if (!producto) throw new NotFoundException(`Producto con id ${id} no encontrado`);
+      const eliminado = await eliminarProductoDefinitivo(manager, producto);
+      if (producto.envioGrupoId) await this.recalcEnvioGrupo(producto.envioGrupoId, undefined, manager);
+      return eliminado;
     });
-
-    if (!producto) {
-      throw new NotFoundException(`Producto con id ${id} no encontrado`);
-    }
-
-    const envioGrupoId = producto.envioGrupoId || null;
-    await repo.remove(producto);
-
-    if (envioGrupoId) {
-      await this.recalcEnvioGrupo(envioGrupoId);
-    }
     await this.invalidateListCache();
-    });
+    return resumen;
   }
 
   async archivar(id: number, motivo: string) {
@@ -999,8 +1041,11 @@ export class ProductoService {
     return envioGrupoId;
   }
 
-  private async recalcEnvioGrupo(envioGrupoId: string) {
-    const prods = await this.productoRepo.find({
+  async recalcEnvioGrupo(envioGrupoId: string, costoLogistica?: number, manager?: EntityManager) {
+    // Dentro de una transacción se recalcula con sus repositorios para revertirse junto con ella.
+    const productoRepo = manager ? manager.getRepository(Producto) : this.productoRepo;
+    const valorRepo = manager ? manager.getRepository(ProductoValor) : this.valorRepo;
+    const prods = await productoRepo.find({
       where: { envioGrupoId },
       relations: ['valor'],
       order: { id: 'ASC' },
@@ -1009,14 +1054,14 @@ export class ProductoService {
     if (!conValor.length) return;
 
     // Si queda solo 1 producto, se elimina el grupo y se dejan valores individuales
-    if (conValor.length < 2) {
+    if (conValor.length < 2 && costoLogistica === undefined && !envioGrupoId.startsWith('acc-')) {
       for (const p of conValor) {
         const v = p.valor!;
         (v as any).costoEnvioProrrateado = null;
         (v as any).costoTotalProrrateado = null;
         p.envioGrupoId = null;
-        await this.valorRepo.save(v);
-        await this.productoRepo.save(p);
+        await valorRepo.save(v);
+        await productoRepo.save(p);
       }
       return;
     }
@@ -1029,19 +1074,20 @@ export class ProductoService {
 
     // Costo de envío total usando fórmula normal con peso y valorDec base (como producto individual)
     const fechaCompraRef = conValor[0].valor?.fechaCompra ?? null;
-    const totalEnvio = this.getCostoEnvio(pesoRef, valorDecBase, fechaCompraRef);
+    const totalEnvio = costoLogistica ?? (envioGrupoId.startsWith('acc-') ? conValor.reduce((sum, p) => sum + Number(p.valor?.costoEnvioProrrateado ?? p.valor?.costoEnvio ?? 0), 0) : this.getCostoEnvio(pesoRef, valorDecBase, fechaCompraRef));
 
     const totalPrecio = conValor.reduce((sum, p) => sum + Number(p.valor?.valorProducto ?? 0), 0);
-    if (!totalPrecio) return;
+    if (!totalPrecio && costoLogistica === undefined) return;
+    const totalUnits = conValor.reduce((sum, p) => sum + Number(p.stockInicial || 1), 0);
 
     // Asignación proporcional por valorProducto asegurando suma exacta
     let acumulado = 0;
-    conValor.forEach((p, idx) => {
+    for (const [idx, p] of conValor.entries()) {
       const v = p.valor!;
-      // Recalcular valorSoles con TC fijo actual
-      v.valorSoles = Number((Number(v.valorProducto) * 3.7).toFixed(2));
+      // Accessories keep the conversion already stored at purchase.
+      if (!isAccessoryStock(p.tipo)) v.valorSoles = Number((Number(v.valorProducto) * 3.7).toFixed(2));
 
-      const factor = Number(v.valorProducto ?? 0) / totalPrecio;
+      const factor = totalPrecio ? Number(v.valorProducto ?? 0) / totalPrecio : Number(p.stockInicial || 1) / totalUnits;
       let asignado = Number((totalEnvio * factor).toFixed(2));
       // Último elemento recibe el residual para cuadrar la suma
       if (idx === conValor.length - 1) {
@@ -1052,8 +1098,8 @@ export class ProductoService {
       v.costoEnvioProrrateado = asignado;
       const baseSoles = Number(v.valorSoles ?? 0);
       v.costoTotalProrrateado = Number((baseSoles + asignado).toFixed(2));
-      this.valorRepo.save(v).catch(() => undefined);
-    });
+      await valorRepo.save(v);
+    }
   }
 
   
@@ -1260,10 +1306,16 @@ export class ProductoService {
       return base || `Producto ${p.id}`;
     }
     if (tipo.toLowerCase() === 'ipad') {
-      const linea = gama === 'Normal' ? '' : gama;
-      const modeloIpad = gama === 'Normal' || gama === 'Mini' ? generacion : proc;
-      const pantalla = tam && tam !== modeloIpad ? tam : '';
+      // La generación (p. ej. 11) no es la pantalla: se rotula como generación y la pantalla en pulgadas.
+      const linea = gama === 'Normal' ? '' : gama === 'Mini' ? 'mini' : gama;
+      const generacionLabel = /^\d+$/.test(generacion) ? `${generacion}.ª gen.` : generacion;
+      const modeloIpad = gama === 'Normal' || gama === 'Mini' ? generacionLabel : proc;
+      const pantalla = tam ? `${tam.replace(/["”″]+$/, '')}″` : '';
       return ['iPad', linea, modeloIpad, pantalla].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
+    }
+    if (tipo.toLowerCase() === 'airpods') {
+      // Edición completa del catálogo (con/sin ANC, estuche, USB-C).
+      return modelo || 'AirPods';
     }
     if (tipo.toLowerCase() === 'watch') {
       const linea = gama || (/ultra/i.test(generacion) ? 'Ultra' : 'Series');
@@ -1278,7 +1330,9 @@ export class ProductoService {
     return [tipo, gama, modelo, proc, tam].filter(Boolean).join(' ').trim() || `Producto ${p.id}`;
   }
 
-  private buildCatalogDetalle(d: any) {
+  private buildCatalogDetalle(d: any, tipo?: string | null) {
+    // RAM solo es dato comercial en Mac (matriz del catálogo Apple); en iPhone/iPad/Watch/AirPods no se publica.
+    const ramComercial = ['macbook', 'imac', 'macmini', 'otro'].includes(String(tipo || '').toLowerCase());
     return {
       id: d?.id ?? null,
       esim: d?.esim ?? d?.sim ?? null,
@@ -1289,7 +1343,7 @@ export class ProductoService {
       modelo: d?.modelo ?? null,
       tamano: d?.tamano ?? d?.tamanio ?? d?.['tama\u00f1o'] ?? null,
       almacenamiento: d?.almacenamiento ?? null,
-      ram: d?.ram ?? null,
+      ram: ramComercial ? d?.ram ?? null : null,
       conexion: d?.conexion ?? null,
       descripcionOtro: d?.descripcionOtro ?? null,
     };
@@ -1320,7 +1374,7 @@ export class ProductoService {
         tipo: p.tipo ?? null,
         estado: p.estado ?? null,
         accesorios: p.accesorios ?? null,
-        detalle: this.buildCatalogDetalle(d),
+        detalle: this.buildCatalogDetalle(d, p?.tipo),
         valor: p.valor ?? null,
         tracking_last: last,
       },
@@ -1592,7 +1646,7 @@ export class ProductoService {
               warrantyEnabled,
               warrantyType,
               warrantyDate,
-              detalle: this.buildCatalogDetalle(d),
+              detalle: this.buildCatalogDetalle(d, p?.tipo),
               valor: { costoTotal: p?.valor?.costoTotal ?? null },
             },
           };

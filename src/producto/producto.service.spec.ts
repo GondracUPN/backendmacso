@@ -71,6 +71,70 @@ describe('ProductoService', () => {
     expect(service).toBeDefined();
   });
 
+  it('el prorrateo de un ingreso nuevo conserva su cambio y su logística al editar después', async () => {
+    const lots: any[] = [
+      { id: 1, tipo: 'accesorios', stockInicial: 2, valor: { valorProducto: 20, valorSoles: 82, tipoCambioCompra: 4.1 } },
+      { id: 2, tipo: 'accesorios', stockInicial: 3, valor: { valorProducto: 45, valorSoles: 184.5, tipoCambioCompra: 4.1 } },
+    ];
+    productoRepo.find.mockResolvedValue(lots);
+    valorRepo.save.mockImplementation(async (value) => value);
+    await service.recalcEnvioGrupo('acc-nueva-compra', 20);
+    expect(lots.reduce((sum, lot) => sum + lot.valor.costoEnvioProrrateado, 0)).toBe(20);
+    expect(lots.reduce((sum, lot) => sum + lot.valor.costoTotalProrrateado, 0)).toBeCloseTo(286.5);
+    await service.recalcEnvioGrupo('acc-nueva-compra');
+    expect(lots.reduce((sum, lot) => sum + lot.valor.costoTotalProrrateado, 0)).toBeCloseTo(286.5);
+    expect(lots[0].valor.valorSoles).toBe(82);
+    expect(lots[1].valor.tipoCambioCompra).toBe(4.1);
+    expect(ventaRepo.save).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: 77, codigoInventario: 77, stockActual: 0 }])('resuelve código de referencia sin depender del stock anterior: %s', async (previous) => {
+    productoRepo.findOne.mockResolvedValue(previous);
+    (productoRepo as any).manager = { query: jest.fn(async () => []), getRepository: () => ({ findOneBy: async () => ({ id: 55, activo: true }) }) };
+    (service as any).referenceTransaction = true;
+    detalleRepo.save.mockImplementation(async (value) => ({ id: 10, ...value }));
+    valorRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));
+    productoRepo.save.mockImplementation(async (value) => ({ id: 99, ...value }));
+    productoRepo.findOneOrFail.mockResolvedValue({ id: 99, tipo: 'accesorios', referenciaId: 55, tracking: [] });
+    await service.create({ tipo: 'accesorios', estado: 'nuevo', referenciaId: 55, soloInventario: true, cantidad: 2,
+      detalle: { modelo: 'Cable' }, valor: { valorProducto: 20, valorDec: 0, peso: 0, fechaCompra: '2026-10-25', monedaCompra: 'PEN' } });
+    expect(productoRepo.findOne).toHaveBeenCalledWith({ where: { referenciaId: 55 }, order: { id: 'ASC' }, loadEagerRelations: false });
+    if (previous) expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ codigoInventario: 77, referenciaId: 55 }));
+    else expect(productoRepo.update).toHaveBeenCalledWith(99, { codigoInventario: 99 });
+  });
+
+  it('convierte una nueva compra USD y guarda el cambio ingresado en el lote', async () => {
+    detalleRepo.save.mockImplementation(async (value) => ({ id: 10, ...value }));
+    valorRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));
+    productoRepo.save.mockImplementation(async (value) => ({ id: 31, ...value }));
+    productoRepo.findOneOrFail.mockResolvedValue({ id: 31, tipo: 'accesorios', tracking: [] });
+    await service.create({ tipo: 'accesorios', estado: 'nuevo', soloInventario: true, cantidad: 5,
+      detalle: { modelo: 'Cable' }, valor: { valorProducto: 50, valorDec: 0, peso: 0, fechaCompra: '2026-10-25',
+        monedaCompra: 'USD', tipoCambioCompra: 4.1, costoEnvio: 5 } });
+    expect(valorRepo.save).toHaveBeenCalledWith(expect.objectContaining({ valorProducto: 50, valorSoles: 205, costoTotal: 210 }));
+    expect(valorRepo.save.mock.calls[0][0]).toHaveProperty('tipoCambioCompra', 4.1);
+    expect(ventaRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('editar datos comerciales de un accesorio conserva costos guardados incluso con envío agrupado', async () => {
+    const valor = { id: 10, valorProducto: 50, valorSoles: 205, costoEnvio: 5, costoTotal: 210,
+      costoEnvioProrrateado: 3, costoTotalProrrateado: 208, monedaCompra: 'USD' };
+    const producto: any = { id: 31, tipo: 'accesorios', estado: 'nuevo', envioGrupoId: 'grupo',
+      detalle: { modelo: 'Cable' }, valor: { ...valor }, accesorios: [] };
+    productoRepo.findOne.mockResolvedValue(producto);
+    productoRepo.findOneOrFail.mockResolvedValue(producto);
+    const persisted: any[] = [];
+    productoRepo.save.mockImplementation(async (value) => {
+      persisted.push(JSON.parse(JSON.stringify(value)));
+      return value;
+    });
+    detalleRepo.save.mockImplementation(async (value) => value);
+    await service.update(31, { detalle: { modelo: 'Cable USB-C' } });
+    expect(persisted[0].valor).toEqual(valor);
+    expect(valorRepo.save).not.toHaveBeenCalled();
+    expect(ventaRepo.save).not.toHaveBeenCalled();
+  });
+
   it('cachea la lista 60 segundos expresados en milisegundos', async () => {
     const cache = (service as any).cache;
     const qb: any = {};

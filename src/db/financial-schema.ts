@@ -340,6 +340,12 @@ export async function ensureCostosPendientes(qr: QueryRunner): Promise<void> {
     await qr.query(`ALTER TABLE ${migrationTable(qr, 'venta')} ADD COLUMN IF NOT EXISTS "costoCompletadoAt" timestamptz`);
 }
 
+export async function ensureAnulacionVentas(qr: QueryRunner): Promise<void> {
+    await qr.query(`ALTER TABLE ${migrationTable(qr, 'venta')} ADD COLUMN IF NOT EXISTS "anuladaAt" timestamptz`);
+    await qr.query(`ALTER TABLE ${migrationTable(qr, 'venta')} ADD COLUMN IF NOT EXISTS "anuladaPor" integer`);
+    await qr.query(`ALTER TABLE ${migrationTable(qr, 'venta')} ADD COLUMN IF NOT EXISTS "anulacionMotivo" text`);
+}
+
 export async function ensureProgramacionesIdempotentes(qr: QueryRunner): Promise<void> {
     await qr.query(`ALTER TABLE ${migrationTable(qr, 'scheduled_charges')} ADD COLUMN IF NOT EXISTS anchor_day smallint`);
     await qr.query(`ALTER TABLE ${migrationTable(qr, 'gastos')} ADD COLUMN IF NOT EXISTS scheduled_charge_id integer`);
@@ -368,6 +374,7 @@ export async function ensureFinancialSchema(dataSource: DataSource): Promise<voi
     await ensureDevolucionesComerciales(qr);
     await ensureCostosPendientes(qr);
     await ensureProgramacionesIdempotentes(qr);
+    await ensureAnulacionVentas(qr);
     await qr.commitTransaction();
   } catch (error) {
     if (qr.isTransactionActive) await qr.rollbackTransaction();

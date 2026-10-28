@@ -1,8 +1,10 @@
 import { reservaActivaSql, ventaActivaSql } from '../venta/estado-comercial';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -10,9 +12,12 @@ import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary } from 'cloudinary';
 import { In, Repository } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
+import { Tracking } from '../tracking/tracking.entity';
 import { UpdateInventarioDto } from './dto/update-inventario.dto';
 import { Inventario } from './inventario.entity';
 import { isAccessoryStock, normalizeIncludedAccessories } from '../producto/accessory-rules';
+import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
+import { validateInventoryValues, type InventoryValues } from '../apple-catalog/device-capabilities';
 
 @Injectable()
 export class InventarioService {
@@ -22,6 +27,7 @@ export class InventarioService {
     @InjectRepository(Producto)
     private readonly productoRepo: Repository<Producto>,
     private readonly configService: ConfigService,
+    @Optional() private readonly appleCatalog?: AppleCatalogService,
   ) {
     const cloudinaryUrl = this.configService.get<string>('CLOUDINARY_URL') || '';
     if (cloudinaryUrl) {
@@ -72,10 +78,26 @@ export class InventarioService {
       fichas.map((ficha) => [ficha.productoId, ficha]),
     );
 
-    return productos.map((producto) => ({
-      producto,
-      ficha: fichaPorProducto.get(producto.id) || null,
-    }));
+    const reglas = await this.reglasPorProducto(productos);
+    return productos.map((producto) => {
+      const ficha = fichaPorProducto.get(producto.id) || null;
+      return { producto, ficha, reglas: this.withCompleteness(reglas.get(producto.id), ficha) };
+    });
+  }
+
+  /** Reglas de ficha calculadas en memoria con una sola carga del catálogo (sin consultas por fila). */
+  private async reglasPorProducto(productos: Producto[]) {
+    if (!this.appleCatalog || !productos.length) return new Map<number, any>();
+    try {
+      return await this.appleCatalog.inventoryRulesFor(productos.map((p) => ({ id: p.id, tipo: p.tipo, estado: p.estado, detalle: p.detalle as any })));
+    } catch {
+      return new Map<number, any>();
+    }
+  }
+
+  private withCompleteness(reglas: any, ficha: Inventario | null) {
+    if (!reglas || !this.appleCatalog) return reglas || null;
+    return { ...reglas, completitud: this.appleCatalog.completeness((ficha || {}) as any, reglas) };
   }
 
   async findProductoByCode(productoId: number) {
@@ -85,7 +107,8 @@ export class InventarioService {
     });
     if (!producto) throw new NotFoundException(`Producto ${productoId} no encontrado.`);
     const ficha = await this.inventarioRepo.findOne({ where: { productoId } });
-    return { producto, ficha: ficha || null };
+    const reglas = await this.reglasPorProducto([producto]);
+    return { producto, ficha: ficha || null, reglas: this.withCompleteness(reglas.get(producto.id), ficha) };
   }
 
   async upsert(productoId: number, data: UpdateInventarioDto) {
@@ -108,9 +131,32 @@ export class InventarioService {
       await this.productoRepo.save(producto);
     }
     if (data.enAlmacen !== undefined) patch.enAlmacen = data.enAlmacen;
-    if (data.color !== undefined) patch.color = cleanText(data.color, 80);
-    if (data.ciclosBateria !== undefined) patch.ciclosBateria = data.ciclosBateria;
-    if (data.saludBateria !== undefined) patch.saludBateria = data.saludBateria;
+    const avisos: string[] = [];
+    const reglas = await this.reglasDeUnidad(producto);
+    if (reglas) {
+      // Validación semántica por modelo/conectividad: rechaza valores nuevos incompatibles
+      // aunque el cliente esté manipulado y conserva los valores legados sin borrarlos.
+      const input: InventoryValues = {
+        serial: data.serial, imei: data.imei, imei2: data.imei2, color: data.color,
+        saludBateria: data.saludBateria, ciclosBateria: data.ciclosBateria,
+      };
+      const stored: InventoryValues = {
+        serial: ficha.serial, imei: ficha.imei, imei2: ficha.imei2, color: ficha.color,
+        saludBateria: ficha.saludBateria, ciclosBateria: ficha.ciclosBateria,
+      };
+      const checked = validateInventoryValues(input, stored, reglas);
+      if (checked.errors.length) throw new BadRequestException(checked.errors.join(' '));
+      avisos.push(...checked.warnings);
+      for (const key of Object.keys(checked.patch) as Array<keyof InventoryValues>) (patch as any)[key] = checked.patch[key];
+      await this.assertIdentificadoresUnicos(productoId, { ...stored, ...checked.patch }, stored, avisos);
+    } else {
+      if (data.color !== undefined) patch.color = cleanText(data.color, 80);
+      if (data.ciclosBateria !== undefined) patch.ciclosBateria = data.ciclosBateria;
+      if (data.saludBateria !== undefined) patch.saludBateria = data.saludBateria;
+      if (data.serial !== undefined) patch.serial = cleanText(data.serial, 120);
+      if (data.imei !== undefined) patch.imei = cleanText(data.imei, 40);
+      if (data.imei2 !== undefined) patch.imei2 = cleanText(data.imei2, 40);
+    }
     if (data.primerPrecioSoles !== undefined) {
       patch.primerPrecioSoles = data.primerPrecioSoles;
     }
@@ -127,9 +173,6 @@ export class InventarioService {
     if (data.garantiaDetalle !== undefined) {
       patch.garantiaDetalle = cleanText(data.garantiaDetalle, 180);
     }
-    if (data.serial !== undefined) patch.serial = cleanText(data.serial, 120);
-    if (data.imei !== undefined) patch.imei = cleanText(data.imei, 40);
-    if (data.imei2 !== undefined) patch.imei2 = cleanText(data.imei2, 40);
     if (data.observaciones !== undefined) {
       patch.observaciones = cleanText(data.observaciones, 3000);
     }
@@ -156,7 +199,55 @@ export class InventarioService {
     } else if (ficha.tipoGarantia === 'limitada' && !ficha.garantiaHasta) {
       throw new BadRequestException('La garantia limitada requiere una fecha de vencimiento.');
     }
-    return this.inventarioRepo.save(ficha);
+    const completitud = reglas && this.appleCatalog ? this.appleCatalog.completeness(ficha as any, reglas) : null;
+    if (data.exigirCompleta && completitud && !completitud.complete) {
+      throw new BadRequestException(`Ficha incompleta: falta ${completitud.missing.join(', ') || 'resolver el modelo'}.`);
+    }
+    const importedReceipt = data.enAlmacen === true && producto.referenciaId && producto.origen === 'accesorio_importado';
+    const saved = importedReceipt ? await this.inventarioRepo.manager.transaction(async (manager) => {
+      // Receiving a newly referenced import releases that lot from transit.
+      for (const tracking of producto.tracking || []) {
+        if (!tracking.fechaRecogido && tracking.estado !== 'recogido') {
+          await manager.getRepository(Tracking).update(tracking.id, { estado: 'recogido', fechaRecogido: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' }) });
+        }
+      }
+      return manager.getRepository(Inventario).save(ficha);
+    }) : await this.inventarioRepo.save(ficha);
+    return Object.assign(saved, { avisos, ...(completitud ? { completitud } : {}) });
+  }
+
+  private async reglasDeUnidad(producto: Producto) {
+    if (!this.appleCatalog || !producto?.tipo || isAccessoryStock(producto.tipo)) return null;
+    const catalog = await this.appleCatalog.getCatalog();
+    return this.appleCatalog.rulesWithCatalog(catalog, { tipo: producto.tipo, estado: producto.estado, detalle: producto.detalle as any });
+  }
+
+  /**
+   * IMEI/serial repetidos entre unidades. No bloquea la misma ficha ni el reingreso legítimo
+   * de una unidad cuyo registro anterior está vendido, archivado o cerrado.
+   */
+  private async assertIdentificadoresUnicos(productoId: number, next: InventoryValues, stored: InventoryValues, avisos: string[]) {
+    const imeis = [next.imei, next.imei2].filter((value, index) => value && value !== [stored.imei, stored.imei2][index]) as string[];
+    const serial = next.serial && next.serial !== stored.serial ? String(next.serial).toUpperCase() : null;
+    if (!imeis.length && !serial) return;
+    if (typeof (this.inventarioRepo as any).query !== 'function') return;
+    const rows: Array<{ productoId: number; historico: boolean }> = await this.inventarioRepo.query(
+      `SELECT i."productoId",
+              (p."archivadoAt" IS NOT NULL OR COALESCE(p."cierreMotivo", '') <> ''
+               OR EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = p.id AND ${ventaActivaSql()})) AS historico
+         FROM inventario i
+         JOIN producto p ON p.id = i."productoId"
+        WHERE i."productoId" <> $1
+          AND (i.imei = ANY($2::text[]) OR i.imei2 = ANY($2::text[])
+               OR ($3::text IS NOT NULL AND UPPER(REPLACE(i.serial, ' ', '')) = $3::text))
+        LIMIT 5`,
+      [productoId, imeis, serial],
+    );
+    const activos = rows.filter((row) => !row.historico);
+    if (activos.length) {
+      throw new ConflictException(`Identificador ya registrado en otra unidad activa (producto #${activos.map((r) => r.productoId).join(', #')}).`);
+    }
+    if (rows.length) avisos.push(`Identificador presente en registros históricos (producto #${rows.map((r) => r.productoId).join(', #')}); posible reingreso.`);
   }
 
   async uploadFoto(productoId: number, dataUrl: string) {
