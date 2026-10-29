@@ -313,7 +313,7 @@ describe('VentaService.create', () => {
       ['direct', '200.00', '200.00', 'bcp'],
       ['card', '300.00', '0.00', 'bcp'],
       ['debt', '400.00', '0.00', 'bcp'],
-      ['cash', '100.00', '100.00', 'efectivo'],
+      ['cash', '100.00', '0.00', 'efectivo'],
     ]);
   });
 

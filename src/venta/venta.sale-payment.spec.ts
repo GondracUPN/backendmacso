@@ -25,7 +25,7 @@ describe('cobro de venta del catálogo', () => {
       { type: 'direct', amount: 3000 }, { type: 'cash', amount: 1000 },
     ]);
     expect(saved.map((row) => [row.saleId, row.salePaymentType, row.monto, row.saleReceivedAmount])).toEqual([
-      [12, 'direct', '3000.00', '3000.00'], [12, 'cash', '1000.00', '1000.00'],
+      [12, 'direct', '3000.00', '3000.00'], [12, 'cash', '1000.00', '0.00'],
     ]);
     expect(saved[0].notas).toBe('__SALE_INCOME__:340:12:direct');
   });
@@ -118,6 +118,34 @@ describe('cobro de venta del catálogo', () => {
       { amount: 800, paidAt: '2026-10-02' },
       { amount: 1000, paidAt: '2026-10-03' },
     ]);
+  });
+
+  it('registra depósitos parciales de efectivo con fecha y cuenta sin superar el pendiente', async () => {
+    const income = { id: 50, saleId: 12, salePaymentType: 'cash', monto: '1000.00', saleReceivedAmount: '0.00', tarjeta: 'efectivo' };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = withTransactionMocks(new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any));
+    await expect(service.updateSaleIncomePayment(50, { paymentAmount: 400, paidAt: '2026-10-28' })).rejects.toThrow(/cuenta donde depositaste/);
+    const partial = await service.updateSaleIncomePayment(50, { paymentAmount: 400, paidAt: '2026-10-28', bank: 'bcp' });
+    expect(partial.saleReceivedAmount).toBe('400.00');
+    await expect(service.updateSaleIncomePayment(50, { paymentAmount: 601, paidAt: '2026-10-29', bank: 'bcp' })).rejects.toThrow(/supera el saldo/);
+    const result = await service.updateSaleIncomePayment(50, { paymentAmount: 600, paidAt: '2026-10-29', bank: 'interbank' });
+    expect(result.saleReceivedAmount).toBe('1000.00');
+    expect(result.salePaymentHistory).toEqual([
+      { amount: 400, paidAt: '2026-10-28', bank: 'bcp' },
+      { amount: 600, paidAt: '2026-10-29', bank: 'interbank' },
+    ]);
+  });
+
+  it('conserva los depósitos al resincronizar efectivo y rechaza importes menores a lo depositado', async () => {
+    const row = { id: 50, userId: 1, saleId: 12, notas: '__SALE_INCOME__:340:12:cash', salePaymentType: 'cash', monto: '1000.00', saleReceivedAmount: '400.00', salePaidAt: '2026-10-28', salePaymentHistory: [{ amount: 400, paidAt: '2026-10-28', bank: 'bcp' }] };
+    const gastoRepo = { find: jest.fn(async () => [row]), save: jest.fn(async (value) => value), remove: jest.fn() };
+    const service = withTransactionMocks(new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any, { findOne: jest.fn(async () => ({ id: 1 })) } as any));
+    const sale = { id: 12, productoId: 340, vendedor: 'Gonzalo', precioVenta: 1000, fechaVenta: '2026-10-27' };
+    await (service as any).syncSaleIncome(sale, undefined, undefined, 'MS-340', [{ type: 'cash', amount: 1000 }]);
+    expect(row.saleReceivedAmount).toBe('400.00');
+    expect(row.salePaidAt).toBe('2026-10-28');
+    expect(row.salePaymentHistory).toHaveLength(1);
+    await expect((service as any).syncSaleIncome({ ...sale, precioVenta: 300 }, undefined, undefined, 'MS-340', [{ type: 'cash', amount: 300 }])).rejects.toThrow(/menor que los pagos ya recibidos/);
   });
 
   it('permite cobrar un adelanto por tarjeta antes de completar la venta', async () => {

@@ -476,7 +476,7 @@ export class VentaService {
           (receivedByType.get(row.salePaymentType) || 0) + Math.round(Number(row.saleReceivedAmount || 0) * 100));
       });
       for (const [type, received] of receivedByType) {
-        if (type !== 'card' && type !== 'debt') continue;
+        if (type !== 'card' && type !== 'debt' && type !== 'cash') continue;
         if (received > (parts.find((part) => part.type === type)?.cents || 0)) {
           throw new BadRequestException('El nuevo importe no puede ser menor que los pagos ya recibidos.');
         }
@@ -502,7 +502,7 @@ export class VentaService {
           if (partCents <= 0) continue;
           const partReference = `${reference}:${part.type}`;
           const existingPart = linked.find((row) => row.userId === user.id && row.salePaymentType === part.type);
-          const isReceived = part.type === 'direct' || part.type === 'cash';
+          const isReceived = part.type === 'direct';
           const values = {
             userId: user.id,
             concepto: 'ingreso',
@@ -579,7 +579,7 @@ export class VentaService {
     if (!this.gastoRepo) throw new BadRequestException('No se pueden actualizar los cobros.');
     const income = await this.gastoRepo.findOne({ where: { id: gastoId } });
     const isAdvance = String(income?.notas || '').startsWith('__SALE_ADVANCE__:');
-    if (!income || (!income.saleId && !isAdvance) || !['card', 'debt'].includes(String(income.salePaymentType))) {
+    if (!income || (!income.saleId && !isAdvance) || !['card', 'debt', 'cash'].includes(String(income.salePaymentType))) {
       throw new BadRequestException('Este ingreso no corresponde a un cobro de venta del catálogo.');
     }
     const totalCents = Math.round(Number(income.monto) * 100);
@@ -616,6 +616,9 @@ export class VentaService {
     if (!paymentCents && input.paidAt) throw new BadRequestException('Registra un monto antes de indicar la fecha.');
     const bank = input.bank ? String(input.bank).trim().toLowerCase() : '';
     if (bank && !/^[a-z0-9_]{2,30}$/.test(bank)) throw new BadRequestException('Cuenta de débito inválida.');
+    if (income.salePaymentType === 'cash' && paymentCents > 0 && (!bank || bank === 'efectivo')) {
+      throw new BadRequestException('Selecciona la cuenta donde depositaste el efectivo.');
+    }
     if (input.exchangeRate !== undefined) {
       const rate = Number(input.exchangeRate);
       if (!Number.isFinite(rate) || rate <= 0) throw new BadRequestException('Tipo de cambio inválido.');
@@ -1416,7 +1419,7 @@ export class VentaService {
         if (types[0] !== 'cash') saleBank = saleBank || 'bcp';
       }
       // Se valida antes de escribir para no dejar la reserva cambiada con ingresos desfasados.
-      const receivedOnCredit = incomes.filter((row) => row.salePaymentType === 'card' || row.salePaymentType === 'debt')
+      const receivedOnCredit = incomes.filter((row) => ['card', 'debt', 'cash'].includes(String(row.salePaymentType)))
         .reduce((sum, row) => sum + toCents(row.saleReceivedAmount), 0);
       if (types.length === 1 && receivedOnCredit > limitCents - totalCents) {
         throw new BadRequestException('El nuevo saldo de la venta es menor que los pagos ya recibidos.');
@@ -1981,7 +1984,7 @@ export class VentaService {
       if (this.gastoRepo) {
         const incomes = (await this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } }))
           .filter((income) => !isAdvanceIncome(income));
-        for (const type of ['card', 'debt'] as const) {
+        for (const type of ['card', 'debt', 'cash'] as const) {
           const received = incomes.filter((income) => income.salePaymentType === type)
             .reduce((sum, income) => sum + Math.round(Number(income.saleReceivedAmount || 0) * 100), 0);
           if (received > Math.round(Number(parts.find((part) => part.type === type)?.amount || 0) * 100)) {
