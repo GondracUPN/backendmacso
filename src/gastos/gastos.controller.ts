@@ -74,7 +74,7 @@ export class GastosController {
   async updateSaleIncome(
     @CurrentUser() user: JwtUserPayload,
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { paymentAmount?: number; paymentCount?: number; paidAt?: string; exchangeRate?: number; bank?: string },
+    @Body() body: { paymentAmount?: number; paymentCount?: number; paidAt?: string; exchangeRate?: number; bank?: string; cancelPaymentIndex?: number },
   ) {
     await this.svc.findOneAuth(user.userId, user.role, id);
     return this.ventaService.updateSaleIncomePayment(id, body);

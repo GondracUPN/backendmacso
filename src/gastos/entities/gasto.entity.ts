@@ -69,7 +69,7 @@ export class Gasto {
   salePaidAt?: string | null;
 
   @Column({ name: 'sale_payment_history', type: 'jsonb', nullable: true })
-  salePaymentHistory?: Array<{ amount: number; paidAt: string; units500?: number; pagoId?: number; bank?: string }> | null;
+  salePaymentHistory?: Array<{ amount: number; paidAt: string; units500?: number; pagoId?: number; bank?: string; cancelledAt?: string }> | null;
 
   @Column({ name: 'sale_exchange_rate', type: 'numeric', precision: 10, scale: 4, nullable: true })
   saleExchangeRate?: string | null;

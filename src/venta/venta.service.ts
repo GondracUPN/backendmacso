@@ -574,13 +574,41 @@ export class VentaService {
 
   async updateSaleIncomePayment(
     gastoId: number,
-    input: { paymentAmount?: number; paymentCount?: number; paidAt?: string; exchangeRate?: number; bank?: string },
+    input: { paymentAmount?: number; paymentCount?: number; paidAt?: string; exchangeRate?: number; bank?: string; cancelPaymentIndex?: number },
   ): Promise<Gasto> {
     if (!this.gastoRepo) throw new BadRequestException('No se pueden actualizar los cobros.');
-    const income = await this.gastoRepo.findOne({ where: { id: gastoId } });
+    if (!this.transactionManager) return this.inTransaction((service) => service.updateSaleIncomePayment(gastoId, input));
+    const income = await this.gastoRepo.findOne({ where: { id: gastoId }, lock: { mode: 'pessimistic_write' } });
     const isAdvance = String(income?.notas || '').startsWith('__SALE_ADVANCE__:');
     if (!income || (!income.saleId && !isAdvance) || !['card', 'debt', 'cash'].includes(String(income.salePaymentType))) {
       throw new BadRequestException('Este ingreso no corresponde a un cobro de venta del catálogo.');
+    }
+    if (input.cancelPaymentIndex !== undefined) {
+      if (income.salePaymentType !== 'cash' || !Number.isInteger(input.cancelPaymentIndex) || input.cancelPaymentIndex < 0) {
+        throw new BadRequestException('Selecciona un depósito válido para anular.');
+      }
+      if (Object.keys(input).some((key) => key !== 'cancelPaymentIndex')) {
+        throw new BadRequestException('Anula el depósito por separado de otros cambios.');
+      }
+      const received = Math.round(Number(income.saleReceivedAmount || 0) * 100);
+      const history = Array.isArray(income.salePaymentHistory) ? [...income.salePaymentHistory] : [];
+      // Los ingresos anteriores pueden tener un total recibido sin historial detallado.
+      if (!history.length && received > 0) history.push({ amount: received / 100, paidAt: income.salePaidAt || '' });
+      const payment = history[input.cancelPaymentIndex];
+      if (!payment || payment.cancelledAt || payment.pagoId) {
+        throw new BadRequestException('El depósito no existe, ya está anulado o debe anularse desde Finanzas.');
+      }
+      const amount = Math.round(Number(payment.amount) * 100);
+      if (!Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(received) || amount > received) {
+        throw new BadRequestException('El importe del depósito es inválido.');
+      }
+      history[input.cancelPaymentIndex] = { ...payment, cancelledAt: new Date().toISOString() };
+      income.salePaymentHistory = history;
+      income.saleReceivedAmount = ((received - amount) / 100).toFixed(2);
+      income.salePaidAt = history.filter((entry) => !entry.cancelledAt).at(-1)?.paidAt || null;
+      const saved = await this.gastoRepo.save(income);
+      if (saved.saleId) await this.ledger?.sincronizarIngresosVenta(saved.saleId, this.transactionManager);
+      return saved;
     }
     const totalCents = Math.round(Number(income.monto) * 100);
     const receivedCents = Math.round(Number(income.saleReceivedAmount || 0) * 100);
@@ -637,10 +665,10 @@ export class VentaService {
     income.cantidad500 = income.salePaymentType === 'debt'
       ? history.reduce((sum, payment) => sum + Number(payment.units500 || 0), 0)
       : null;
-    income.salePaidAt = history.at(-1)?.paidAt || null;
+    income.salePaidAt = history.filter((payment) => !payment.cancelledAt).at(-1)?.paidAt || null;
     if (income.saleExchangeRate) income.tasaUsdPen = income.saleExchangeRate;
     const savedIncome = await this.gastoRepo.save(income);
-    if (savedIncome.saleId) await this.ledger?.sincronizarIngresosVenta(savedIncome.saleId);
+    if (savedIncome.saleId) await this.ledger?.sincronizarIngresosVenta(savedIncome.saleId, this.transactionManager);
     return savedIncome;
   }
 

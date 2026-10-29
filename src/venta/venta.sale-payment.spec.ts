@@ -2,6 +2,66 @@ import { withTransactionMocks } from './venta-transaction.test-helper';
 import { VentaService } from './venta.service';
 
 describe('cobro de venta del catálogo', () => {
+  it('al cambiar una parte de tarjeta a efectivo no la convierte en ingreso directo', async () => {
+    let rows: any[] = [];
+    let nextId = 1;
+    const gastoRepo = {
+      find: jest.fn(async () => [...rows]),
+      create: jest.fn((value) => ({ ...value })),
+      save: jest.fn(async (value) => {
+        if (!value.id) { value.id = nextId++; rows.push(value); }
+        return value;
+      }),
+      remove: jest.fn(async (obsolete) => { rows = rows.filter((row) => !obsolete.some((item) => item.id === row.id)); }),
+    };
+    const service = withTransactionMocks(new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any, { findOne: jest.fn(async () => ({ id: 1 })) } as any));
+    const sale = { id: 12, productoId: 340, vendedor: 'Gonzalo', precioVenta: 4000, fechaVenta: '2026-10-27' };
+    for (const type of ['cash', 'card', 'cash'] as const) {
+      await (service as any).syncSaleIncome(sale, 'bcp', undefined, 'MS-340', [
+        { type: 'direct', amount: 3000 }, { type, amount: 1000 },
+      ]);
+      expect(rows.map((row) => [row.salePaymentType, row.saleReceivedAmount])).toEqual([
+        ['direct', '3000.00'], [type, '0.00'],
+      ]);
+      expect(rows.reduce((sum, row) => sum + Number(row.saleReceivedAmount), 0)).toBe(3000);
+    }
+  });
+
+  it('anula depósitos sin borrar el historial y permite volver a depositar el importe', async () => {
+    const income: any = { id: 50, saleId: 12, salePaymentType: 'cash', monto: '1000.00', saleReceivedAmount: '1000.00', salePaidAt: '2026-10-28', salePaymentHistory: [
+      { amount: 400, paidAt: '2026-10-27', bank: 'bcp' },
+      { amount: 600, paidAt: '2026-10-28', bank: 'interbank' },
+    ] };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = withTransactionMocks(new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any));
+    const result = await service.updateSaleIncomePayment(50, { cancelPaymentIndex: 1 });
+    expect(result.saleReceivedAmount).toBe('400.00');
+    expect(result.salePaidAt).toBe('2026-10-27');
+    expect(result.salePaymentHistory?.[1]).toMatchObject({ amount: 600, cancelledAt: expect.any(String) });
+    await expect(service.updateSaleIncomePayment(50, { cancelPaymentIndex: 1 })).rejects.toThrow(/ya está anulado/);
+    await expect(service.updateSaleIncomePayment(50, { cancelPaymentIndex: 9 })).rejects.toThrow(/no existe/);
+    await expect(service.updateSaleIncomePayment(50, { cancelPaymentIndex: 0, paymentAmount: 10 })).rejects.toThrow(/por separado/);
+    await service.updateSaleIncomePayment(50, { paymentAmount: 200, paidAt: '2026-10-29', bank: 'bcp' });
+    expect(income.saleReceivedAmount).toBe('600.00');
+    await service.updateSaleIncomePayment(50, { cancelPaymentIndex: 2 });
+    await service.updateSaleIncomePayment(50, { cancelPaymentIndex: 0 });
+    expect(income.saleReceivedAmount).toBe('0.00');
+    expect(income.salePaidAt).toBeNull();
+    await service.updateSaleIncomePayment(50, { exchangeRate: 3.7 });
+    expect(income.salePaidAt).toBeNull();
+    expect(income.salePaymentHistory).toHaveLength(3);
+  });
+
+  it('permite anular el total depositado de un registro antiguo sin historial', async () => {
+    const income: any = { id: 51, saleId: 12, salePaymentType: 'cash', monto: '1000.00', saleReceivedAmount: '1000.00', salePaidAt: '2026-10-27' };
+    const gastoRepo = { findOne: jest.fn(async () => income), save: jest.fn(async (value) => value) };
+    const service = withTransactionMocks(new VentaService({} as any, {} as any, {} as any, {} as any, {} as any, gastoRepo as any));
+    await service.updateSaleIncomePayment(51, { cancelPaymentIndex: 0 });
+    expect(income.saleReceivedAmount).toBe('0.00');
+    expect(income.salePaidAt).toBeNull();
+    expect(income.salePaymentHistory[0]).toMatchObject({ amount: 1000, paidAt: '2026-10-27', cancelledAt: expect.any(String) });
+  });
+
   it('consulta todos los cobros por el ID de venta, incluso si están repartidos entre vendedores', async () => {
     const gastoRepo = { find: jest.fn(async () => [
       { saleId: 12, saleSku: 'MS-340', salePaymentType: 'direct', monto: '1500.00', saleReceivedAmount: '1500.00', tarjeta: 'bcp' },
