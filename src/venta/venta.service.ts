@@ -1612,11 +1612,11 @@ export class VentaService {
     const simpleAccessory = isSimpleAccessory(reference);
     const unitCost = allocation.costoTotal == null ? null : allocation.costoTotal / dto.cantidad;
     const precioMinimo = simpleAccessory
-      ? (unitCost == null ? null : Math.ceil(unitCost * 1.3 * 100 - 1e-9) / 100)
+      ? (unitCost == null ? null : Math.ceil(unitCost * 1.3 * 2 - 1e-9) / 2)
       : prices.precioMinimo;
     const wholesale = precioMayorista != null && cantidadMinimaMayorista != null && dto.cantidad >= cantidadMinimaMayorista;
     const precioUnitarioSugerido = simpleAccessory
-      ? (unitCost == null ? null : Math.ceil(unitCost * 1.5 * 100 - 1e-9) / 100)
+      ? (unitCost == null ? null : Math.ceil(unitCost * 1.5 * 2 - 1e-9) / 2)
       : (wholesale ? precioMayorista : precioPublicado) ?? (allocation.costoTotal == null ? null
         : Math.ceil(allocation.costoTotal / dto.cantidad * 1.3 * 100) / 100);
     const precioUnitario = dto.precioUnitario ?? precioUnitarioSugerido;

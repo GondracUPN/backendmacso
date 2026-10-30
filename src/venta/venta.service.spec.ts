@@ -32,8 +32,8 @@ test.each([['PEN', 12], ['USD', 39]])('cotiza y vende accesorios simples %s con 
     valorSoles: 999, costoTotal: 999, costoTotalProrrateado: 999, costoEnvio: 4 } });
   const quote = await service.quoteAccessory({ productoId: 101, cantidad: 2, precioUnitario: 50 });
   expect(quote.costoTotal).toBe(Number(unitCost) * 2);
-  expect(quote.precioMinimo).toBe(Math.ceil(Number(unitCost) * 1.3 * 100 - 1e-9) / 100);
-  expect(quote.precioUnitarioSugerido).toBe(Math.ceil(Number(unitCost) * 1.5 * 100 - 1e-9) / 100);
+  expect(quote.precioMinimo).toBe(Math.ceil(Number(unitCost) * 1.3 * 2 - 1e-9) / 2);
+  expect(quote.precioUnitarioSugerido).toBe(Math.ceil(Number(unitCost) * 1.5 * 2 - 1e-9) / 2);
   expect(quote.lotes).toEqual([{ productoId: 101, cantidad: 2, costoUnitario: unitCost }]);
   const sale = await service.create({ productoId: 101, cantidad: 2, tipoCambio: 1,
     fechaVenta: '2026-10-25', precioVenta: 100, cotizacionToken: quote.cotizacionToken });
