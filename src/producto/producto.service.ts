@@ -172,9 +172,11 @@ export class ProductoService {
     if (data.valor) {
       const { valorProducto, valorDec, peso, fechaCompra } = data.valor;
       const monedaCompra = String((data.valor as any).monedaCompra || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+      const purchaseRate = isAccessoryStock(data.tipo) && data.soloInventario && !data.referenciaId
+        ? 3.7 : Number(data.valor.tipoCambioCompra ?? 3.7);
       const valorSoles = monedaCompra === 'PEN'
         ? Number(Number(valorProducto).toFixed(2))
-        : Number((valorProducto * Number(data.valor.tipoCambioCompra ?? 3.7)).toFixed(2));
+        : Number((valorProducto * purchaseRate).toFixed(2));
       const costoEnvioInformado = Number((data.valor as any).costoEnvio);
       const costoEnvio = Number.isFinite(costoEnvioInformado)
         ? costoEnvioInformado
@@ -190,7 +192,7 @@ export class ProductoService {
         costoEnvio,
         costoTotal,
         monedaCompra,
-        ...(monedaCompra === 'USD' ? { tipoCambioCompra: Number(data.valor.tipoCambioCompra ?? 3.7) } : {}),
+        ...(monedaCompra === 'USD' ? { tipoCambioCompra: purchaseRate } : {}),
       });
       valor = await this.valorRepo.save(valor);
     }
@@ -724,9 +726,11 @@ export class ProductoService {
       Object.assign(v, storedValue);
 
       v.monedaCompra = String((v as any).monedaCompra || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+      const purchaseRate = isAccessoryStock(producto.tipo) && producto.soloInventario && !producto.referenciaId
+        ? 3.7 : Number(tipoCambioCompra ?? previousRate);
       v.valorSoles = v.monedaCompra === 'PEN'
         ? Number(Number(v.valorProducto).toFixed(2))
-        : Number((v.valorProducto * Number(tipoCambioCompra ?? previousRate)).toFixed(2));
+        : Number((v.valorProducto * purchaseRate).toFixed(2));
       v.costoEnvio = manualCostoEnvio !== undefined
         ? manualCostoEnvio
         : this.getCostoEnvio(v.peso, v.valorDec, v.fechaCompra);

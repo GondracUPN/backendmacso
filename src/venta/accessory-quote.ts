@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { IsNull } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
 import { operationHash } from './operation-hash';
+import { accessoryLotCost } from '../producto/accessory-cost';
 
 export const accessoryOwner = (value: unknown) => String(value || '').trim().toLowerCase();
 export const accessoryAvailable = (lot: Partial<Producto>) =>
@@ -49,7 +50,7 @@ export function allocateAccessory(lots: Producto[], reference: Producto, cantida
   const lotes = group.flatMap((lot) => {
     const take = Math.min(pending, Math.max(0, Number(lot.stockActual)));
     pending -= take;
-    const cost = lot.valor?.costoTotalProrrateado ?? lot.valor?.costoTotal ?? lot.valor?.valorSoles;
+    const cost = accessoryLotCost(lot);
     const unit = cost == null ? null : Number(cost) / Math.max(1, Number(lot.stockInicial));
     return take > 0 ? [{ productoId: lot.id, cantidad: take, costoUnitario: unit }] : [];
   });

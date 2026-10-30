@@ -103,7 +103,7 @@ describe('ProductoService', () => {
     else expect(productoRepo.update).toHaveBeenCalledWith(99, { codigoInventario: 99 });
   });
 
-  it('convierte una nueva compra USD y guarda el cambio ingresado en el lote', async () => {
+  it('convierte una compra simple USD a 3.7 aunque se envie otro cambio', async () => {
     detalleRepo.save.mockImplementation(async (value) => ({ id: 10, ...value }));
     valorRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));
     productoRepo.save.mockImplementation(async (value) => ({ id: 31, ...value }));
@@ -111,9 +111,22 @@ describe('ProductoService', () => {
     await service.create({ tipo: 'accesorios', estado: 'nuevo', soloInventario: true, cantidad: 5,
       detalle: { modelo: 'Cable' }, valor: { valorProducto: 50, valorDec: 0, peso: 0, fechaCompra: '2026-10-25',
         monedaCompra: 'USD', tipoCambioCompra: 4.1, costoEnvio: 5 } });
-    expect(valorRepo.save).toHaveBeenCalledWith(expect.objectContaining({ valorProducto: 50, valorSoles: 205, costoTotal: 210 }));
-    expect(valorRepo.save.mock.calls[0][0]).toHaveProperty('tipoCambioCompra', 4.1);
+    expect(valorRepo.save).toHaveBeenCalledWith(expect.objectContaining({ valorProducto: 50, valorSoles: 185, costoTotal: 190 }));
+    expect(valorRepo.save.mock.calls[0][0]).toHaveProperty('tipoCambioCompra', 3.7);
     expect(ventaRepo.save).not.toHaveBeenCalled();
+  });
+
+  it.each(['USD', 'PEN'])('editar moneda de un accesorio simple a %s recalcula a 3.7 y conserva envío', async (monedaCompra) => {
+    const producto: any = { id: 31, tipo: 'accesorios', soloInventario: true, estado: 'nuevo',
+      detalle: { modelo: 'Cable' }, accesorios: [], valor: { id: 10, valorProducto: 20,
+        valorSoles: 20, costoEnvio: 4, costoTotal: 24, monedaCompra: 'PEN', peso: 0, valorDec: 0 } };
+    productoRepo.findOne.mockResolvedValue(producto);
+    productoRepo.findOneOrFail.mockResolvedValue(producto);
+    await service.update(31, { valor: { valorProducto: 20, monedaCompra, costoEnvio: 4 } } as any);
+    expect(valorRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      monedaCompra, valorSoles: monedaCompra === 'USD' ? 74 : 20,
+      costoTotalProrrateado: monedaCompra === 'USD' ? 78 : 24,
+    }));
   });
 
   it('editar datos comerciales de un accesorio conserva costos guardados incluso con envío agrupado', async () => {

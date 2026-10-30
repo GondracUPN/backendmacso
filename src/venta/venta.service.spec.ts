@@ -26,6 +26,33 @@ function quoteFixture() {
   return { service, lots, products, inventory };
 }
 
+test.each([['PEN', 12], ['USD', 39]])('cotiza y vende accesorios simples %s con costo unitario convertido a 3.7 más envío', async (monedaCompra, unitCost) => {
+  const { service, lots } = quoteFixture();
+  Object.assign(lots[0], { soloInventario: true, valor: { valorProducto: 20, monedaCompra,
+    valorSoles: 999, costoTotal: 999, costoTotalProrrateado: 999, costoEnvio: 4 } });
+  const quote = await service.quoteAccessory({ productoId: 101, cantidad: 2, precioUnitario: 50 });
+  expect(quote.costoTotal).toBe(Number(unitCost) * 2);
+  expect(quote.precioMinimo).toBe(Math.ceil(Number(unitCost) * 1.3 * 100 - 1e-9) / 100);
+  expect(quote.precioUnitarioSugerido).toBe(Math.ceil(Number(unitCost) * 1.5 * 100 - 1e-9) / 100);
+  expect(quote.lotes).toEqual([{ productoId: 101, cantidad: 2, costoUnitario: unitCost }]);
+  const sale = await service.create({ productoId: 101, cantidad: 2, tipoCambio: 1,
+    fechaVenta: '2026-10-25', precioVenta: 100, cotizacionToken: quote.cotizacionToken });
+  expect(sale.precioVenta - sale.ganancia).toBe(Number(unitCost) * 2);
+});
+
+test('accesorios con referencia y guía conservan precios guardados y sugerencia anterior al costo +30%', async () => {
+  const { service, lots, inventory } = quoteFixture();
+  Object.assign(lots[0], { soloInventario: true, referenciaId: 55, origen: 'accesorio_importado',
+    tracking: [{ estado: 'recogido', fechaRecogido: '2026-10-25' }] });
+  expect(await service.quoteAccessory({ productoId: 101, cantidad: 1 })).toMatchObject({
+    precioMinimo: 18, precioUnitarioSugerido: 25,
+  });
+  inventory.find.mockResolvedValue([]);
+  expect(await service.quoteAccessory({ productoId: 101, cantidad: 1 })).toMatchObject({
+    precioMinimo: null, precioUnitarioSugerido: 13,
+  });
+});
+
 test('cotizar 2 a S/10 y 3 a S/15 cuesta S/65 y vender conserva ese costo sin consumir al otro comprador', async () => {
   const { service, lots } = quoteFixture();
   const quote = await service.quoteAccessory({ productoId: 101, cantidad: 5, comprador: 'Gonzalo', precioUnitario: 25 });

@@ -1,5 +1,6 @@
 import { lockAccessoryTopology } from './accessory-locks';
 import { allocateAccessory, accessoryOwner, accessoryGroupWhere, sameAccessoryGroup, resolveAccessoryPrices } from './accessory-quote';
+import { accessoryLotCost, isSimpleAccessory } from '../producto/accessory-cost';
 import { QuoteAccessoryDto } from './dto/quote-accessory.dto';
 import { Inventario } from '../inventario/inventario.entity';
 import {
@@ -97,7 +98,7 @@ const getProductCost = (producto?: Producto | null) => {
   );
 };
 export const getAccessoryUnitCost = (producto?: Producto | null) =>
-  getProductCost(producto) / Math.max(1, Number(producto?.stockInicial || 1));
+  (producto ? accessoryLotCost(producto) ?? 0 : 0) / Math.max(1, Number(producto?.stockInicial || 1));
 const accessoryFamily = (detail: any): string => {
   const value = normalizeComparable([
     detail?.modelo,
@@ -1607,10 +1608,17 @@ export class VentaService {
     const group = lots.filter((lot) => sameAccessoryGroup(lot, reference));
     const fichas = await this.productoRepo.manager.getRepository(Inventario).find({ where: { productoId: In(group.map((lot) => lot.id)) } });
     const prices = resolveAccessoryPrices(reference, fichas);
-    const { precioPublicado, precioMinimo, precioMayorista, cantidadMinimaMayorista } = prices;
+    const { precioPublicado, precioMayorista, cantidadMinimaMayorista } = prices;
+    const simpleAccessory = isSimpleAccessory(reference);
+    const unitCost = allocation.costoTotal == null ? null : allocation.costoTotal / dto.cantidad;
+    const precioMinimo = simpleAccessory
+      ? (unitCost == null ? null : Math.ceil(unitCost * 1.3 * 100 - 1e-9) / 100)
+      : prices.precioMinimo;
     const wholesale = precioMayorista != null && cantidadMinimaMayorista != null && dto.cantidad >= cantidadMinimaMayorista;
-    const precioUnitarioSugerido = (wholesale ? precioMayorista : precioPublicado) ?? (allocation.costoTotal == null ? null
-      : Math.ceil(allocation.costoTotal / dto.cantidad * 1.3 * 100) / 100);
+    const precioUnitarioSugerido = simpleAccessory
+      ? (unitCost == null ? null : Math.ceil(unitCost * 1.5 * 100 - 1e-9) / 100)
+      : (wholesale ? precioMayorista : precioPublicado) ?? (allocation.costoTotal == null ? null
+        : Math.ceil(allocation.costoTotal / dto.cantidad * 1.3 * 100) / 100);
     const precioUnitario = dto.precioUnitario ?? precioUnitarioSugerido;
     const total = precioUnitario == null ? null : Number((precioUnitario * dto.cantidad).toFixed(2));
     const gananciaBruta = total == null || allocation.costoTotal == null ? null : Number((total - allocation.costoTotal).toFixed(2));
