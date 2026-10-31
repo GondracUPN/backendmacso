@@ -87,9 +87,23 @@ test('prioridad de precios: referencia, ficha propia y ficha más reciente con v
 test.each([1, 15])('operativo mantiene tres consultas para %s grupos y convierte la venta neta', async (count) => {
  const lots=Array.from({length:count},(_,i)=>({id:i+1,tipo:'accesorios',referenciaId:i+1,codigoInventario:100+i,vendedor:'Gonzalo',stockActual:2,stockInicial:2,valor:{costoTotal:20}}));
  const productFind=jest.fn(async()=>lots),inventoryFind=jest.fn(async()=>[]);
- const query=jest.fn(async(_sql: string)=>[{grupo:'ref:1',cantidad:'1',total:'30',precioUnitario:'30',fechaVenta:'2026-10-25'}]);
+ const query=jest.fn(async(_sql: string)=>[{grupo:'1',cantidad:'1',total:'30',precioUnitario:'30',fechaVenta:'2026-10-25'}]);
  const sold=jest.fn();const ds:any={query,getRepository:entity=>({find:entity===Producto?productFind:inventoryFind})};
  const rows=await new AccesoriosService(ds,{} as any,{findSimilarSold:sold} as any).operativo();
  expect(rows).toHaveLength(count);expect(productFind).toHaveBeenCalledTimes(1);expect(inventoryFind).toHaveBeenCalledTimes(1);expect(query).toHaveBeenCalledTimes(1);expect(sold).not.toHaveBeenCalled();
  expect(query.mock.calls[0]?.[0] || '').toContain('DISTINCT ON');expect(rows[0].ultimaVenta).toMatchObject({cantidad:1,total:30,precioUnitario:30});
+});
+
+test('operativo separa lotes con código heredado y fotos distintas, incluidos sus precios y últimas ventas', async () => {
+ const lots=[471,472].map(id=>({id,tipo:'accesorios',codigoInventario:471,vendedor:'Gonzalo',stockInicial:1,stockActual:1,valor:{costoTotal:20}}));
+ const fichas=lots.map((lot,index)=>({productoId:lot.id,fotoUrl:`/${lot.id}.jpg`,primerPrecioSoles:30+index*10}));
+ const ds:any={getRepository:entity=>({find:async()=>entity===Producto?lots:fichas}),query:async()=>[
+  {grupo:'471',id:1,cantidad:'1',total:'30',precioUnitario:'30',fechaVenta:'2026-10-25'},
+  {grupo:'472',id:2,cantidad:'1',total:'40',precioUnitario:'40',fechaVenta:'2026-10-26'}]};
+ const rows=await new AccesoriosService(ds,{} as any,{} as any).operativo();
+ expect(rows).toHaveLength(2);
+ expect(rows.map(row=>row.lotes.map(lot=>lot.id))).toEqual([[471],[472]]);
+ expect(rows.map(row=>row.disponible)).toEqual([1,1]);
+ expect(rows.map(row=>row.precioPublicado)).toEqual([30,40]);
+ expect(rows.map(row=>row.ultimaVenta.total)).toEqual([30,40]);
 });

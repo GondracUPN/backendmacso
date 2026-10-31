@@ -1,5 +1,5 @@
 import { lockAccessoryTopology } from './accessory-locks';
-import { allocateAccessory, accessoryOwner, accessoryGroupWhere, sameAccessoryGroup, resolveAccessoryPrices } from './accessory-quote';
+import { allocateAccessory, accessoryOwner, accessoryGroupWhere, sameAccessoryInventoryGroup, resolveAccessoryPrices } from './accessory-quote';
 import { accessoryLotCost, isSimpleAccessory } from '../producto/accessory-cost';
 import { QuoteAccessoryDto } from './dto/quote-accessory.dto';
 import { Inventario } from '../inventario/inventario.entity';
@@ -1604,10 +1604,10 @@ export class VentaService {
       where: accessoryGroupWhere(reference),
       relations: ['valor', 'tracking'],
     });
-    const allocation = allocateAccessory(lots, reference, dto.cantidad, dto.loteInicialId);
-    const group = lots.filter((lot) => sameAccessoryGroup(lot, reference));
-    const fichas = await this.productoRepo.manager.getRepository(Inventario).find({ where: { productoId: In(group.map((lot) => lot.id)) } });
-    const prices = resolveAccessoryPrices(reference, fichas);
+    const fichas = await this.productoRepo.manager.getRepository(Inventario).find({ where: { productoId: In(lots.map((lot) => lot.id)) } });
+    const group = lots.filter((lot) => sameAccessoryInventoryGroup(lot, reference, fichas));
+    const allocation = allocateAccessory(group, reference, dto.cantidad, dto.loteInicialId);
+    const prices = resolveAccessoryPrices(reference, fichas.filter((ficha) => group.some((lot) => lot.id === ficha.productoId)));
     const { precioPublicado, precioMayorista, cantidadMinimaMayorista } = prices;
     const simpleAccessory = isSimpleAccessory(reference);
     const unitCost = allocation.costoTotal == null ? null : allocation.costoTotal / dto.cantidad;
@@ -1640,7 +1640,8 @@ export class VentaService {
       where: accessoryGroupWhere(requested),
       relations: ['valor', 'tracking'],
     });
-    const validLots = lots.filter((lot) => isAccessoryStock(lot.tipo) && sameAccessoryGroup(lot, requested));
+    const fichas = await this.productoRepo.manager.getRepository(Inventario).find({ where: { productoId: In(lots.map((lot) => lot.id)) } });
+    const validLots = lots.filter((lot) => isAccessoryStock(lot.tipo) && sameAccessoryInventoryGroup(lot, requested, fichas));
     const lotIds = validLots.map((lot) => lot.id);
     const sales = lotIds.length
       ? await this.ventaRepo.find({
@@ -1831,9 +1832,10 @@ export class VentaService {
               relations: ['valor', 'tracking'],
             })
           : [];
+        const fichas = await manager.getRepository(Inventario).find({ where: { productoId: In(lockedIds) } });
         const groupLots = groupCandidates.filter((candidate) => isAccessoryStock(candidate.tipo)
           && !candidate.archivadoAt && candidate.cierreMotivo !== 'no_comercializable'
-          && sameAccessoryGroup(candidate, lockedBase));
+          && sameAccessoryInventoryGroup(candidate, lockedBase, fichas));
         const locked = groupLots.find((lot) => lot.id === producto.id);
         if (!locked?.valor) throw new BadRequestException('El accesorio no tiene costo asociado.');
         const purchaseOwner = normalizeSeller(locked.vendedor);

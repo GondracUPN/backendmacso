@@ -284,12 +284,13 @@ describe('ProductoService', () => {
     expect(query.where).toHaveBeenCalledWith('p.soloInventario = false');
   });
 
-  it('crea una recompra separada con el mismo código visible mientras quede stock', async () => {
+  it.each([1, 3])('una compra simple independiente de %s unidades no se une por título aunque quede stock', async (cantidad) => {
     const existing = {
       id: 12,
       tipo: 'accesorios',
       estado: 'nuevo',
-      vendedor: 'Gonzalo',
+      vendedor: 'Renato',
+      soloInventario: true,
       accesorios: [],
       stockInicial: 5,
       stockActual: 2,
@@ -322,9 +323,9 @@ describe('ProductoService', () => {
       tipo: 'accesorios',
       estado: 'nuevo',
       vendedor: 'Renato',
-      stockInicial: 3,
-      stockActual: 3,
-      codigoInventario: 12,
+      stockInicial: cantidad,
+      stockActual: cantidad,
+      codigoInventario: 1,
       detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
       valor: { valorProducto: 60 },
       tracking: [{ id: 2, estado: 'comprado_sin_tracking' }],
@@ -334,22 +335,21 @@ describe('ProductoService', () => {
       tipo: 'accesorios',
       estado: 'nuevo',
       vendedor: 'Renato',
-      cantidad: 3,
+      soloInventario: true,
+      cantidad,
       detalle: { gama: 'Cable', modelo: 'Cable USB-C a MagSafe 3 – 2 m' },
       valor: { valorProducto: 60, valorDec: 5, peso: 0.5, fechaCompra: '2026-08-13' },
     } as any);
 
-    expect(result).toEqual(expect.objectContaining({ id: 40, codigoInventario: 12, stockActual: 3 }));
+    expect(result).toEqual(expect.objectContaining({ id: 40, codigoInventario: 1, stockActual: cantidad }));
     expect(existing).toEqual(expect.objectContaining({ id: 12, stockInicial: 5, stockActual: 2 }));
     expect(valorRepo.save).toHaveBeenCalledTimes(1);
     expect(valorRepo.update).toHaveBeenCalledWith(22, expect.objectContaining({
       costoEnvioProrrateado: expect.any(Number), costoTotalProrrateado: expect.any(Number),
     }));
-    expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ codigoInventario: 12, stockInicial: 3, stockActual: 3 }));
-    expect(trackingRepo.save).toHaveBeenCalledWith(expect.objectContaining({
-      productoId: 40,
-      estado: 'comprado_sin_tracking',
-    }));
+    expect(productoRepo.save).toHaveBeenCalledWith(expect.objectContaining({ codigoInventario: 1, stockInicial: cantidad, stockActual: cantidad }));
+    expect(productoRepo.createQueryBuilder).not.toHaveBeenCalled();
+    expect(trackingRepo.save).not.toHaveBeenCalled();
     expect(detalleRepo.save).toHaveBeenCalled();
   });
 
@@ -361,6 +361,25 @@ describe('ProductoService', () => {
         distribucion: [{ vendedor: 'Gonzalo', cantidad: 2 }],
       }),
     ).rejects.toThrow('La distribución debe sumar 3 productos');
+  });
+
+  it('conserva un único stock para unidades creadas explícitamente en el mismo lote', async () => {
+    productoRepo.find.mockResolvedValue([{ id: 50, codigoInventario: 1 }]);
+    const saved: any[] = [];
+    productoRepo.save.mockImplementation(async (value) => {
+      const product = { id: 60 + saved.length, ...value, tracking: [] };
+      saved.push(product);
+      return product;
+    });
+    productoRepo.findOneOrFail.mockImplementation(async ({ where }) => saved.find((p) => p.id === where.id));
+    detalleRepo.save.mockImplementation(async (value) => ({ id: 20, ...value }));
+    const result = await service.createLote({
+      producto: { tipo: 'accesorios', estado: 'nuevo', soloInventario: true, detalle: { modelo: 'Cable' } },
+      cantidad: 3, distribucion: [{ vendedor: 'Gonzalo', cantidad: 3 }],
+    });
+    expect(result).toHaveLength(3);
+    expect(result.map((p) => p.codigoInventario)).toEqual([2, 2, 2]);
+    expect(result.reduce((total, p) => total + p.stockActual, 0)).toBe(3);
   });
 
   it('crea un producto por cada unidad distribuida', async () => {

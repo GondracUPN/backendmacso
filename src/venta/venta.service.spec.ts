@@ -18,7 +18,8 @@ function quoteFixture() {
     save: jest.fn(async (value) => value), createQueryBuilder: jest.fn(() => builder) };
   const recorded: any[] = [];
   const sales: any = { find: jest.fn(async () => recorded), findOne: jest.fn(async () => null), create: jest.fn((value) => value), save: jest.fn(async (value) => { const saved = { id: 200, ...value }; recorded.push(saved); return saved; }) };
-  const inventory: any = { find: jest.fn(async () => [{ productoId: 101, primerPrecioSoles: 25, ultimoPrecioSoles: 18 }]) };
+  const inventory: any = { find: jest.fn(async () => [{ productoId: 101, fotoUrl: '/cable.jpg', primerPrecioSoles: 25, ultimoPrecioSoles: 18 },
+    { productoId: 102, fotoUrl: '/cable.jpg' }, { productoId: 103, fotoUrl: '/cable.jpg' }]) };
   const manager: any = { getRepository: (entity) => entity === Producto ? products : entity === Inventario ? inventory : sales,
     transaction: async (run) => run(manager) };
   products.manager = manager;
@@ -68,6 +69,20 @@ test('cotizar 2 a S/10 y 3 a S/15 cuesta S/65 y vender conserva ese costo sin co
   expect(lots.map((lot) => lot.stockActual)).toEqual([0, 0, 9]);
 });
 
+test.each([['/a.jpg', '/b.jpg'], [null, null]])('cotización, venta y resumen separan códigos heredados con fotos %s y %s', async (a, b) => {
+  const { service, lots, inventory } = quoteFixture();
+  lots[0].stockInicial = lots[0].stockActual = 1;
+  lots[1].stockInicial = lots[1].stockActual = 1;
+  inventory.find.mockResolvedValue([{ productoId: 101, fotoUrl: a }, { productoId: 102, fotoUrl: b }]);
+  const quote = await service.quoteAccessory({ productoId: 101, cantidad: 1 });
+  expect(quote.disponible).toBe(1);
+  expect(quote.lotes.map((lot) => lot.productoId)).toEqual([101]);
+  await expect(service.quoteAccessory({ productoId: 101, cantidad: 2 })).rejects.toThrow('Quedan 1');
+  await expect(service.create({ productoId: 101, cantidad: 2, tipoCambio: 1, fechaVenta: '2026-10-25', precioVenta: 50 })).rejects.toThrow('Quedan 1');
+  expect(lots[1].stockActual).toBe(1);
+  expect(await service.getAccessorySalesSummary(101)).toMatchObject({ unidadesCompradas: 1, unidadesDisponibles: 1 });
+});
+
 test.each(['stock', 'cost', 'referencia'])('rechaza una cotización cuyo %s cambió antes de consumir stock', async (change) => {
   const { service, lots, products } = quoteFixture();
   const quote = await service.quoteAccessory({ productoId: 101, cantidad: 1 });
@@ -94,6 +109,7 @@ test('stock cero seguido de reposición mantiene el grupo de referencia en cotiz
 
 test('la cotización usa precio de otro lote y aplica mayorista desde el umbral de la referencia', async () => {
   const { service, lots, inventory } = quoteFixture();
+  lots.forEach((lot) => { lot.referenciaId = 20; });
   inventory.find.mockResolvedValue([{ productoId: 102, primerPrecioSoles: 25, ultimoPrecioSoles: 18, updatedAt: '2026-10-20' }]);
   expect(await service.quoteAccessory({ productoId: 101, cantidad: 1 })).toMatchObject({ precioPublicado: 25, precioMinimo: 18 });
   lots[0].referencia = { precioPublicadoSoles: 30, precioMinimoSoles: 20, precioMayoristaSoles: 22, cantidadMinimaMayorista: 3 };
@@ -185,7 +201,8 @@ describe('VentaService.create', () => {
     const manager = {
       getRepository: jest.fn((entity) => entity === Producto
         ? transactionProductRepo
-        : transactionVentaRepo),
+        : entity === Inventario ? { find: async () => [{ productoId: 12, fotoUrl: '/same.jpg' }, { productoId: 40, fotoUrl: '/same.jpg' }] }
+          : transactionVentaRepo),
     };
     const productoRepo = {
       findOne: jest.fn(async () => locked),

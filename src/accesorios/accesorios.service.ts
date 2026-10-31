@@ -8,7 +8,7 @@ import { ProductoService } from '../producto/producto.service';
 import { Producto } from '../producto/producto.entity';
 import { Inventario } from '../inventario/inventario.entity';
 import { operationHash } from '../venta/operation-hash';
-import { accessoryAvailable, accessoryIdentity, accessoryOwner, allocateAccessory, resolveAccessoryPrices } from '../venta/accessory-quote';
+import { accessoryAvailable, accessoryInventoryIdentity, accessoryOwner, allocateAccessory, resolveAccessoryPrices } from '../venta/accessory-quote';
 import { VentaService } from '../venta/venta.service';
 
 @Injectable()
@@ -116,24 +116,25 @@ export class AccesoriosService {
     const fichas = lots.length ? await this.ds.getRepository(Inventario).find({ where: { productoId: In(lots.map((lot) => lot.id)) } }) : [];
     const groups = new Map<string, Producto[]>();
     for (const lot of lots.filter((row) => !row.archivadoAt && !row.cierreMotivo)) {
-      const key = accessoryIdentity(lot) + ':' + accessoryOwner(lot.vendedor);
+      const key = accessoryInventoryIdentity(lot, fichas) + ':' + accessoryOwner(lot.vendedor);
       groups.set(key, [...(groups.get(key) || []), lot]);
     }
-    const latest = await this.ds.query(`SELECT DISTINCT ON (CASE WHEN p."referenciaId" IS NOT NULL THEN 'ref:'||p."referenciaId"::text ELSE 'code:'||COALESCE(p."codigoInventario",p.id)::text END)
-      CASE WHEN p."referenciaId" IS NOT NULL THEN 'ref:'||p."referenciaId"::text ELSE 'code:'||COALESCE(p."codigoInventario",p.id)::text END AS grupo,
+    const latest = await this.ds.query(`SELECT DISTINCT ON (p.id)
+      p.id::text AS grupo,
       v.id, v."productoId", v."fechaVenta"::text AS "fechaVenta", (v.cantidad-COALESCE(v."cantidadDevuelta",0)) AS cantidad,
       (v."precioVenta"-COALESCE(v."precioDevuelto",0)) AS total,
       (v."precioVenta"-COALESCE(v."precioDevuelto",0))/(v.cantidad-COALESCE(v."cantidadDevuelta",0)) AS "precioUnitario"
       FROM venta v JOIN producto p ON p.id=v."productoId"
       WHERE lower(p.tipo)='accesorios' AND v."estadoComercial" IS DISTINCT FROM 'cancelada' AND v.cantidad>COALESCE(v."cantidadDevuelta",0)
-      ORDER BY CASE WHEN p."referenciaId" IS NOT NULL THEN 'ref:'||p."referenciaId"::text ELSE 'code:'||COALESCE(p."codigoInventario",p.id)::text END,
+      ORDER BY p.id,
       v."fechaVenta" DESC, v.id DESC`);
     const latestByGroup = new Map<string, any>(latest.map((sale) => [sale.grupo, { ...sale, cantidad: Number(sale.cantidad), total: Number(sale.total), precioUnitario: Number(sale.precioUnitario) }]));
     return [...groups.entries()].map(([key, group]) => {
       const first = group.find((lot) => accessoryAvailable(lot) && lot.stockActual > 0) || group[0];
       const disponible = group.filter(accessoryAvailable).reduce((sum, lot) => sum + Number(lot.stockActual), 0);
       const allocation = disponible > 0 ? allocateAccessory(group, first, 1) : null;
-      const last = latestByGroup.get(accessoryIdentity(first)) ?? null;
+      const last = group.map((lot) => latestByGroup.get(String(lot.id))).filter(Boolean)
+        .sort((a, b) => String(b.fechaVenta).localeCompare(String(a.fechaVenta)) || Number(b.id) - Number(a.id))[0] ?? null;
       const prices = resolveAccessoryPrices(first, fichas.filter((ficha) => group.some((lot) => lot.id === ficha.productoId)));
       return { key, referencia: first.referencia ?? null, referenciaId: first.referenciaId ?? null, codigo: first.codigoInventario || first.id,
         comprador: first.vendedor, nombre: [first.referencia?.modelo || first.detalle?.modelo, first.referencia?.variante || first.detalle?.descripcionOtro].filter(Boolean).join(' '),

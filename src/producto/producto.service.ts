@@ -140,7 +140,13 @@ export class ProductoService {
     if (data.soloInventario && !isAccessoryStock(data.tipo)) {
       throw new BadRequestException('Solo los accesorios pueden quedar exclusivamente en Inventario.');
     }
-    if (data.referenciaId && !this.referenceTransaction) return this.productoRepo.manager.transaction((em) => this.conManager(em).create(data));
+    if (isAccessoryStock(data.tipo) && !this.referenceTransaction && !this.loteTransaction && this.productoRepo.manager) {
+      return this.productoRepo.manager.transaction((em) => this.conManager(em).create(data));
+    }
+    if (isAccessoryStock(data.tipo) && this.productoRepo.manager) {
+      await lockAccessoryTopology(this.productoRepo.manager);
+      await this.productoRepo.manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['accesorios:codigo-inventario']);
+    }
     if (data.referenciaId) {
       await lockAccessoryTopology(this.productoRepo.manager);
       await this.productoRepo.manager.query('SELECT id FROM accesorio_referencia WHERE id = $1 FOR UPDATE', [data.referenciaId]);
@@ -157,7 +163,7 @@ export class ProductoService {
     await this.assertDetalleCatalogo(data.tipo, rawDetalle);
 
     const accessoryDisplayCode = isAccessoryStock(data.tipo)
-      ? (this.loteAccessoryCode !== undefined ? this.loteAccessoryCode : await this.findAccessoryDisplayCode(data, rawDetalle))
+      ? (this.loteAccessoryCode !== undefined ? this.loteAccessoryCode : await this.findAccessoryDisplayCode(data))
       : null;
 
     // 1) Guardar detalle
@@ -272,36 +278,19 @@ export class ProductoService {
     return this.applyProrrateadoView(finalProd);
   }
 
-  private normalizeAccessoryMatch(value: unknown): string {
-    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  }
-
   private async findAccessoryDisplayCode(
     data: CreateProductoDto,
-    rawDetalle: Record<string, any> | null,
   ): Promise<number | null> {
     if (data.referenciaId) {
       const previous = await this.productoRepo.findOne({ where: { referenciaId: data.referenciaId }, order: { id: 'ASC' }, loadEagerRelations: false });
       return previous ? Number(previous.codigoInventario || previous.id) : null;
     }
-    const model = this.normalizeAccessoryMatch(rawDetalle?.modelo);
-    if (!model) return null;
-
-    const existing = await this.productoRepo.createQueryBuilder('p')
-      .leftJoin('p.detalle', 'd')
-      .select(['p.id', 'p.codigoInventario'])
-      .where('p.tipo = :tipo', { tipo: data.tipo })
-      .andWhere('p.referenciaId IS NULL')
-      .andWhere('p.stockActual > 0')
-      .andWhere("regexp_replace(lower(trim(COALESCE(d.modelo, ''))), '\\s+', ' ', 'g') = :model", { model })
-      .andWhere("regexp_replace(lower(trim(COALESCE(p.estado, ''))), '\\s+', ' ', 'g') = :estado", { estado: this.normalizeAccessoryMatch(data.estado) })
-      .andWhere('p.soloInventario = :solo', { solo: Boolean(data.soloInventario) })
-      .orderBy('p.id', 'ASC').getOne();
-    if (existing) return Number(existing.codigoInventario || existing.id);
+    // Cada alta independiente tiene su propio stock aunque repita el título.
+    // Solo createLote y una referencia explícita pueden compartir código.
     const codes = await this.productoRepo.find({
-      where: { tipo: data.tipo }, select: { codigoInventario: true }, loadEagerRelations: false,
+      where: { tipo: data.tipo }, select: { id: true, codigoInventario: true }, loadEagerRelations: false,
     });
-    const usedCodes = new Set(codes.map((p) => Number(p.codigoInventario)).filter((n) => Number.isInteger(n) && n > 0));
+    const usedCodes = new Set(codes.map((p) => Number(p.codigoInventario || p.id)).filter((n) => Number.isInteger(n) && n > 0));
     let nextCode = 1;
     while (usedCodes.has(nextCode)) nextCode += 1;
     return nextCode;
@@ -328,7 +317,11 @@ export class ProductoService {
     }
 
     if (isAccessoryStock(data.producto.tipo)) {
-      this.loteAccessoryCode = await this.findAccessoryDisplayCode(data.producto, data.producto.detalle as any || null);
+      if (this.productoRepo.manager) {
+        await lockAccessoryTopology(this.productoRepo.manager);
+        await this.productoRepo.manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['accesorios:codigo-inventario']);
+      }
+      this.loteAccessoryCode = await this.findAccessoryDisplayCode(data.producto);
     }
     const repartirImporte = (total: number, cantidad: number): number[] => {
       const totalCentavos = Math.round(Number(total || 0) * 100);
