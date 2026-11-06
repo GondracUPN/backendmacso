@@ -129,7 +129,7 @@ export class EventoReembolsoDto {
   @IsDateString() fecha: string;
   @IsOptional() @IsNumber() @Min(0) monto?: number;
   @IsOptional() @IsIn(['PEN', 'USD']) moneda?: 'PEN' | 'USD';
-  @ValidateIf((o) => o.moneda === 'USD' && o.monto != null)
+  @IsOptional()
   @IsNumber()
   @IsPositive()
   tipoCambio?: number;

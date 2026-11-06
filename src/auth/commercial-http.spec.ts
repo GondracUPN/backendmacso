@@ -8,6 +8,8 @@ import { VentaController } from '../venta/venta.controller';
 import { VentaService } from '../venta/venta.service';
 import { CatalogSalesIntegrationController } from '../catalog-sales-integration/catalog-sales-integration.controller';
 import { CatalogSalesIntegrationService } from '../catalog-sales-integration/catalog-sales-integration.service';
+import { AccesoriosCatalogoController, AccesoriosCatalogoSyncController } from '../accesorios/accesorios-catalogo.controller';
+import { AccesoriosCatalogoService } from '../accesorios/accesorios-catalogo.service';
 
 describe('permisos HTTP comerciales (sin base de datos)', () => {
   let app: any;
@@ -19,9 +21,10 @@ describe('permisos HTTP comerciales (sin base de datos)', () => {
     previous = process.env.CATALOG_SYNC_SECRET;
     process.env.CATALOG_SYNC_SECRET = 'audit-catalog-secret';
     const module = await Test.createTestingModule({
-      controllers: [VentaController, CatalogSalesIntegrationController],
+      controllers: [VentaController, CatalogSalesIntegrationController, AccesoriosCatalogoController, AccesoriosCatalogoSyncController],
       providers: [JwtStrategy, { provide: ConfigService, useValue: { get: () => 'audit-http-secret' } },
         { provide: VentaService, useValue: svc },
+        { provide: AccesoriosCatalogoService, useValue: { list: async () => [], select: async () => [], withdrawFromCatalog: async () => ({ok:true,seleccionado:false}) } },
         { provide: CatalogSalesIntegrationService, useValue: { receive: async () => ({ ok: true }) } }],
     }).compile();
     app = module.createNestApplication(); await app.init();
@@ -42,6 +45,17 @@ describe('permisos HTTP comerciales (sin base de datos)', () => {
   });
   test('admin puede escribir', async () => {
     await request(app.getHttpServer()).post('/ventas').auth(token('admin'), { type: 'bearer' }).send({}).expect(201);
+  });
+  test('selección y listado de publicación de accesorios requieren admin', async () => {
+    await request(app.getHttpServer()).post('/accesorios/catalogo/seleccion').send({}).expect(401);
+    await request(app.getHttpServer()).post('/accesorios/catalogo/seleccion').auth(token('user'), { type: 'bearer' }).send({}).expect(403);
+    await request(app.getHttpServer()).get('/accesorios/catalogo').auth(token('user'), { type: 'bearer' }).expect(403);
+    await request(app.getHttpServer()).post('/accesorios/catalogo/seleccion').auth(token('admin'), { type: 'bearer' }).send({ keys: ['lot-10'], seleccionado: true }).expect(201);
+  });
+  test('retiro de accesorios exige el secreto de integración, sin JWT de usuario', async () => {
+    await request(app.getHttpServer()).post('/integrations/catalog-accessories/withdraw').send({sku:'acc-lot-509'}).expect(401);
+    await request(app.getHttpServer()).post('/integrations/catalog-accessories/withdraw').auth(token('admin'), {type:'bearer'}).send({sku:'acc-lot-509'}).expect(401);
+    await request(app.getHttpServer()).post('/integrations/catalog-accessories/withdraw').set('x-sync-secret','audit-catalog-secret').send({sku:'acc-lot-509'}).expect(201).expect({ok:true,seleccionado:false});
   });
   test('catálogo requiere su credencial; funciona sin JWT con credencial válida', async () => {
     await request(app.getHttpServer()).post('/integrations/catalog-sales/events').send({}).expect(401);

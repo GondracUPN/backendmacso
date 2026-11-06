@@ -1,3 +1,4 @@
+import { shouldSynchronizeLocalDatabase } from './db/local-schema';
 // app.module.ts
 import { Module } from '@nestjs/common';
 import { CacheModule } from '@nestjs/cache-manager';
@@ -25,6 +26,7 @@ import { EbayPawn } from './ebay-pawn.entity';
 import { EbaySearchItem } from './ebay-search-item.entity';
 import { EbaySearchState } from './ebay-search-state.entity';
 import { EbayViewedItem } from './ebay-viewed-item.entity';
+import { EbayBlockedStore } from './ebay-blocked-store.entity';
 import { CatalogSalesIntegrationModule } from './catalog-sales-integration/catalog-sales-integration.module';
 import { FinanzasModule } from './finanzas/finanzas.module';
 import { PerformanceSqlLogger } from './common/request-performance';
@@ -48,7 +50,11 @@ import { AppCacheInvalidator } from './common/app-cache';
         const nodeEnv = (cfg.get<string>('NODE_ENV') || process.env.NODE_ENV || '').toLowerCase();
         const isProd = nodeEnv === 'production' || nodeEnv === 'prod';
         const syncFlag = (cfg.get<string>('DB_SYNC') || '').toLowerCase();
-        // Safety-first: never sync unless explicitly requested outside production.
+        // Flujo de esquema del proyecto:
+        // - Local (NODE_ENV=development, BD de pruebas): DB_SYNC=true en backend/.env;
+        //   TypeORM synchronize aplica los cambios de entidades. No se crean migraciones para local.
+        // - Produccion (NODE_ENV=production): synchronize siempre apagado; el esquema se gestiona
+        //   con migraciones (start:deploy) aunque DB_SYNC=true.
         const allowSync = syncFlag === 'true' && !isProd;
 
         if (isProd && syncFlag === 'true') {
@@ -63,7 +69,7 @@ import { AppCacheInvalidator } from './common/app-cache';
           autoLoadEntities: true,
           // Ensure all entities are picked up in dev/prod
           entities: [join(__dirname, '/**/*.entity{.ts,.js}')],
-          // Solo sincroniza si DB_SYNC=true y nunca en produccion.
+          // Desarrollo local sincroniza entidades; DB_SYNC=false lo desactiva. Nunca en producción.
           synchronize: allowSync,
           // Fuerza a usar el schema donde ya estan tus tablas.
           schema: cfg.get<string>('DB_SCHEMA') || 'public',
@@ -73,7 +79,7 @@ import { AppCacheInvalidator } from './common/app-cache';
         };
       },
     }),
-    TypeOrmModule.forFeature([EbayPawn, EbaySearchItem, EbaySearchState, EbayViewedItem]),
+    TypeOrmModule.forFeature([EbayPawn, EbaySearchItem, EbaySearchState, EbayViewedItem, EbayBlockedStore]),
     AuthModule,
     GastosModule,
     WalletModule,

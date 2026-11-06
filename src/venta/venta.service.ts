@@ -1,3 +1,4 @@
+import { SaldosClientesService } from '../finanzas/saldos-clientes.service';
 import { lockAccessoryTopology } from './accessory-locks';
 import { allocateAccessory, accessoryOwner, accessoryGroupWhere, sameAccessoryInventoryGroup, resolveAccessoryPrices } from './accessory-quote';
 import { accessoryLotCost, isSimpleAccessory } from '../producto/accessory-cost';
@@ -222,6 +223,7 @@ export type ListVentasParams = {
 @Injectable()
 export class VentaService {
   private transactionManager?: EntityManager;
+  private ventaConSaldo = false;
 
   // Cada operación usa su propia instancia y los repositorios de la transacción.
   // El ledger recibe el mismo manager para que sus escrituras también se reviertan.
@@ -238,7 +240,7 @@ export class VentaService {
         manager.getRepository(Venta), manager.getRepository(VentaAdelanto),
         manager.getRepository(Producto), manager.getRepository(ProductoValor), this.cache,
         this.gastoRepo ? manager.getRepository(Gasto) : undefined,
-        this.userRepo ? manager.getRepository(User) : undefined, this.ledger,
+        this.userRepo ? manager.getRepository(User) : undefined, this.ledger, this.saldos,
       );
       scoped.transactionManager = manager;
       return scoped;
@@ -258,6 +260,7 @@ export class VentaService {
     @Optional() @InjectRepository(User)
     private readonly userRepo?: Repository<User>,
     @Optional() private readonly ledger?: FinanzasLedgerService,
+    @Optional() private readonly saldos?: SaldosClientesService,
   ) {}
 
   private async resolveIncomeUser(owner: 'gonzalo' | 'renato'): Promise<User | null> {
@@ -370,6 +373,11 @@ export class VentaService {
       }
       incomeBank = cuenta.legacyCodigo || cuenta.codigo;
     }
+    if (this.ventaConSaldo) return;
+    if (venta.clienteId && this.transactionManager) {
+      const [credito] = await this.transactionManager.query("SELECT id FROM venta_pagos WHERE venta_id=$1 AND (origen='saldo_cliente' OR saldo_convertido>0) LIMIT 1",[venta.id]);
+      if (credito) return;
+    }
     await this.syncSaleIncomeRows(venta, incomeBank, paymentType, saleSku, submittedParts, destination);
     if (venta?.id && this.ledger) {
       const advance = submittedParts === undefined && paymentType && typeof this.adelantoRepo?.findOne === 'function'
@@ -387,8 +395,7 @@ export class VentaService {
     destination?: { cuentaId?: number; metodo?: string },
   ): Promise<void> {
     if (!this.gastoRepo || !this.userRepo) return;
-    // Una venta anulada no vuelve a generar ingresos en Gastos.
-    if (venta.anuladaAt) return;
+    if (venta.anuladaAt || venta.estadoComercial === 'cancelada') return;
     const seller = normalizeSeller(venta.vendedor);
     const owners: Array<{ owner: 'gonzalo' | 'renato'; share: number }> = seller === 'ambos'
       ? [{ owner: 'gonzalo', share: 0.5 }, { owner: 'renato', share: 0.5 }]
@@ -1154,7 +1161,7 @@ export class VentaService {
     });
     if (!producto)
       throw new NotFoundException(`Producto ${dto.productoId} no encontrado`);
-    if (producto.archivadoAt || producto.cierreMotivo === 'no_comercializable') throw new BadRequestException('El producto está archivado o no está disponible para vender.');
+    if (producto.archivadoAt || producto.cierreMotivo != null) throw new BadRequestException('El producto está archivado o no está disponible para vender.');
 
     const existingVenta = await this.ventaRepo.findOne({
       where: { productoId: producto.id, estadoComercial: Not('cancelada') },
@@ -1701,9 +1708,9 @@ export class VentaService {
     };
   }
 
-  async create(dto: CreateVentaDto): Promise<Venta> {
+  async create(dto: CreateVentaDto, userId = 0): Promise<Venta> {
     this.validateSaleAmounts(dto);
-    if (!this.transactionManager) return this.inTransaction((service) => service.create(dto));
+    if (!this.transactionManager) return this.inTransaction((service) => service.create(dto, userId));
     await lockAccessoryTopology(this.transactionManager);
     const hash = operationHash(dto);
     if (dto.operacionKey) {
@@ -1719,7 +1726,30 @@ export class VentaService {
     // juntos en orden de ID; bloquear antes el lote elegido permitiría un ciclo.
     if (!isAccessoryStock(base?.tipo)) await this.transactionManager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [dto.productoId]);
     this.validateFinancialFields(dto, Number(dto.precioVenta));
-    const saved = await this.createSale(dto);
+    if (dto.saldoCliente && (!this.saldos || !userId)) throw new BadRequestException('Falta el cliente o la sesión para aplicar saldo.');
+    this.ventaConSaldo = Boolean(dto.saldoCliente);
+    let datosVenta=dto;
+    if (dto.saldoCliente) {
+      const productoSaldo=await this.productoRepo.findOne({where:{id:dto.productoId},relations:['valor']});
+      if (!productoSaldo) throw new NotFoundException('Producto no encontrado.');
+      const clienteSaldo=await this.saldos!.resolverPedido(dto.vendedor || productoSaldo.vendedor,userId,this.transactionManager);
+      const clienteIdSaldo=clienteSaldo?.id ?? dto.clienteId;
+      if (!clienteIdSaldo || (dto.clienteId && dto.clienteId!==clienteIdSaldo)) throw new BadRequestException('El saldo no pertenece al cliente de la venta.');
+      const cambio=await this.saldos!.prepararCambioSaldo(clienteIdSaldo,dto.saldoCliente,this.transactionManager);
+      datosVenta={...dto,tipoCambio:cambio.tipoCambio,tipoCambioGonzalo:undefined,tipoCambioRenato:undefined};
+    }
+    const saved = await this.createSale(datosVenta);
+    const clientePedido = userId && this.saldos ? await this.saldos.resolverPedido(saved.vendedor,userId,this.transactionManager) : null;
+    if (clientePedido && dto.clienteId && dto.clienteId !== clientePedido.id) throw new BadRequestException('El saldo no pertenece al cliente del pedido seleccionado.');
+    const clienteId = clientePedido?.id ?? dto.clienteId;
+    if (clienteId) {
+      if (saved.clienteId && saved.clienteId !== clienteId) throw new BadRequestException('La venta ya pertenece a otro cliente.');
+      const [cliente] = await this.transactionManager.query('SELECT id FROM clientes_comerciales WHERE id=$1', [clienteId]);
+      if (!cliente) throw new BadRequestException('Cliente no encontrado.');
+      await this.ventaRepo.update(saved.id, { clienteId });
+      saved.clienteId = clienteId;
+    }
+    if (dto.saldoCliente) await this.saldos!.aplicar(saved.id, dto.saldoCliente, userId, this.transactionManager);
     if (dto.operacionKey) {
       if (saved.operacionKey && saved.operacionKey !== dto.operacionKey) throw new ConflictException('El equipo ya se vendió en otra operación.');
       await this.ventaRepo.update(saved.id, { operacionKey: dto.operacionKey, operacionHash: hash });
@@ -1795,7 +1825,7 @@ export class VentaService {
     });
     if (!producto)
       throw new NotFoundException(`Producto ${dto.productoId} no encontrado`);
-    if (producto.archivadoAt || producto.cierreMotivo === 'no_comercializable') throw new BadRequestException('El producto está archivado o no está disponible para vender.');
+    if (producto.archivadoAt || producto.cierreMotivo != null) throw new BadRequestException('El producto está archivado o no está disponible para vender.');
     if (!producto.valor)
       throw new BadRequestException(
         'El producto no tiene sección de valor asociada',
@@ -1834,7 +1864,7 @@ export class VentaService {
           : [];
         const fichas = await manager.getRepository(Inventario).find({ where: { productoId: In(lockedIds) } });
         const groupLots = groupCandidates.filter((candidate) => isAccessoryStock(candidate.tipo)
-          && !candidate.archivadoAt && candidate.cierreMotivo !== 'no_comercializable'
+          && !candidate.archivadoAt && candidate.cierreMotivo == null
           && sameAccessoryInventoryGroup(candidate, lockedBase, fichas));
         const locked = groupLots.find((lot) => lot.id === producto.id);
         if (!locked?.valor) throw new BadRequestException('El accesorio no tiene costo asociado.');
@@ -1991,6 +2021,10 @@ export class VentaService {
 
   private async updateSale(id: number, dto: UpdateVentaDto): Promise<Venta> {
     const venta = await this.findOne(id);
+    if (venta.clienteId && this.transactionManager) {
+      const [credito] = await this.transactionManager.query("SELECT id FROM venta_pagos WHERE venta_id=$1 AND (origen='saldo_cliente' OR saldo_convertido>0) LIMIT 1",[id]);
+      if (credito) throw new BadRequestException('Esta venta tiene saldo a favor vinculado. Sus importes históricos no se pueden modificar.');
+    }
     if (venta.estadoComercial === 'cancelada' || Number(venta.cantidadDevuelta || 0) > 0) {
       throw new BadRequestException('La venta tiene devoluciones. Conserva sus datos originales y registra los ajustes en su historial financiero.');
     }
@@ -2305,6 +2339,9 @@ export class VentaService {
 
   private async anularEnTransaccion(id: number, userId?: number | null, motivo?: string | null): Promise<Venta> {
     const manager = this.transactionManager!;
+    if (this.saldos && userId && await this.saldos.cancelarPedidoConSaldo(id,new Date().toLocaleDateString('en-CA',{timeZone:'America/Lima'}),userId,manager)) {
+      return this.ventaRepo.findOneOrFail({where:{id}});
+    }
     await lockAccessoryTopology(manager);
     await manager.query('SELECT id FROM venta WHERE id = $1 FOR UPDATE', [id]);
     const venta = await this.ventaRepo.findOne({ where: { id }, relations: ['producto'] });

@@ -1510,6 +1510,7 @@ export class ProductoService {
 
     return productos
       .filter((producto) => !producto.soloInventario)
+      .filter((producto) => !isAccessoryStock(producto.tipo))
       .filter((producto) => isAccessoryStock(producto.tipo)
         ? Number(producto.stockActual || 0) > 0
         : !vendidosSet.has(producto.id))

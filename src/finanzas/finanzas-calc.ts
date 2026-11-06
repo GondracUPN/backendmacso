@@ -50,6 +50,7 @@ export type EventoPagoCalc = {
 
 export type PagoCalc = {
   id: number;
+  saldoConvertidoCents?: number;
   montoCents: number; // en soles
   fechaPago: string | null;
   requiereLiquidacion: boolean;
@@ -219,7 +220,7 @@ export function finanzasVenta(
   const resumenAsOf = activos.map((p) => resumenPago(p, options.asOf));
   const sumAsOf = (fn: (r: PagoResumen) => number) =>
     resumenAsOf.reduce((acc, r) => acc + fn(r), 0);
-  const pagadoBruto = pagadosAsOf.reduce((acc, p) => acc + p.montoCents, 0);
+  const pagadoBruto = pagadosAsOf.reduce((acc, p) => acc + p.montoCents - (p.saldoConvertidoCents || 0), 0);
   const cobradoCliente =
     pagadoBruto -
     sumAsOf((r) => r.devueltoCents) -

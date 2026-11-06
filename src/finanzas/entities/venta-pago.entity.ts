@@ -1,5 +1,6 @@
 import {
   Column,
+  Check,
   CreateDateColumn,
   Entity,
   Index,
@@ -37,6 +38,7 @@ export const ESTADOS_PAGO = [
 export type EstadoPago = (typeof ESTADOS_PAGO)[number];
 
 export type OrigenPago =
+  | 'saldo_cliente'
   | 'manual'
   | 'ingreso_venta'
   | 'adelanto'
@@ -44,6 +46,7 @@ export type OrigenPago =
   | 'conciliacion';
 
 @Entity('venta_pagos')
+@Check('venta_pagos_saldo_convertido_check', 'saldo_convertido >= 0 AND saldo_convertido <= monto_pen')
 export class VentaPago {
   @PrimaryGeneratedColumn()
   id: number;
@@ -71,6 +74,9 @@ export class VentaPago {
     nullable: true,
   })
   tipoCambio?: string | null;
+
+  @Column({ name: 'saldo_convertido', type: 'numeric', precision: 12, scale: 2, default: 0 })
+  saldoConvertido: string;
 
   // Importe aplicado al saldo de la venta en soles.
   @Column({ name: 'monto_pen', type: 'numeric', precision: 12, scale: 2 })

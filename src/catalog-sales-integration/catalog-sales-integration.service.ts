@@ -10,6 +10,8 @@ import { VentaService } from '../venta/venta.service';
 import { Card } from '../cards/card.entity';
 import { User } from '../auth/entities/user.entity';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
+import { operationHash } from '../venta/operation-hash';
+import { accessoryAvailable, accessoryOwner } from '../venta/accessory-quote';
 
 const DEBIT_PAYMENT_OPTIONS = [
   { tipo: 'bcp' },
@@ -36,13 +38,23 @@ export class CatalogSalesIntegrationService {
     return null;
   }
 
+  private async productFromSku(sku: string): Promise<Producto | null> {
+    const ref = String(sku).match(/^acc-ref-(\d+)-([a-f0-9]{16})$/);
+    if (ref) {
+      const lots = await this.productoRepo.find({ where: { referenciaId: Number(ref[1]), tipo: 'accesorios' }, relations: ['tracking'], order: { id: 'ASC' } });
+      const group = lots.filter((lot) => operationHash(accessoryOwner(lot.vendedor)).slice(0, 16) === ref[2]);
+      return group.find((lot) => accessoryAvailable(lot) && Number(lot.stockActual) > 0) || group[0] || null;
+    }
+    const legacy = String(sku).match(/^acc-lot-(\d+)$/);
+    if (legacy) return this.productoRepo.findOne({ where: { id: Number(legacy[1]), tipo: 'accesorios' } });
+    if (String(sku).startsWith('acc-')) return null;
+    const code = Number(String(sku).match(/(\d+)(?!.*\d)/)?.[1]);
+    return Number.isInteger(code) && code > 0 ? this.productoRepo.findOne({ where: [{ id: code }, { codigoInventario: code }] }) : null;
+  }
+
   async paymentOptions(id: string) {
     const event = await this.getEvent(id);
-    const codeMatch = String(event.sku || '').match(/(\d+)(?!.*\d)/);
-    const code = Number(codeMatch?.[1]);
-    const product = Number.isInteger(code) && code > 0
-      ? await this.productoRepo.findOne({ where: [{ id: code }, { codigoInventario: code }] })
-      : null;
+    const product = await this.productFromSku(event.sku);
     const sellerText = String(product?.vendedor || '').trim();
     const owners: Array<'gonzalo' | 'renato'> = sellerText.toLowerCase() === 'ambos'
       ? ['gonzalo', 'renato']
@@ -322,13 +334,7 @@ export class CatalogSalesIntegrationService {
        ORDER BY "createdAt" DESC`,
     );
     return Promise.all(events.map(async (event: any) => {
-      const codeMatch = String(event.sku || '').match(/(\d+)(?!.*\d)/);
-      const code = Number(codeMatch?.[1]);
-      if (!Number.isInteger(code) || code <= 0) return { ...event, costUsd: null };
-
-      const product = await this.productoRepo.findOne({
-        where: [{ id: code }, { codigoInventario: code }],
-      });
+      const product = await this.productFromSku(event.sku);
       const costUsd = Number(product?.valor?.valorProducto);
       return {
         ...event,
@@ -398,12 +404,7 @@ export class CatalogSalesIntegrationService {
         if (paymentType && !['direct', 'card', 'debt'].includes(paymentType)) {
           throw new BadRequestException('Selecciona directo, pago con tarjeta o deuda.');
         }
-        const codeMatch = String(event.sku).match(/(\d+)(?!.*\d)/);
-        const code = Number(codeMatch?.[1]);
-        if (!Number.isInteger(code) || code <= 0) throw new BadRequestException(`SKU ${event.sku} no reconocido`);
-        const product = await this.productoRepo.findOne({
-          where: [{ id: code }, { codigoInventario: code }],
-        });
+        const product = await this.productFromSku(event.sku);
         if (!product) throw new NotFoundException(`No existe el producto compartido ${event.sku}`);
         const paymentOptions = await this.paymentOptions(id);
         const incomeBank = String(submittedIncomeBank || '').trim();

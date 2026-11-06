@@ -1,3 +1,4 @@
+import { prepareLocalDatabase } from './db/local-schema';
 // src/main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
@@ -23,6 +24,7 @@ async function bootstrap() {
 
   const cfg = app.get(ConfigService);
   const dataSource = app.get(DataSource);
+  await prepareLocalDatabase(dataSource);
   const cache = app.get(CACHE_MANAGER);
   app.useGlobalInterceptors(new CacheInvalidationInterceptor(cache));
   app.useGlobalInterceptors(new RequestPerformanceInterceptor());

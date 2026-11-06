@@ -7,6 +7,7 @@ import { EbayPawn } from './ebay-pawn.entity';
 import { EbaySearchItem } from './ebay-search-item.entity';
 import { EbaySearchState } from './ebay-search-state.entity';
 import { EbayViewedItem } from './ebay-viewed-item.entity';
+import { EbayBlockedStore } from './ebay-blocked-store.entity';
 
 describe('AppController', () => {
   let appController: AppController;
@@ -15,6 +16,10 @@ describe('AppController', () => {
     const app: TestingModule = await Test.createTestingModule({
       controllers: [AppController],
       providers: [
+        {
+          provide: getRepositoryToken(EbayBlockedStore),
+          useValue: { find: jest.fn().mockResolvedValue([]), upsert: jest.fn() },
+        },
         AppService,
         {
           provide: AnalyticsService,
@@ -66,6 +71,21 @@ describe('AppController', () => {
     it('should return "Hello World!"', () => {
       expect(appController.getHello()).toBe('Hello World!');
     });
+  });
+
+  it('guarda el nombre completo conservando puntuación y permite desbloquear sin borrar filas', async () => {
+    const repo = (appController as any).ebayBlockedStoresRepo;
+    repo.find.mockResolvedValue([{ seller: 'shop.one-2' }]);
+    await expect(appController.setBlockedEbayStore({ seller: ' Shop.One-2 ', blocked: true }))
+      .resolves.toEqual({ sellers: ['shop.one-2'] });
+    expect(repo.upsert).toHaveBeenCalledWith({ seller: 'shop.one-2', blocked: true }, ['seller']);
+    await appController.setBlockedEbayStore({ seller: 'shop.one-2', blocked: false });
+    expect(repo.upsert).toHaveBeenLastCalledWith({ seller: 'shop.one-2', blocked: false }, ['seller']);
+    expect(repo.find).toHaveBeenLastCalledWith({ where: { blocked: true }, order: { seller: 'ASC' } });
+  });
+
+  it.each([{ seller: ' ', blocked: true }, { seller: 'x'.repeat(256), blocked: true }, { seller: 'shop', blocked: 'false' }])('rechaza bloqueos inválidos', async (body) => {
+    await expect(appController.setBlockedEbayStore(body)).rejects.toThrow();
   });
 });
 

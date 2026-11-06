@@ -84,8 +84,8 @@ export class VentaController {
 
   @Roles('admin')
   @Post()
-  async create(@Body() dto: CreateVentaDto) {
-    return this.svc.resultadoVenta(await this.svc.create(dto));
+  async create(@Body() dto: CreateVentaDto, @CurrentUser() user: JwtUserPayload) {
+    return this.svc.resultadoVenta(await this.svc.create(dto, user.userId));
   }
 
   @Roles('admin')

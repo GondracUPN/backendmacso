@@ -1,5 +1,7 @@
+import { ClienteComercial } from '../finanzas/entities/cliente-comercial.entity';
 import {
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
@@ -23,6 +25,14 @@ export class Venta {
   )
   @JoinColumn({ name: 'productoId' })
   producto: Producto;
+
+  @ManyToOne(() => ClienteComercial, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'cliente_id', foreignKeyConstraintName: 'venta_cliente_id_fkey' })
+  cliente?: ClienteComercial | null;
+
+  @Index('venta_cliente')
+  @Column({ name: 'cliente_id', type: 'int', nullable: true })
+  clienteId?: number | null;
 
   // — Campos ingresados por el usuario —
   @Column('decimal', { precision: 10, scale: 4 })

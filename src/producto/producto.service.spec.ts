@@ -561,7 +561,7 @@ describe('ProductoService', () => {
     expect(result.map((producto) => producto.id)).toEqual([1]);
   });
 
-  it('excluye los accesorios simples de pendientes del catalogo incluso al recalcular', async () => {
+  it('excluye todos los accesorios del envío automático incluso al recalcular', async () => {
     ventaRepo.find.mockResolvedValue([]);
     productoRepo.find.mockResolvedValue([
       { id: 10, tipo: 'accesorios', soloInventario: true, stockActual: 3, tracking: [] },
@@ -577,10 +577,10 @@ describe('ProductoService', () => {
     expect(productoRepo.find).toHaveBeenCalledWith(expect.objectContaining({
       where: { soloInventario: false },
     }));
-    expect(result.map((producto) => producto.id)).toEqual([11]);
+    expect(result.map((producto) => producto.id)).toEqual([]);
   });
 
-  it('mantiene en catálogo un accesorio con venta parcial y publica su stock restante', async () => {
+  it('una venta parcial no incorpora accesorios al envío automático', async () => {
     ventaRepo.find.mockResolvedValue([{ productoId: 9 }]);
     productoRepo.find.mockResolvedValue([{
       id: 9,
@@ -594,10 +594,7 @@ describe('ProductoService', () => {
     inventarioRepo.find.mockResolvedValue([{ productoId: 9, enAlmacen: true, fotosTomadas: true }]);
 
     const result = await service.findPendientesCatalogo();
-    const payload = (service as any).buildPayload(result[0]);
-
-    expect(result.map((producto) => producto.id)).toEqual([9]);
-    expect(payload).toEqual(expect.objectContaining({ title: 'Cargador 20W', stock: 6 }));
+    expect(result).toEqual([]);
   });
 
   it('envía al catálogo la información comercial y de inventario', async () => {

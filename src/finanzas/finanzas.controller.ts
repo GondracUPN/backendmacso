@@ -1,3 +1,5 @@
+import { SaldosClientesService } from './saldos-clientes.service';
+import { ResolverPedidoClienteDto, AplicarSaldoDto, AsignarClienteDto, ClienteComercialDto, DevolverSaldoDto, GenerarSaldoDto } from './dto/saldos.dto';
 import {
   Body,
   Controller,
@@ -58,9 +60,21 @@ const thisMonth = () => {
 export class FinanzasController {
   constructor(
     private readonly svc: FinanzasService,
+    private readonly saldos: SaldosClientesService,
     private readonly analisis: FinanzasAnalisisService,
     private readonly ledger: FinanzasLedgerService,
   ) {}
+
+  @Post('clientes/resolver-pedido') resolverPedido(@Body() dto: ResolverPedidoClienteDto, @CurrentUser() user: JwtUserPayload) {
+    return dto.ventaId ? this.saldos.resolverPedidoVenta(dto.ventaId,user.userId) : this.saldos.resolverPedido(dto.vendedor,user.userId);
+  }
+  @Get('clientes') clientes() { return this.saldos.clientes(); }
+  @Post('clientes') crearCliente(@Body() dto: ClienteComercialDto, @CurrentUser() user: JwtUserPayload) { return this.saldos.crearCliente(dto, user.userId); }
+  @Get('clientes/:id/saldos') historialSaldo(@Param('id', ParseIntPipe) id: number) { return this.saldos.historial(id); }
+  @Post('clientes/:id/devolver-saldo') devolverSaldo(@Param('id', ParseIntPipe) id: number, @Body() dto: DevolverSaldoDto, @CurrentUser() user: JwtUserPayload) { return this.saldos.devolver(id,dto,user.userId); }
+  @Patch('ventas/:id/cliente') asignarCliente(@Param('id', ParseIntPipe) id: number, @Body() dto: AsignarClienteDto) { return this.saldos.asignar(id,dto.clienteId); }
+  @Post('ventas/:id/generar-saldo') generarSaldo(@Param('id', ParseIntPipe) id: number, @Body() dto: GenerarSaldoDto, @CurrentUser() user: JwtUserPayload) { return this.saldos.generar(id,dto,user.userId); }
+  @Post('ventas/:id/aplicar-saldo') aplicarSaldo(@Param('id', ParseIntPipe) id: number, @Body() dto: AplicarSaldoDto, @CurrentUser() user: JwtUserPayload) { return this.saldos.aplicar(id,dto,user.userId); }
 
   // — Análisis —
   @Get('analisis')
@@ -259,8 +273,8 @@ export class FinanzasController {
   }
 
   @Post('reembolsos')
-  crearReembolso(@Body() dto: CrearReembolsoDto) {
-    return this.svc.crearReembolso(dto);
+  crearReembolso(@Body() dto: CrearReembolsoDto, @CurrentUser() user: JwtUserPayload) {
+    return this.svc.crearReembolso(dto, user.userId);
   }
 
   @Post('reembolsos/:id/eventos')

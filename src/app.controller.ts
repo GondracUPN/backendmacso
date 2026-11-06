@@ -6,6 +6,9 @@ import { EbayPawn } from './ebay-pawn.entity';
 import { EbaySearchItem } from './ebay-search-item.entity';
 import { EbaySearchState } from './ebay-search-state.entity';
 import { EbayViewedItem } from './ebay-viewed-item.entity';
+import { EbayBlockedStore } from './ebay-blocked-store.entity';
+import { discoverBuyaStores, findBuyaProductOnEbay, BuyaEbayDependencies } from './ebay-buya';
+import { EbayPawnAutoSave } from './ebay-pawn-autosave';
 import type { Request, Response } from 'express';
 import * as archiver from 'archiver';
 import { createHash } from 'node:crypto';
@@ -2527,6 +2530,7 @@ const searchEbayItems = async (params?: {
   maxPrice?: number;
   sort?: string;
   storeEntries?: ReadonlyArray<EbayStoreEntry>;
+  searchInDescription?: boolean;
 }) => {
   const token = await getEbayAccessToken();
   const base = getEbayApiBase();
@@ -2540,6 +2544,7 @@ const searchEbayItems = async (params?: {
   const url = new URL(`${base}/buy/browse/v1/item_summary/search`);
   url.searchParams.set('q', query);
   const filters: string[] = [];
+  if (params?.searchInDescription) filters.push('searchInDescription:true');
   if (Array.isArray(params?.storeEntries) && params.storeEntries.length > 0) {
     const sellerFilter = params.storeEntries.map((entry) => entry.seller).join('|');
     filters.push(`sellers:{${sellerFilter}}`);
@@ -3401,6 +3406,7 @@ const resolveLegacyId = async (rawUrl: string): Promise<string | null> => {
 
 @Controller()
 export class AppController {
+  private readonly pawnAutoSave: EbayPawnAutoSave;
   constructor(
     private readonly appService: AppService,
     private readonly analyticsService: AnalyticsService,
@@ -3412,7 +3418,15 @@ export class AppController {
     private readonly ebaySearchStateRepo: Repository<EbaySearchState>,
     @InjectRepository(EbayViewedItem)
     private readonly ebayViewedItemsRepo: Repository<EbayViewedItem>,
-  ) {}
+    @InjectRepository(EbayBlockedStore)
+    private readonly ebayBlockedStoresRepo: Repository<EbayBlockedStore>,
+  ) {
+    this.pawnAutoSave = new EbayPawnAutoSave(
+      this.ebayPawnsRepo,
+      (item) => this.buyaEbayDependencies().detail(item),
+      () => console.warn('[eBay] No se pudo autoguardar una tienda Bravo; se reintentará al volver a encontrarla.'),
+    );
+  }
 
   private mapEbayPawnEntity(entity: EbayPawn): EbayStoreEntry {
     return {
@@ -3788,6 +3802,50 @@ export class AppController {
     };
   }
 
+  private buyaEbayDependencies(): BuyaEbayDependencies {
+    return {
+      search: searchEbayItems,
+      detail: async (item) => {
+        const token = await getEbayAccessToken();
+        const url = `${getEbayApiBase()}/buy/browse/v1/item/${encodeURIComponent(item.itemId)}`;
+        const response = await runEbayBrowseRequest(() => fetchWithTimeout(url, {
+          headers: { Authorization: `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' },
+        }, 10000));
+        if (!response.ok) throw new BadRequestException('No se pudo comprobar la publicación de eBay.');
+        return response.json();
+      },
+    };
+  }
+
+  @Get('utils/ebay/buya/stores')
+  async discoverEbayBuyaStores(@Query('offset') offset?: string, @Query('phase') phase?: string) {
+    return discoverBuyaStores(offset, this.buyaEbayDependencies(), phase || 'buya');
+  }
+
+  @Post('utils/ebay/buya/product')
+  async findEbayBuyaProduct(@Body() body: any) {
+    return findBuyaProductOnEbay(body?.url, body?.offset, this.buyaEbayDependencies());
+  }
+
+  @Get('utils/ebay/blocked-stores')
+  async getBlockedEbayStores() {
+    const rows = await this.ebayBlockedStoresRepo.find({
+      where: { blocked: true },
+      order: { seller: 'ASC' },
+    });
+    return { sellers: rows.map((row) => row.seller) };
+  }
+
+  @Post('utils/ebay/blocked-stores')
+  async setBlockedEbayStore(@Body() body: any) {
+    const seller = typeof body?.seller === 'string' ? body.seller.trim().toLowerCase() : '';
+    if (!seller || seller.length > 255 || typeof body?.blocked !== 'boolean') {
+      throw new BadRequestException('Indica el nombre exacto del vendedor (máximo 255 caracteres) y el bloqueo.');
+    }
+    await this.ebayBlockedStoresRepo.upsert({ seller, blocked: body.blocked }, ['seller']);
+    return this.getBlockedEbayStores();
+  }
+
   @Get('utils/ebay/viewed')
   async getViewedEbayItems() {
     const rows = await this.ebayViewedItemsRepo.find({
@@ -4040,7 +4098,7 @@ export class AppController {
   ) {
     const pawnOnlyFlag = isTruthyQueryFlag(pawnOnly);
     const storeEntries = pawnOnlyFlag ? await this.loadEbayStoreFeedFromDb() : undefined;
-    return fetchEbayCatalogSearch({
+    const result = await fetchEbayCatalogSearch({
       query: q,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
@@ -4058,6 +4116,8 @@ export class AppController {
       stateRepo: this.ebaySearchStateRepo,
       storeEntries,
     });
+    if (pawnOnlyFlag) this.pawnAutoSave.enqueue(result.items, storeEntries || []);
+    return result;
   }
 
   @Get('utils/ebay/apple-collection')

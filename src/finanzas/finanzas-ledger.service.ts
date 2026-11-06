@@ -429,6 +429,7 @@ export class FinanzasLedgerService {
           where: { idempotencyKey: input.idempotencyKey },
         });
         if (yaRegistrado) return yaRegistrado;
+        if (locked.origen === 'saldo_cliente' || toCents(locked.saldoConvertido) > 0) throw new BadRequestException('El pago está vinculado a un saldo a favor; conserva su historial.');
         if (locked.anuladoAt)
           throw new BadRequestException('El pago está anulado.');
         if (input.fecha < String(locked.fechaPago || ''))
@@ -550,6 +551,7 @@ export class FinanzasLedgerService {
         .setLock('pessimistic_write')
         .getOne();
       if (!pago) throw new NotFoundException(`Pago ${pagoId} no encontrado`);
+      if (pago.origen === 'saldo_cliente' || toCents(pago.saldoConvertido) > 0) throw new BadRequestException('No se puede anular un pago vinculado a un saldo a favor.');
       if (pago.anuladoAt) return pago;
       if (pago.origen !== 'manual' && pago.origen !== 'conciliacion') {
         throw new BadRequestException(
@@ -622,6 +624,7 @@ export class FinanzasLedgerService {
     manager: EntityManager = this.dataSource.manager,
     partes?: {
       parts?: Array<{ type: string; amount: number }>;
+      incluirCanceladaParaSaldo?: boolean;
       incomeBank?: string | null;
       cuentaId?: number;
       metodo?: string;
@@ -631,7 +634,11 @@ export class FinanzasLedgerService {
       .getRepository(Venta)
       .findOne({ where: { id: ventaId } });
     // Una venta anulada no vuelve a derivar ni reactivar pagos.
-    if (!venta || venta.anuladaAt) return;
+    if (!venta || venta.anuladaAt || (venta.estadoComercial === 'cancelada' && !partes?.incluirCanceladaParaSaldo)) return;
+    if (venta.clienteId) {
+      const [credito] = await manager.query("SELECT id FROM venta_pagos WHERE venta_id=$1 AND (origen='saldo_cliente' OR saldo_convertido>0) LIMIT 1",[venta.id]);
+      if (credito) return;
+    }
     const gastoRepo = manager.getRepository(Gasto);
     // Las filas de adelanto también llevan sale_id: sus pagos se derivan de la reserva.
     const rows = (
@@ -970,6 +977,7 @@ export class FinanzasLedgerService {
       ...(adelantoId ? [{ adelantoId, anuladoAt: IsNull() }] : []),
     ];
     const pagos = await repo.find({ where, order: { id: 'ASC' } });
+    if (pagos.some(p => p.origen === 'saldo_cliente' || toCents(p.saldoConvertido) > 0)) throw new BadRequestException('La venta tiene saldo a favor vinculado; no se puede anular.');
     const anuladoAt = new Date();
     for (const pago of pagos) {
       await repo.update(pago.id, {
@@ -1000,6 +1008,7 @@ export function toPagoCalc(p: VentaPago): PagoCalc {
   return {
     id: p.id,
     montoCents: toCents(p.montoPen),
+    saldoConvertidoCents: toCents(p.saldoConvertido),
     fechaPago: p.fechaPago ? String(p.fechaPago).slice(0, 10) : null,
     requiereLiquidacion: !!p.requiereLiquidacion,
     comisionEstimadaCents: toCents(p.comisionEstimada),

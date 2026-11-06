@@ -1,3 +1,4 @@
+import { SaldosClientesService } from './saldos-clientes.service';
 import { lockAccessoryTopology } from '../venta/accessory-locks';
 import { resolveAccessoryPrices } from '../venta/accessory-quote';
 import { ConflictException } from '@nestjs/common';
@@ -6,6 +7,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In } from 'typeorm';
@@ -61,6 +63,7 @@ export class FinanzasService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly ledger: FinanzasLedgerService,
     private readonly ventas: VentaService,
+    @Optional() private readonly saldos?: SaldosClientesService,
   ) {}
 
   // ————————————————————————— Cuentas —————————————————————————
@@ -265,6 +268,7 @@ export class FinanzasService {
       venta: {
         id: venta.id,
         productoId: venta.productoId,
+        clienteId: venta.clienteId,
         fechaComercial: venta.fechaVenta,
         fechaReserva: venta.fechaReserva,
         precio: Number(venta.precioVenta),
@@ -750,8 +754,9 @@ export class FinanzasService {
 
   // ————————————————————————— Reembolsos y productos perdidos —————————————————————————
 
-  async crearReembolso(dto: CrearReembolsoDto) {
+  async crearReembolso(dto: CrearReembolsoDto, userId?: number) {
     return this.dataSource.transaction(async (manager) => {
+      await manager.query('SELECT id FROM producto WHERE id=$1 FOR UPDATE',[dto.productoId]);
       const producto = await manager
         .getRepository(Producto)
         .findOne({ where: { id: dto.productoId }, relations: ['valor'] });
@@ -768,35 +773,32 @@ export class FinanzasService {
         throw new BadRequestException(
           'El producto ya tiene una reclamación abierta.',
         );
-      const costo = dto.costoOriginal ?? productCost(producto);
-      if (costo == null)
-        throw new BadRequestException(
-          'El producto no tiene costo registrado: indícalo manualmente.',
-        );
+      const yaDevuelto = await manager.getRepository(Reembolso).findOne({where:{productoId:producto.id,estado:'recibido'}});
+      if (yaDevuelto) throw new BadRequestException('Esta compra ya tiene un reembolso recibido.');
+      if (!['No llegó a Eshopex.', 'Llegó algo distinto al producto comprado.'].includes(dto.motivo || ''))
+        throw new BadRequestException('Selecciona un motivo de reclamo válido.');
       const valor = producto.valor;
-      const tcCompra =
-        valor &&
-        String(valor.monedaCompra || 'USD') === 'USD' &&
-        Number(valor.valorProducto) > 0 &&
-        Number(valor.valorSoles) > 0
-          ? Number(valor.valorSoles) / Number(valor.valorProducto)
-          : null;
-      const moneda = dto.moneda || 'PEN';
+      if (!valor || valor.monedaCompra !== 'USD' || toCents(valor.valorProducto) <= 0)
+        throw new BadRequestException('La compra debe tener su importe original registrado en USD.');
+      const costo = productCost(producto);
+      if (costo == null) throw new BadRequestException('Falta el costo registrado de la compra.');
+      const tcCompra = Number(valor.tipoCambioCompra) > 0 ? Number(valor.tipoCambioCompra)
+        : Number(valor.valorSoles) / Number(valor.valorProducto);
+      if (!(tcCompra > 0)) throw new BadRequestException('Falta el tipo de cambio histórico de la compra.');
+      const moneda = 'USD' as const;
       const repo = manager.getRepository(Reembolso);
       const saved = await repo.save(
         repo.create({
           productoId: producto.id,
-          estado: dto.estado || 'incidencia',
+          estado: 'reclamo_abierto',
+          creadoPor: userId,
           moneda,
           tipoCambioCompra: tcCompra ? tcCompra.toFixed(4) : null,
           costoOriginal: Number(costo).toFixed(2),
-          gastosAdicionales: Number(dto.gastosAdicionales || 0).toFixed(2),
-          montoReclamado: Number(
-            dto.montoReclamado ??
-              (moneda === 'USD' && valor ? Number(valor.valorProducto) : costo),
-          ).toFixed(2),
-          cuentaDevolucionId: dto.cuentaDevolucionId ?? null,
-          fechaIncidencia: dto.fechaIncidencia || hoyLima(),
+          gastosAdicionales: '0.00',
+          montoReclamado: fromCents(toCents(valor.valorProducto)).toFixed(2),
+          cuentaDevolucionId: null,
+          fechaIncidencia: hoyLima(),
           referencia: dto.referencia || null,
           motivo: dto.motivo || null,
         }),
@@ -804,11 +806,13 @@ export class FinanzasService {
       await manager.getRepository(ReembolsoEvento).insert({
         reembolsoId: saved.id,
         tipo: 'incidencia',
+        creadoPor: userId,
         fecha: saved.fechaIncidencia!,
         moneda,
         nota: dto.motivo || 'Incidencia reportada',
         idempotencyKey: `reembolso:${saved.id}:alta`,
       });
+      await manager.getRepository(Producto).update(producto.id,{ cierreMotivo: 'no_comercializable' });
       return saved;
     });
   }
@@ -820,7 +824,10 @@ export class FinanzasService {
         const repetido = await eventoRepo.findOne({
           where: { idempotencyKey: dto.idempotencyKey },
         });
-        if (repetido) return this.reembolsoConEventos(id, manager);
+        if (repetido) {
+          if (repetido.reembolsoId !== id) throw new BadRequestException('La clave pertenece a otro reclamo.');
+          return this.reembolsoConEventos(id, manager);
+        }
         const repo = manager.getRepository(Reembolso);
         const r = await repo
           .createQueryBuilder('r')
@@ -833,6 +840,13 @@ export class FinanzasService {
           dto.tipo !== 'nota'
         ) {
           throw new BadRequestException('La reclamación está cerrada.');
+        }
+        if (dto.tipo === 'recibido') {
+          const anteriores = await eventoRepo.find({ where: { reembolsoId: id, tipo: 'recibido' } });
+          const pendiente = toCents(r.montoReclamado) - anteriores.reduce((sum, e) => sum + toCents(e.monto), 0);
+          if ((dto.moneda || r.moneda) !== r.moneda || toCents(dto.monto) !== pendiente || pendiente <= 0)
+            throw new BadRequestException('Confirma el importe pendiente original del reclamo.');
+          if (dto.fecha < String(r.fechaIncidencia)) throw new BadRequestException('El reembolso no puede preceder al reclamo.');
         }
         const moneda = dto.moneda || r.moneda;
         const requiereMonto = [
@@ -897,6 +911,7 @@ export class FinanzasService {
         const evento = await eventoRepo.save(
           eventoRepo.create({
             reembolsoId: r.id,
+            creadoPor: userId,
             tipo: dto.tipo,
             fecha: dto.fecha,
             monto: dto.monto != null ? Number(dto.monto).toFixed(2) : null,
@@ -958,6 +973,9 @@ export class FinanzasService {
             break;
         }
         await repo.save(r);
+        if (r.estado==='recibido' && dto.tipo==='recibido') {
+          await this.saldos?.reembolsarProductoCliente(r.productoId,dto.fecha,userId,manager);
+        }
         if (['recibido', 'perdida_definitiva'].includes(r.estado)) {
           await manager
             .getRepository(Producto)
@@ -1011,6 +1029,11 @@ export class FinanzasService {
     productoId: number,
     motivo: 'perdido' | 'cancelado' | 'no_comercializable' | 'reabrir',
   ) {
+    if (motivo === 'reabrir') {
+      const abiertos = await this.dataSource.getRepository(Reembolso).createQueryBuilder('r')
+        .where('r.productoId = :productoId', { productoId }).andWhere("r.estado NOT IN ('recibido','rechazado','perdida_definitiva')").getCount();
+      if (abiertos) throw new BadRequestException('El producto tiene un reclamo pendiente.');
+    }
     const repo = this.dataSource.getRepository(Producto);
     const exists = await repo.count({ where: { id: productoId } });
     if (!exists) throw new NotFoundException('Producto no encontrado');

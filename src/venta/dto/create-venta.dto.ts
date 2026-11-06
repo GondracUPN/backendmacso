@@ -1,5 +1,7 @@
+import { AplicarSaldoDto } from '../../finanzas/dto/saldos.dto';
 import {
   IsNumber,
+  ValidateIf,
   IsDateString,
   IsInt,
   IsOptional,
@@ -23,6 +25,9 @@ export class SaleIncomePartDto {
 }
 
 export class CreateVentaDto {
+  @IsOptional() @IsInt() @Min(1) clienteId?: number;
+  @IsOptional() @ValidateNested() @Type(() => AplicarSaldoDto) saldoCliente?: AplicarSaldoDto;
+
   @IsOptional() @IsString() @Length(64, 64)
   cotizacionToken?: string;
   @IsOptional() @IsString() @Length(8, 100)
@@ -31,9 +36,10 @@ export class CreateVentaDto {
   @IsInt()
   productoId: number;
 
+  @ValidateIf(o => !o.saldoCliente || o.tipoCambio !== undefined)
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0.0001) @Max(1000)
-  tipoCambio: number;
+  tipoCambio?: number;
 
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 4 })

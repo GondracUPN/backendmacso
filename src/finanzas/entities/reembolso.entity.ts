@@ -97,6 +97,9 @@ export class Reembolso {
   @OneToMany(() => ReembolsoEvento, (e) => e.reembolso)
   eventos?: ReembolsoEvento[];
 
+  @Column({ name: 'creado_por', type: 'int', nullable: true })
+  creadoPor?: number | null;
+
   @VersionColumn({ default: 1 })
   version: number;
 

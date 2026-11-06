@@ -127,7 +127,7 @@ export class FinanzasAnalisisService {
     const pagosRows: any[] = await this.dataSource.query(`
       SELECT p.id, p.venta_id AS "ventaId", p.adelanto_id AS "adelantoId", p.monto_pen AS "montoPen", p.fecha_pago::text AS "fechaPago",
              p.requiere_liquidacion AS "requiereLiquidacion", p.comision_estimada AS "comisionEstimada", p.anulado_at AS "anuladoAt",
-             p.verificado, p.estado, p.es_adelanto AS "esAdelanto", p.metodo, p.cuenta_receptora_id AS "cuentaId",
+             p.saldo_convertido AS "saldoConvertido", p.origen, p.verificado, p.estado, p.es_adelanto AS "esAdelanto", p.metodo, p.cuenta_receptora_id AS "cuentaId",
              p.fecha_liquidacion_estimada::text AS "fechaLiquidacionEstimada"
         FROM venta_pagos p WHERE p.anulado_at IS NULL`);
     const eventos: any[] = await this.dataSource.query(`
@@ -204,6 +204,7 @@ export class FinanzasAnalisisService {
       calc: {
         id: Number(p.id),
         montoCents: toCents(p.montoPen),
+        saldoConvertidoCents: toCents(p.saldoConvertido),
         fechaPago: p.fechaPago,
         requiereLiquidacion: !!p.requiereLiquidacion,
         comisionEstimadaCents: toCents(p.comisionEstimada),
@@ -431,6 +432,7 @@ export class FinanzasAnalisisService {
     const ventaPorId = new Map(base.ventas.map((v) => [v.id, v]));
     const pagosNoVerificadosCaja = { cents: 0 };
     for (const { row, calc } of pagos) {
+      if (row.origen === 'saldo_cliente') continue;
       const venta = row.ventaId ? ventaPorId.get(Number(row.ventaId)) : null;
       if (venta && !coincide(venta)) continue;
       if (f.metodo && row.metodo !== f.metodo) continue;
@@ -839,6 +841,9 @@ export class FinanzasAnalisisService {
         dias: diasEntre(r.v.fechaVenta, hoy),
       }));
 
+    const [obligacionClientes] = await this.dataSource.query(`SELECT COALESCE(sum(s.original - COALESCE((
+      SELECT sum(m.monto) FROM cliente_saldo_movimientos m WHERE m.saldo_id=s.id AND m.fecha<=$1),0)),0)::text AS total
+      FROM cliente_saldos s WHERE s.fecha<=$1`,[f.to]);
     const gananciaNeta =
       gananciaFinalVentas - operativos - financieros - perdidas;
     return {
@@ -867,6 +872,7 @@ export class FinanzasAnalisisService {
             porCobrar,
         ),
         reembolsosPendientes: money(reembolsosPorRecuperar),
+        saldosClientesPendientes: Number(obligacionClientes?.total || 0),
         historicosPendientes: {
           ventas: historicosPendientes.length,
           precio: money(sum(historicosPendientes, (r) => r.calc.precioCents)),
@@ -1036,6 +1042,7 @@ export class FinanzasAnalisisService {
       saldo.set(k, (saldo.get(k) || 0) + cents);
     };
     for (const { row, calc } of pagos) {
+      if (row.origen === 'saldo_cliente') continue;
       if (!calc.verificado && !incluirNoVerificados) continue;
       const cuentaPago = row.cuentaId == null ? null : Number(row.cuentaId);
       if (calc.fechaPago) add(cuentaPago, calc.montoCents);

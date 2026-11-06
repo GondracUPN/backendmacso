@@ -30,7 +30,7 @@ export class ReembolsoEvento {
   @Column({ name: 'reembolso_id', type: 'int' })
   reembolsoId: number;
 
-  @ManyToOne(() => Reembolso, (r) => r.eventos, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Reembolso, (r) => r.eventos, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'reembolso_id' })
   reembolso?: Reembolso;
 
@@ -79,6 +79,9 @@ export class ReembolsoEvento {
   @Index({ unique: true })
   @Column({ name: 'idempotency_key', type: 'varchar', length: 120 })
   idempotencyKey: string;
+
+  @Column({ name: 'creado_por', type: 'int', nullable: true })
+  creadoPor?: number | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

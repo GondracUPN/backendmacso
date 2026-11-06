@@ -1,3 +1,7 @@
+import { ClienteComercial } from './entities/cliente-comercial.entity';
+import { ClienteSaldo } from './entities/cliente-saldo.entity';
+import { ClienteSaldoMovimiento } from './entities/cliente-saldo-movimiento.entity';
+import { SaldosClientesService } from './saldos-clientes.service';
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CuentaFinanciera } from './entities/cuenta-financiera.entity';
@@ -12,6 +16,7 @@ import { FinanzasLedgerService } from './finanzas-ledger.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      ClienteComercial, ClienteSaldo, ClienteSaldoMovimiento,
       CuentaFinanciera,
       VentaPago,
       PagoLiquidacion,
@@ -20,7 +25,7 @@ import { FinanzasLedgerService } from './finanzas-ledger.service';
       ReembolsoEvento,
     ]),
   ],
-  providers: [FinanzasLedgerService],
-  exports: [FinanzasLedgerService, TypeOrmModule],
+  providers: [FinanzasLedgerService, SaldosClientesService],
+  exports: [SaldosClientesService, FinanzasLedgerService, TypeOrmModule],
 })
 export class FinanzasCoreModule {}
