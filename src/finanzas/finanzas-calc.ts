@@ -463,6 +463,7 @@ export type ReembolsoCalc = {
 };
 
 export const ESTADOS_REEMBOLSO_CERRADOS = [
+  'anulado',
   'recibido',
   'rechazado',
   'perdida_definitiva',
@@ -483,7 +484,7 @@ export function resumenReembolso(r: ReembolsoCalc) {
   const capitalEnReclamo = cerrado
     ? 0
     : Math.max(0, invertido - r.recibidoCents);
-  const resultado = cerrado ? r.recibidoCents - invertido : null; // negativo = pérdida
+  const resultado = r.estado === 'anulado' ? 0 : cerrado ? r.recibidoCents - invertido : null; // negativo = pérdida
   return {
     invertidoCents: invertido,
     recibidoCents: r.recibidoCents,

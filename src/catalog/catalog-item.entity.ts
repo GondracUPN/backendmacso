@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
@@ -47,6 +48,11 @@ export class CatalogItem {
 
   @Column({ type: 'boolean', default: true })
   active: boolean;
+
+  /** Dueño de un concepto de gasto. NULL = compartido (opciones de producto y conceptos anteriores a este cambio). */
+  @Index('idx_catalog_owner_user')
+  @Column({ type: 'int', nullable: true })
+  ownerUserId?: number | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

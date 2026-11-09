@@ -1,4 +1,6 @@
 import { SaldosClientesService } from './saldos-clientes.service';
+import { repararSaldosReclamoSinCobro } from './reclamo-saldos-reparacion';
+import { reabrirProductoConReclamosAnulados } from './reclamo-producto-disponibilidad';
 import { lockAccessoryTopology } from '../venta/accessory-locks';
 import { resolveAccessoryPrices } from '../venta/accessory-quote';
 import { ConflictException } from '@nestjs/common';
@@ -10,7 +12,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In } from 'typeorm';
+import { DataSource, EntityManager, In, Like } from 'typeorm';
 import { Venta } from '../venta/venta.entity';
 import { VentaAdelanto } from '../venta/venta-adelanto.entity';
 import { VentaDevolucion } from '../venta/venta-devolucion.entity';
@@ -766,7 +768,7 @@ export class FinanzasService {
         .createQueryBuilder('r')
         .where('r.productoId = :id', { id: producto.id })
         .andWhere(
-          `r.estado NOT IN ('recibido', 'rechazado', 'perdida_definitiva')`,
+          `r.estado NOT IN ('recibido', 'rechazado', 'perdida_definitiva', 'anulado')`,
         )
         .getOne();
       if (abierto)
@@ -798,7 +800,7 @@ export class FinanzasService {
           gastosAdicionales: '0.00',
           montoReclamado: fromCents(toCents(valor.valorProducto)).toFixed(2),
           cuentaDevolucionId: null,
-          fechaIncidencia: hoyLima(),
+          fechaIncidencia: dto.fechaIncidencia || hoyLima(),
           referencia: dto.referencia || null,
           motivo: dto.motivo || null,
         }),
@@ -812,12 +814,18 @@ export class FinanzasService {
         nota: dto.motivo || 'Incidencia reportada',
         idempotencyKey: `reembolso:${saved.id}:alta`,
       });
+      saved.reversionReclamo = { cierreMotivo: producto.cierreMotivo ?? null,
+        ventas: [] };
+      await repo.save(saved);
+      await this.saldos?.actualizarSaldoPorReclamo(producto.id, userId || 0, manager);
       await manager.getRepository(Producto).update(producto.id,{ cierreMotivo: 'no_comercializable' });
-      return saved;
+      return repo.findOneByOrFail({ id: saved.id });
     });
   }
 
   async eventoReembolso(id: number, dto: EventoReembolsoDto, userId: number) {
+    if (dto.tipo === 'recibido_anulado')
+      throw new BadRequestException('Para quitar un reembolso, anula el reclamo.');
     try {
       return await this.dataSource.transaction(async (manager) => {
         const eventoRepo = manager.getRepository(ReembolsoEvento);
@@ -835,11 +843,50 @@ export class FinanzasService {
           .setLock('pessimistic_write')
           .getOne();
         if (!r) throw new NotFoundException('Reembolso no encontrado');
+        // Un reembolso recibido puede quitarse (anulación); los demás cierres solo admiten notas.
+        const quitarReembolsoRecibido = dto.tipo === 'anulacion' && r.estado === 'recibido';
         if (
-          ['recibido', 'rechazado', 'perdida_definitiva'].includes(r.estado) &&
-          dto.tipo !== 'nota'
+          ['recibido', 'rechazado', 'perdida_definitiva', 'anulado'].includes(r.estado) &&
+          dto.tipo !== 'nota' && !quitarReembolsoRecibido
         ) {
           throw new BadRequestException('La reclamación está cerrada.');
+        }
+        if (dto.tipo === 'fecha_reclamo') {
+          const saldoIds = (r.reversionReclamo?.ventas || []).flatMap(v => v.saldoIds);
+          const saldos = await manager.query('SELECT id FROM cliente_saldos WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE', [saldoIds]);
+          if (saldos.length) {
+            const [conflicto] = await manager.query(`SELECT 1 FROM cliente_saldos s JOIN venta_pagos p ON p.id=s.pago_id
+              WHERE s.id=ANY($1::int[]) AND (p.fecha_pago>$2::date OR EXISTS
+                (SELECT 1 FROM cliente_saldo_movimientos m WHERE m.saldo_id=s.id AND m.fecha<$2::date)) LIMIT 1`, [saldoIds, dto.fecha]);
+            if (conflicto) throw new BadRequestException('La fecha debe ser posterior a los pagos originales y anterior a las aplicaciones del saldo.');
+            await manager.query('UPDATE cliente_saldos SET fecha=$2 WHERE id=ANY($1::int[])', [saldoIds, dto.fecha]);
+          }
+          r.fechaIncidencia = dto.fecha;
+        }
+        if (dto.tipo === 'anulacion') {
+          await repararSaldosReclamoSinCobro(manager, r.productoId);
+          for (const v of r.reversionReclamo?.ventas || []) {
+            await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['saldo-cancelacion:' + v.id]);
+            const saldos = await manager.query('SELECT * FROM cliente_saldos WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE', [v.saldoIds]);
+            const movimientos = await manager.query('SELECT id FROM cliente_saldo_movimientos WHERE saldo_id=ANY($1::int[]) LIMIT 1', [v.saldoIds]);
+            if (movimientos.length || saldos.some(s => !s.anulada_at && toCents(s.disponible) !== toCents(s.original)))
+              throw new BadRequestException('El saldo del reclamo ya fue utilizado. Revierte sus aplicaciones antes de anularlo.');
+            await manager.query('UPDATE cliente_saldos SET disponible=0, anulada_at=now() WHERE id=ANY($1::int[])', [v.saldoIds]);
+            await manager.query('UPDATE venta_pagos SET saldo_convertido=0 WHERE id IN (SELECT pago_id FROM cliente_saldos WHERE id=ANY($1::int[]))', [v.saldoIds]);
+            await manager.getRepository(Venta).update(v.id, { estadoComercial: v.estadoComercial as Venta['estadoComercial'],
+              anuladaAt: v.anuladaAt ? new Date(v.anuladaAt) : null, anuladaPor: v.anuladaPor, anulacionMotivo: v.anulacionMotivo });
+          }
+          // Quitar el reembolso: el dinero deja de contar en cuentas y tarjetas; el evento queda en el historial.
+          const recibidos = await eventoRepo.find({ where: { reembolsoId: id, tipo: 'recibido' } });
+          for (const e of recibidos) {
+            if (e.gastoId) await manager.getRepository(Gasto).delete({ id: e.gastoId, notas: Like(`__REFUND__:${r.id}%`) });
+            await eventoRepo.update(e.id, { tipo: 'recibido_anulado', gastoId: null,
+              nota: [e.nota, 'Reembolso retirado al anular el reclamo.'].filter(Boolean).join(' · ') });
+          }
+          if (r.reversionReclamo) await manager.getRepository(Producto).update(r.productoId,
+            { cierreMotivo: r.reversionReclamo.cierreMotivo as Producto['cierreMotivo'] });
+          else await manager.query(`UPDATE producto SET "cierreMotivo"=NULL WHERE id=$1 AND "cierreMotivo"='no_comercializable'`, [r.productoId]);
+          await reabrirProductoConReclamosAnulados(manager, r.productoId, r.id);
         }
         if (dto.tipo === 'recibido') {
           const anteriores = await eventoRepo.find({ where: { reembolsoId: id, tipo: 'recibido' } });
@@ -886,6 +933,7 @@ export class FinanzasService {
               throw new BadRequestException(
                 'La tarjeta no está enlazada con Gastos.',
               );
+            const [productoReclamo] = await manager.query('SELECT "codigoInventario" FROM producto WHERE id = $1', [r.productoId]);
             const gasto = await manager.getRepository(Gasto).save(
               manager.getRepository(Gasto).create({
                 userId,
@@ -903,6 +951,7 @@ export class FinanzasService {
                 notas: `__REFUND__:${r.id}`,
                 clasificacionFinanciera: 'ajuste_devolucion',
                 productoVinculadoId: r.productoId,
+                saleSku: `MS-${productoReclamo?.codigoInventario || r.productoId}`,
               }),
             );
             gastoId = gasto.id;
@@ -935,6 +984,10 @@ export class FinanzasService {
         const eventos = await eventoRepo.find({ where: { reembolsoId: r.id } });
         const montoMoneda = Number(dto.monto || 0);
         switch (dto.tipo) {
+          case 'anulacion':
+            r.estado = 'anulado';
+            r.fechaCierre = dto.fecha;
+            break;
           case 'incidencia':
             r.estado = 'incidencia';
             break;
@@ -974,7 +1027,7 @@ export class FinanzasService {
         }
         await repo.save(r);
         if (r.estado==='recibido' && dto.tipo==='recibido') {
-          await this.saldos?.reembolsarProductoCliente(r.productoId,dto.fecha,userId,manager);
+          await this.saldos?.actualizarSaldoPorReclamo(r.productoId,userId,manager);
         }
         if (['recibido', 'perdida_definitiva'].includes(r.estado)) {
           await manager
@@ -1016,7 +1069,7 @@ export class FinanzasService {
       qb.andWhere('r.productoId = :pid', { pid: params.productoId });
     if (params.abiertos)
       qb.andWhere(
-        `r.estado NOT IN ('recibido', 'rechazado', 'perdida_definitiva')`,
+        `r.estado NOT IN ('recibido', 'rechazado', 'perdida_definitiva', 'anulado')`,
       );
     const items = await qb.getMany();
     return items.map((r) => ({
@@ -1031,7 +1084,7 @@ export class FinanzasService {
   ) {
     if (motivo === 'reabrir') {
       const abiertos = await this.dataSource.getRepository(Reembolso).createQueryBuilder('r')
-        .where('r.productoId = :productoId', { productoId }).andWhere("r.estado NOT IN ('recibido','rechazado','perdida_definitiva')").getCount();
+        .where('r.productoId = :productoId', { productoId }).andWhere("r.estado NOT IN ('recibido','rechazado','perdida_definitiva','anulado')").getCount();
       if (abiertos) throw new BadRequestException('El producto tiene un reclamo pendiente.');
     }
     const repo = this.dataSource.getRepository(Producto);
@@ -1073,10 +1126,10 @@ export class FinanzasService {
     return [...groups.values()].filter((group) => group.stock > 0).map(({ fichas, referencia, ...group }) => ({ ...group, ...resolveAccessoryPrices({ id: group.productoId, referencia }, fichas) })).sort((a, b) => a.nombre.localeCompare(b.nombre) || a.comprador.localeCompare(b.comprador));
   }
 
-  async ventaRapida(dto: VentaRapidaDto, manager?: EntityManager) {
+  async ventaRapida(dto: VentaRapidaDto, manager?: EntityManager, userId = 0) {
     const grupo = `vr-${dto.idempotencyKey}`.slice(0, 64);
     const clave = (index: number) => `${dto.idempotencyKey}:${index}`;
-    if (!manager) return this.dataSource.transaction((em) => this.ventaRapida(dto, em));
+    if (!manager) return this.dataSource.transaction((em) => this.ventaRapida(dto, em, userId));
     await lockAccessoryTopology(manager);
     await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [grupo]);
     const hash = operationHash(dto);
@@ -1099,6 +1152,9 @@ export class FinanzasService {
         );
 
       const resumen = resumenVentaRapida(dto.items);
+      let saldoRestante = toCents(dto.saldoCliente?.monto);
+      if (dto.saldoCliente && (!userId || !this.saldos || saldoRestante <= 0 || saldoRestante > dto.items.reduce((n, i) => n + toCents(i.precioUnitario) * i.cantidad, 0)))
+        throw new BadRequestException('Indica un saldo válido y una sesión de cliente.');
       let grupoFinal = grupo;
       if (dto.ventaRelacionadaId) {
         const principal = await ventaRepo.findOne({
@@ -1109,8 +1165,24 @@ export class FinanzasService {
         grupoFinal = principal.grupoOperacion || grupo;
         if (!principal.grupoOperacion)
           await ventaRepo.update(principal.id, { grupoOperacion: grupoFinal });
+        // Accesorios agregados a una venta: heredan fecha, vendedor y cobro de la venta principal.
+        const [pagoPrincipal] = await manager.query(
+          `SELECT cuenta_receptora_id AS "cuentaId", metodo FROM venta_pagos
+            WHERE venta_id = $1 AND anulado_at IS NULL AND COALESCE(origen, '') <> 'saldo_cliente' ORDER BY id LIMIT 1`,
+          [principal.id],
+        );
+        dto = {
+          ...dto,
+          fecha: String(principal.fechaVenta).slice(0, 10),
+          vendedor: principal.vendedor ?? dto.vendedor,
+          metodo: pagoPrincipal?.metodo || dto.metodo,
+          estadoCobro: pagoPrincipal ? 'pagado' : 'pendiente',
+          cuentaReceptoraId: pagoPrincipal?.cuentaId ?? undefined,
+          saldoCliente: undefined,
+          referencia: undefined,
+        };
       }
-      const cuenta = await this.cuentaParaCobro(dto, manager);
+      const cuenta = dto.saldoCliente ? null : await this.cuentaParaCobro(dto, manager);
       const tipoCambio = dto.tipoCambio || (await this.ultimoTipoCambio(manager));
       const creadas: Venta[] = [];
       for (const [index, item] of dto.items.entries()) {
@@ -1118,6 +1190,11 @@ export class FinanzasService {
           item.productoId ||
           (await this.crearProductoVentaRapida(item, dto.fecha, manager));
         const total = fromCents(toCents(item.precioUnitario) * item.cantidad);
+        const saldoParte = Math.min(saldoRestante, toCents(total));
+        saldoRestante -= saldoParte;
+        const credito = dto.saldoCliente && saldoParte > 0 ? {
+          ...dto.saldoCliente, monto: fromCents(saldoParte), operacion: `${dto.idempotencyKey}:${index}:saldo`,
+        } : undefined;
         const parte =
           dto.estadoCobro === 'pagado' && dto.metodo === 'efectivo' && cuenta?.tipo !== 'tercero'
             ? 'cash'
@@ -1133,13 +1210,14 @@ export class FinanzasService {
           precioVenta: total,
           cantidad: item.cantidad,
           modalidad: item.cantidad > 1 ? 'mayor' : 'unidad',
-          vendedor: item.productoId ? undefined : dto.vendedor,
+          vendedor: dto.saldoCliente || /^gonzalo\s*\([^)]+\)$/i.test(dto.vendedor || '') ? dto.vendedor : item.productoId ? undefined : dto.vendedor,
+          saldoCliente: credito,
           cotizacionToken: item.cotizacionToken,
-          incomeParts: total > 0 ? [{ type: parte, amount: total }] : undefined,
+          incomeParts: total > 0 ? [{ type: dto.saldoCliente ? 'debt' : parte, amount: total }] : undefined,
           incomeBank: cuenta?.legacyCodigo || undefined,
           incomeAccountId: cuenta?.id,
           incomeMethod: dto.metodo,
-        } as any);
+        } as any, userId, Boolean(dto.saldoCliente));
         // Con producto registrado manda el costo del inventario; sin él, el costo indicado o "pendiente".
         const costoDesconocido = venta.costoPendiente || (!item.productoId && item.costoUnitario == null);
         await ventaRepo.update(venta.id, {
@@ -1162,14 +1240,15 @@ export class FinanzasService {
               }
             : {}),
         });
-        if (dto.estadoCobro === 'pagado' && total > 0 && parte === 'card') {
+        if ((!dto.saldoCliente && dto.estadoCobro === 'pagado' && total > 0 && parte === 'card') ||
+            (dto.saldoCliente?.pagoAdicional && !credito && total > 0)) {
           // Pagado por tarjeta (POS) o a un repartidor: queda pendiente de liquidación.
           await this.ledger.registrarPago({
             ventaId: venta.id,
             monto: total,
-            fechaPago: dto.fecha,
-            metodo: dto.metodo,
-            cuentaReceptoraId: cuenta?.id,
+            fechaPago: dto.saldoCliente?.fechaPago || dto.fecha,
+            metodo: dto.saldoCliente ? 'transferencia' : dto.metodo,
+            cuentaReceptoraId: dto.saldoCliente?.cuentaId || cuenta?.id,
             referencia: dto.referencia,
             idempotencyKey: `${dto.idempotencyKey}:${index}`,
           }, manager);
@@ -1231,7 +1310,7 @@ export class FinanzasService {
           : fromCents(toCents(item.costoUnitario) * item.cantidad);
       const valor = await manager.getRepository(ProductoValor).save(
         manager.getRepository(ProductoValor).create({
-          valorProducto: 0,
+          valorProducto: costoTotal ?? 0,
           valorDec: 0,
           peso: 0,
           fechaCompra: new Date(`${fecha}T12:00:00Z`),

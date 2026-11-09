@@ -1,3 +1,5 @@
+import { pedidoCliente } from './pedido-cliente';
+import { Reembolso } from '../finanzas/entities/reembolso.entity';
 import { SaldosClientesService } from '../finanzas/saldos-clientes.service';
 import { lockAccessoryTopology } from './accessory-locks';
 import { allocateAccessory, accessoryOwner, accessoryGroupWhere, sameAccessoryInventoryGroup, resolveAccessoryPrices } from './accessory-quote';
@@ -356,6 +358,16 @@ export class VentaService {
     }
   }
 
+  private async codigoVisibleVenta(venta: Venta): Promise<string | undefined> {
+    const producto: Pick<Producto, 'id' | 'tipo' | 'codigoInventario'> | null | undefined = venta.producto
+      || (venta.productoId && this.transactionManager
+        ? (await this.transactionManager.query('SELECT id, tipo, "codigoInventario" FROM producto WHERE id = $1', [venta.productoId]))?.[0]
+        : null);
+    if (!producto) return venta.productoId ? `MS-${venta.productoId}` : undefined;
+    const codigo = producto.codigoInventario || producto.id;
+    return isAccessoryStock(producto.tipo) ? `ACC-${codigo}` : `MS-${codigo}`;
+  }
+
   private async syncSaleIncome(
     venta: Venta, incomeBank?: string, paymentType?: 'direct' | 'card' | 'debt', saleSku?: string,
     submittedParts?: Array<{ type: 'direct' | 'card' | 'debt' | 'cash'; amount: number }>,
@@ -378,6 +390,8 @@ export class VentaService {
       const [credito] = await this.transactionManager.query("SELECT id FROM venta_pagos WHERE venta_id=$1 AND (origen='saldo_cliente' OR saldo_convertido>0) LIMIT 1",[venta.id]);
       if (credito) return;
     }
+    // El ingreso siempre identifica el producto vendido (MS-… o ACC-…), aunque el cobro sea en efectivo.
+    if (!saleSku) saleSku = await this.codigoVisibleVenta(venta);
     await this.syncSaleIncomeRows(venta, incomeBank, paymentType, saleSku, submittedParts, destination);
     if (venta?.id && this.ledger) {
       const advance = submittedParts === undefined && paymentType && typeof this.adelantoRepo?.findOne === 'function'
@@ -1708,9 +1722,9 @@ export class VentaService {
     };
   }
 
-  async create(dto: CreateVentaDto, userId = 0): Promise<Venta> {
+  async create(dto: CreateVentaDto, userId = 0, sinIngresoAutomatico = false): Promise<Venta> {
     this.validateSaleAmounts(dto);
-    if (!this.transactionManager) return this.inTransaction((service) => service.create(dto, userId));
+    if (!this.transactionManager) return this.inTransaction((service) => service.create(dto, userId, sinIngresoAutomatico));
     await lockAccessoryTopology(this.transactionManager);
     const hash = operationHash(dto);
     if (dto.operacionKey) {
@@ -1725,10 +1739,14 @@ export class VentaService {
     // Equipos: exclusión por producto. Accesorios: todos los lotes se bloquean
     // juntos en orden de ID; bloquear antes el lote elegido permitiría un ciclo.
     if (!isAccessoryStock(base?.tipo)) await this.transactionManager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [dto.productoId]);
+    // Solo una venta registrada mientras el reclamo mantiene el equipo cerrado pasa a saldo del cliente.
+    // Si el usuario volvió a habilitar el producto, la venta nueva es real y no debe anularse.
+    const [estadoPrevio] = await this.transactionManager.query('SELECT "cierreMotivo" FROM producto WHERE id = $1', [dto.productoId]);
+    const vendidoConReclamoVigente = estadoPrevio?.cierreMotivo === 'no_comercializable';
     this.validateFinancialFields(dto, Number(dto.precioVenta));
     if (dto.saldoCliente && (!this.saldos || !userId)) throw new BadRequestException('Falta el cliente o la sesión para aplicar saldo.');
-    this.ventaConSaldo = Boolean(dto.saldoCliente);
-    let datosVenta=dto;
+    this.ventaConSaldo = Boolean(dto.saldoCliente) || sinIngresoAutomatico;
+    let datosVenta: CreateVentaDto = { ...dto, incomePaymentType: dto.incomePaymentType ?? (dto.incomeParts === undefined ? 'direct' : undefined) };
     if (dto.saldoCliente) {
       const productoSaldo=await this.productoRepo.findOne({where:{id:dto.productoId},relations:['valor']});
       if (!productoSaldo) throw new NotFoundException('Producto no encontrado.');
@@ -1755,7 +1773,11 @@ export class VentaService {
       await this.ventaRepo.update(saved.id, { operacionKey: dto.operacionKey, operacionHash: hash });
       Object.assign(saved, { operacionKey: dto.operacionKey, operacionHash: hash });
     }
-    return this.applyFinancialFields(saved, dto);
+    const final = await this.applyFinancialFields(saved, dto);
+    if (vendidoConReclamoVigente && clientePedido && !dto.saldoCliente && this.saldos && userId &&
+        await this.saldos.actualizarSaldoPorReclamo(saved.productoId, userId, this.transactionManager))
+      return this.ventaRepo.findOneByOrFail({ id: saved.id });
+    return final;
   }
 
   private validateFinancialFields(
@@ -1825,7 +1847,13 @@ export class VentaService {
     });
     if (!producto)
       throw new NotFoundException(`Producto ${dto.productoId} no encontrado`);
-    if (producto.archivadoAt || producto.cierreMotivo != null) throw new BadRequestException('El producto está archivado o no está disponible para vender.');
+    const registrarPedidoReclamado = !producto.archivadoAt && producto.cierreMotivo === 'no_comercializable' &&
+      !isAccessoryStock(producto.tipo) && this.saldos && pedidoCliente(dto.vendedor || producto.vendedor) &&
+      await this.transactionManager!.getRepository(Reembolso).createQueryBuilder('r')
+        .where('r.productoId=:productoId', { productoId: producto.id })
+        .andWhere("r.estado NOT IN ('anulado','rechazado','perdida_definitiva')").getCount() > 0;
+    if (producto.archivadoAt || (producto.cierreMotivo != null && !registrarPedidoReclamado))
+      throw new BadRequestException('El producto está archivado o no está disponible para vender.');
     if (!producto.valor)
       throw new BadRequestException(
         'El producto no tiene sección de valor asociada',
@@ -1869,7 +1897,7 @@ export class VentaService {
         const locked = groupLots.find((lot) => lot.id === producto.id);
         if (!locked?.valor) throw new BadRequestException('El accesorio no tiene costo asociado.');
         const purchaseOwner = normalizeSeller(locked.vendedor);
-        if (purchaseOwner && dto.vendedor && normalizeSeller(dto.vendedor) !== purchaseOwner) {
+        if (purchaseOwner && dto.vendedor && !pedidoCliente(dto.vendedor) && normalizeSeller(dto.vendedor) !== purchaseOwner) {
           throw new BadRequestException('La ganancia del accesorio corresponde al comprador. Corrige el comprador en Inventario antes de vender.');
         }
         const allocation = allocateAccessory(groupLots, locked, cantidad, dto.loteInicialId);

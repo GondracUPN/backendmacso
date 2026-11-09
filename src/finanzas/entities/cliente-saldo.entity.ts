@@ -22,6 +22,8 @@ import { VentaPago } from './venta-pago.entity';
 )
 @Check('cliente_saldos_tipo_cambio_check', 'tipo_cambio > 0')
 export class ClienteSaldo {
+  @Column({ name: 'anulada_at', type: 'timestamptz', nullable: true })
+  anuladaAt?: Date | null;
   @PrimaryGeneratedColumn() id: number;
   @Column({ name: 'cliente_id', type: 'int' }) clienteId: number;
   @ManyToOne(() => ClienteComercial, { onDelete: 'RESTRICT', nullable: false })

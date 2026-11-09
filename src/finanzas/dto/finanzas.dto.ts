@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+import { AplicarSaldoDto } from './saldos.dto';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -205,6 +206,7 @@ export class ItemVentaRapidaDto {
 }
 
 export class VentaRapidaDto {
+  @IsOptional() @ValidateNested() @Type(() => AplicarSaldoDto) saldoCliente?: AplicarSaldoDto;
   @IsDateString() fecha: string;
   @IsArray()
   @ArrayMinSize(1)

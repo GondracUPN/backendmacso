@@ -301,7 +301,7 @@ export class FinanzasController {
   }
 
   @Post('ventas-rapidas')
-  ventaRapida(@Body() dto: VentaRapidaDto) {
-    return this.svc.ventaRapida(dto);
+  ventaRapida(@Body() dto: VentaRapidaDto, @CurrentUser() user: JwtUserPayload) {
+    return this.svc.ventaRapida(dto, undefined, user.userId);
   }
 }

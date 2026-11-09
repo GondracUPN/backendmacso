@@ -2,7 +2,7 @@ import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Res, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Res, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as archiver from 'archiver';
@@ -73,6 +73,12 @@ export class InventarioController {
   @Get()
   findDisponibles() {
     return this.inventarioService.findDisponibles();
+  }
+
+  /** Serie o IMEI en todas las fichas, incluidos productos vendidos o fuera del inventario disponible. */
+  @Get('buscar')
+  buscarPorIdentificador(@Query('q') q?: string) {
+    return this.inventarioService.buscarPorIdentificador(q || '');
   }
 
   @Get('producto/:productoId')

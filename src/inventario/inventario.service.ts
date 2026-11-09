@@ -100,6 +100,42 @@ export class InventarioService {
     return { ...reglas, completitud: this.appleCatalog.completeness((ficha || {}) as any, reglas) };
   }
 
+  /**
+   * Busca un número de serie o IMEI EXACTO (sin espacios ni guiones) en todas las fichas, también de
+   * productos vendidos. No devuelve coincidencias parecidas. En la serie, O/0 e I/1 se tratan igual
+   * porque Apple no usa O ni I y se confunden al escribir. Devuelve la ficha y la venta activa más reciente.
+   */
+  async buscarPorIdentificador(q: string) {
+    const serial = String(q || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/O/g, '0').replace(/I/g, '1');
+    if (serial.length < 4) return [];
+    const imei = /^\d{14,16}$/.test(serial) ? serial : null;
+    const qb = this.inventarioRepo
+      .createQueryBuilder('i')
+      .where(`TRANSLATE(UPPER(REGEXP_REPLACE(COALESCE(i.serial, ''), '[^A-Za-z0-9]', '', 'g')), 'OI', '01') = :serial`, { serial });
+    if (imei) {
+      qb.orWhere(`REGEXP_REPLACE(COALESCE(i.imei, ''), '[^0-9]', '', 'g') = :imei`, { imei })
+        .orWhere(`REGEXP_REPLACE(COALESCE(i.imei2, ''), '[^0-9]', '', 'g') = :imei`, { imei });
+    }
+    const fichas = await qb
+      .orderBy('i.productoId', 'DESC')
+      .take(20)
+      .getMany();
+    if (!fichas.length) return [];
+    const ids = fichas.map((ficha) => ficha.productoId);
+    const productos = await this.productoRepo.find({ where: { id: In(ids) }, relations: ['detalle', 'valor', 'tracking'] });
+    const ventas: Array<{ productoId: number; id: number; fechaVenta: string; vendedor: string | null }> = await this.productoRepo.manager.query(
+      `SELECT DISTINCT ON (v."productoId") v."productoId", v.id, v."fechaVenta"::text AS "fechaVenta", v.vendedor
+         FROM venta v WHERE v."productoId" = ANY($1::int[]) AND ${ventaActivaSql()}
+        ORDER BY v."productoId", v.id DESC`,
+      [ids],
+    );
+    const porProducto = new Map(productos.map((producto) => [producto.id, producto]));
+    const ventaPorProducto = new Map(ventas.map((venta) => [Number(venta.productoId), venta]));
+    return fichas
+      .filter((ficha) => porProducto.has(ficha.productoId))
+      .map((ficha) => ({ producto: porProducto.get(ficha.productoId)!, ficha, venta: ventaPorProducto.get(ficha.productoId) || null }));
+  }
+
   async findProductoByCode(productoId: number) {
     const producto = await this.productoRepo.findOne({
       where: { id: productoId },

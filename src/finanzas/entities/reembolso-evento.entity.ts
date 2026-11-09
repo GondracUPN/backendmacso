@@ -14,10 +14,14 @@ export const TIPOS_EVENTO_REEMBOLSO = [
   'reclamo',
   'aprobado',
   'recibido',
+  // Reembolso recibido que se retiró al anular el reclamo: no suma en cuentas ni resultados.
+  'recibido_anulado',
   'rechazado',
   'perdida',
   'gasto_adicional',
   'nota',
+  'anulacion',
+  'fecha_reclamo',
 ] as const;
 export type TipoEventoReembolso = (typeof TIPOS_EVENTO_REEMBOLSO)[number];
 

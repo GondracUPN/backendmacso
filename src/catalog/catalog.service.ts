@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { CatalogItem } from './catalog-item.entity';
 
 const normalizeValue = (value: string) =>
@@ -36,17 +36,19 @@ export class CatalogService {
     });
   }
 
-  listExpenseConcepts() {
+  /** Conceptos compartidos (sin dueño) más los creados por el usuario; los de otros usuarios no se ven. */
+  listExpenseConcepts(userId?: number | null) {
+    const owners = userId ? [{ ownerUserId: IsNull() }, { ownerUserId: userId }] : [{ ownerUserId: IsNull() }];
     return this.repo.find({
-      where: { kind: 'expense_concept', active: true },
+      where: owners.map((owner) => ({ kind: 'expense_concept' as const, active: true, ...owner })),
       order: { label: 'ASC', id: 'ASC' },
     });
   }
 
-  async listAll() {
+  async listAll(userId?: number | null) {
     const [productOptions, expenseConcepts] = await Promise.all([
       this.listProductOptions(),
-      this.listExpenseConcepts(),
+      this.listExpenseConcepts(userId),
     ]);
     return { productOptions, expenseConcepts };
   }
@@ -79,7 +81,7 @@ export class CatalogService {
     return this.repo.save(item);
   }
 
-  async createExpenseConcept(dto: any) {
+  async createExpenseConcept(dto: any, userId: number) {
     const label = String(dto?.label || '').trim();
     const value = normalizeValue(dto?.value || label);
     const appliesDebit = Boolean(dto?.appliesDebit);
@@ -96,6 +98,7 @@ export class CatalogService {
       appliesDebit,
       appliesCredit,
       active: true,
+      ownerUserId: userId,
       metadata: {
         defaultCurrency: dto?.defaultCurrency === 'USD' ? 'USD' : 'PEN',
         category: normalizeExpenseCategory(dto?.category),
@@ -104,20 +107,24 @@ export class CatalogService {
     return this.repo.save(item);
   }
 
-  async isExpenseConceptAllowed(concept: string, method: 'debito' | 'credito') {
+  /** userId es el dueño del gasto: solo valen sus conceptos y los compartidos. */
+  async isExpenseConceptAllowed(concept: string, method: 'debito' | 'credito', userId?: number | null) {
     const value = normalizeValue(concept);
     if (!value) return false;
-    const item = await this.repo.findOne({
-      where: { kind: 'expense_concept', value, active: true },
+    const items = await this.repo.find({
+      where: [
+        { kind: 'expense_concept', value, active: true, ownerUserId: IsNull() },
+        ...(userId ? [{ kind: 'expense_concept' as const, value, active: true, ownerUserId: userId }] : []),
+      ],
     });
-    if (!item) return false;
-    return method === 'debito' ? item.appliesDebit : item.appliesCredit;
+    return items.some((item) => (method === 'debito' ? item.appliesDebit : item.appliesCredit));
   }
 
-  async disable(id: number) {
+  async disable(id: number, userId?: number | null) {
     // Solo opciones y conceptos: las filas del catálogo Apple se gestionan desde /apple-catalog.
     const item = await this.repo.findOne({ where: { id, kind: In(['product_option', 'expense_concept']) } });
-    if (!item) throw new NotFoundException('Item no encontrado.');
+    // Un concepto privado de otro usuario se trata como inexistente.
+    if (!item || (item.ownerUserId != null && item.ownerUserId !== userId)) throw new NotFoundException('Item no encontrado.');
     item.active = false;
     return this.repo.save(item);
   }

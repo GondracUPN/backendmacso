@@ -686,7 +686,7 @@ export class FinanzasLedgerService {
         gastoId: row.id,
       };
       const type = row.salePaymentType;
-      if (!type || type === 'direct' || type === 'cash') {
+      if (!type || type === 'direct') {
         const fecha = row.salePaidAt || row.fecha;
         deseados.push({
           ...base,

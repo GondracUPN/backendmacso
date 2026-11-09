@@ -124,7 +124,7 @@ export class CardsService {
       )
       .orderBy('g.fecha', 'ASC')
       .getMany(),
-      this.catalogService.listExpenseConcepts().catch(() => []),
+      this.catalogService.listExpenseConcepts(userId).catch(() => []),
     ]);
     if (!cards.length) return [];
 

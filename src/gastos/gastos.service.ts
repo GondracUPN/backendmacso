@@ -112,12 +112,12 @@ export class GastosService {
     await repo.save(itf);
   }
 
-  private async isConceptAllowed(concepto: string, metodoPago: 'debito' | 'credito') {
+  private async isConceptAllowed(concepto: string, metodoPago: 'debito' | 'credito', userId: number) {
     const allowedDeb = new Set(['comida', 'gusto', 'ingreso', 'itf', 'pago_tarjeta', 'retiro_agente', 'gastos_recurrentes', 'transporte', 'pago_envios', 'cashback', 'bolsa']);
     const allowedCred = new Set(['comida', 'gusto', 'inversion', 'pago_envios', 'deuda_cuotas', 'gastos_recurrentes', 'desgravamen', 'transporte', 'reinicio', 'cashback']);
     if (metodoPago === 'debito' && allowedDeb.has(concepto)) return true;
     if (metodoPago === 'credito' && allowedCred.has(concepto)) return true;
-    return this.catalogService.isExpenseConceptAllowed(concepto, metodoPago);
+    return this.catalogService.isExpenseConceptAllowed(concepto, metodoPago, userId);
   }
 
   private addMonth(dateStr: string, anchorDay?: number): string { return addMonth(dateStr, anchorDay); }
@@ -128,7 +128,7 @@ export class GastosService {
     // Si es crédito, forzamos USD (los consumos de tarjeta se guardan en USD)
     const moneda: 'PEN' | 'USD' = dto.moneda === 'USD' ? 'USD' : 'PEN';
 
-    if (!(await this.isConceptAllowed(concepto, metodoPago))) {
+    if (!(await this.isConceptAllowed(concepto, metodoPago, userId))) {
       throw new BadRequestException(`Concepto no permitido para ${metodoPago}`);
     }
 
@@ -448,7 +448,7 @@ export class GastosService {
     }
 
     if (dto.concepto !== undefined || dto.metodoPago !== undefined) {
-      if (!(await this.isConceptAllowed(g.concepto, g.metodoPago))) {
+      if (!(await this.isConceptAllowed(g.concepto, g.metodoPago, g.userId))) {
         throw new BadRequestException(`Concepto no permitido para ${g.metodoPago}`);
       }
     }

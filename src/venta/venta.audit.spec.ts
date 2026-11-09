@@ -116,7 +116,7 @@ const dtoRapida: any = { idempotencyKey: 'auditoria-20261020', fecha: '2026-10-2
 test('AUDIT corregido: venta rápida conserva la cuenta nueva y el método Yape', async () => {
   const { service, create } = rapida();
   await service.ventaRapida(dtoRapida);
-  expect(create).toHaveBeenCalledWith(expect.objectContaining({ incomeAccountId: 99, incomeMethod: 'yape', incomeParts: [{ type: 'direct', amount: 80 }] }));
+  expect(create).toHaveBeenCalledWith(expect.objectContaining({ incomeAccountId: 99, incomeMethod: 'yape', incomeParts: [{ type: 'direct', amount: 80 }] }), 0, false);
   expect(create.mock.calls[0][0].incomeBank).toBeUndefined();
 });
 

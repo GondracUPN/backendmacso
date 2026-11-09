@@ -18,6 +18,7 @@ import {
 } from './finanzas-calc';
 import { Venta } from '../venta/venta.entity';
 import { VentaPago } from './entities/venta-pago.entity';
+import { Reembolso } from './entities/reembolso.entity';
 import {
   CuentaFinanciera,
   TIPOS_DISPONIBLES,
@@ -242,12 +243,18 @@ export class SaldosClientesService {
     return rows.filter((g) => !registrados.some((p) => p.gastoId === g.id));
   }
   private ingresoRecibido(g: Gasto): number {
-    if (!g.salePaymentType || ['direct', 'cash'].includes(g.salePaymentType))
+    if (!g.salePaymentType || g.salePaymentType === 'direct')
       return toCents(g.monto);
     return toCents(g.saleReceivedAmount);
   }
-  private async conciliarIngresosLegacy(m: EntityManager, v: Venta) {
-    const ingresos = await this.ingresosLegacy(m, v);
+  private async pagosConCobroExplicito(m: EntityManager, pagos: VentaPago[]) {
+    const ids = pagos.filter(p => p.origen === 'ingreso_venta' && p.gastoId).map(p => p.gastoId!);
+    const ingresos = ids.length ? await m.getRepository(Gasto).findBy({ id: In(ids) }) : [];
+    return pagos.filter(p => p.origen !== 'ingreso_venta' || !p.gastoId ||
+      ingresos.some(g => g.id === p.gastoId && Boolean(g.salePaymentType) && this.ingresoRecibido(g) > 0));
+  }
+  private async conciliarIngresosLegacy(m: EntityManager, v: Venta, automatico = false) {
+    const ingresos = (await this.ingresosLegacy(m, v)).filter(g => !automatico || (g.salePaymentType && this.ingresoRecibido(g) > 0));
     if (!ingresos.length) return;
     const pagos = await m
       .getRepository(VentaPago)
@@ -292,12 +299,14 @@ export class SaldosClientesService {
       incluirCanceladaParaSaldo: true,
     });
   }
-  async importePagadoParaSaldo(v: Venta, m: EntityManager): Promise<number> {
+  async importePagadoParaSaldo(v: Venta, m: EntityManager, automatico = false): Promise<number> {
+    const pagos = automatico ? await this.pagosConCobroExplicito(m,
+      await m.getRepository(VentaPago).find({ where: { ventaId: v.id }, relations: ['liquidaciones'] })) : null;
     const resumen = finanzasVenta(
       this.ledger.ventaCalc(v),
-      await this.ledger.pagosCalc(m, { ventaId: v.id }),
+      pagos ? pagos.map(toPagoCalc) : await this.ledger.pagosCalc(m, { ventaId: v.id }),
     );
-    const legacy = await this.ingresosLegacy(m, v);
+    const legacy = (await this.ingresosLegacy(m, v)).filter(g => !automatico || g.salePaymentType);
     return (
       Math.max(0, resumen.cobradoClienteCents) +
       legacy.reduce((n, g) => n + this.ingresoRecibido(g), 0)
@@ -440,9 +449,23 @@ export class SaldosClientesService {
         })),
       });
     }
+    const devoluciones = await this.db.query(`SELECT r.id, r.producto_id, COALESCE(p."codigoInventario",p.id) sku,
+        r.fecha_incidencia::text fecha, r.estado, r.motivo, ultima.id venta_id,
+        COALESCE(ultima."precioVenta",0)::numeric(12,2)::text precio_venta,
+        COALESCE(credito.original,0)::numeric(12,2)::text saldo_generado, COALESCE(credito.disponible,0)::numeric(12,2)::text disponible,
+        GREATEST(0,COALESCE(ultima."precioVenta",0)-COALESCE(credito.original,0))::numeric(12,2)::text importe_sin_pagar
+      FROM reembolsos r JOIN producto p ON p.id=r.producto_id
+      LEFT JOIN LATERAL (SELECT v.id,v."precioVenta" FROM venta v
+        WHERE v."productoId"=p.id AND v.id=ANY($2::int[])
+        ORDER BY EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(r.reversion_reclamo->'ventas','[]'::jsonb)) x WHERE (x->>'id')::int=v.id) DESC,v.id DESC LIMIT 1) ultima ON true
+      LEFT JOIN LATERAL (SELECT sum(s.original) original,sum(s.disponible) disponible FROM cliente_saldos s
+        WHERE s.venta_id=ultima.id AND s.cliente_id=$1 AND s.anulada_at IS NULL) credito ON true
+      WHERE r.estado<>'anulado' AND (p.id=ANY($3::int[]) OR ${clavePedidoSql('p')}=$4)
+      ORDER BY r.fecha_incidencia DESC,r.id DESC`, [clienteId, ids, productoIds, cliente.pedido_key || null]);
     return {
       cliente,
       saldos,
+      devoluciones,
       movimientos,
       ventas: operaciones,
       disponible: money(saldos.reduce((n, s) => n + toCents(s.disponible), 0)),
@@ -453,6 +476,7 @@ export class SaldosClientesService {
     dto: GenerarSaldoDto,
     userId: number,
     manager?: EntityManager,
+    automatico = false,
   ) {
     const fecha =
       dto.fecha ||
@@ -491,19 +515,20 @@ export class SaldosClientesService {
         v.clienteId = clienteId;
       }
       const existentes = await m.query(
-        'SELECT id FROM cliente_saldos WHERE venta_id=$1',
+        'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL',
         [ventaId],
       );
       if (existentes.length)
         throw new BadRequestException(
           'Los pagos de esta venta ya se convirtieron en saldo.',
         );
-      await this.conciliarIngresosLegacy(m, v);
-      const pagos = await m.getRepository(VentaPago).find({
+      await this.conciliarIngresosLegacy(m, v, automatico);
+      const registrados = await m.getRepository(VentaPago).find({
         where: { ventaId, anuladoAt: IsNull() },
         relations: ['liquidaciones'],
         order: { id: 'ASC' },
       });
+      const pagos = automatico ? await this.pagosConCobroExplicito(m, registrados) : registrados;
       if (!pagos.length)
         throw new BadRequestException(
           'La venta no tiene pagos efectivos registrados.',
@@ -536,7 +561,9 @@ export class SaldosClientesService {
           throw new BadRequestException('Falta el tipo de cambio histórico.');
         await m.query(
           `INSERT INTO cliente_saldos(cliente_id,venta_id,pago_id,sku,original,disponible,moneda,monto_original,tipo_cambio,fecha,motivo,creado_por,equivalente_usd)
-          VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12)
+          ON CONFLICT (pago_id) DO UPDATE SET disponible=EXCLUDED.disponible, fecha=EXCLUDED.fecha, motivo=EXCLUDED.motivo, anulada_at=NULL
+          WHERE cliente_saldos.anulada_at IS NOT NULL`,
           [
             v.clienteId,
             v.id,
@@ -592,13 +619,15 @@ export class SaldosClientesService {
     )
       return false;
     const existentes = await m.query(
-      'SELECT id FROM cliente_saldos WHERE venta_id=$1',
+      'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL',
       [ventaId],
     );
     if (existentes.length) return true;
-    if (v.anuladaAt || (await this.importePagadoParaSaldo(v, m)) <= 0)
+    // Actualiza derivados antiguos: elegir efectivo no confirma que el cliente pagó.
+    if (!v.anuladaAt) await this.ledger.sincronizarIngresosVenta(v.id, m, { incluirCanceladaParaSaldo: true });
+    if (v.anuladaAt || (await this.importePagadoParaSaldo(v, m, true)) <= 0)
       return false;
-    await this.generar(ventaId, { fecha }, userId, m);
+    await this.generar(ventaId, { fecha }, userId, m, true);
     await m.getRepository(Venta).update(ventaId, {
       anuladaAt: new Date(),
       anuladaPor: userId,
@@ -616,8 +645,35 @@ export class SaldosClientesService {
     const ventas = await m
       .getRepository(Venta)
       .find({ where: { productoId }, order: { id: 'ASC' } });
-    for (const v of ventas)
-      await this.cancelarPedidoConSaldo(v.id, fecha, userId, m);
+    const convertidas: NonNullable<import('./entities/reembolso.entity').Reembolso['reversionReclamo']>['ventas'] = [];
+    for (const v of ventas) {
+      await m.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['saldo-cancelacion:' + v.id]);
+      const existentes = await m.query('SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL', [v.id]);
+      if (existentes.length) continue;
+      if (await this.cancelarPedidoConSaldo(v.id, fecha, userId, m)) {
+        const saldos = await m.query('SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL', [v.id]);
+        convertidas.push({ id: v.id, estadoComercial: v.estadoComercial, anuladaAt: v.anuladaAt?.toISOString() || null,
+          anuladaPor: v.anuladaPor ?? null, anulacionMotivo: v.anulacionMotivo ?? null, saldoIds: saldos.map(s => s.id) });
+      }
+    }
+    return convertidas;
+  }
+  async actualizarSaldoPorReclamo(productoId: number, userId: number, m: EntityManager) {
+    const r = await m.getRepository(Reembolso).createQueryBuilder('r')
+      .where('r.productoId=:productoId', { productoId })
+      .andWhere("r.estado NOT IN ('anulado','rechazado','perdida_definitiva')")
+      .orderBy('r.id', 'DESC').setLock('pessimistic_write').getOne();
+    if (!r) return false;
+    const [pago] = await m.query(`SELECT max(p.fecha_pago)::text fecha FROM venta_pagos p
+      JOIN venta v ON v.id=p.venta_id WHERE v."productoId"=$1 AND p.anulado_at IS NULL AND p.verificado=true`, [productoId]);
+    const fecha = [r.fechaIncidencia, pago?.fecha].filter(Boolean).sort().pop();
+    if (!fecha) return false;
+    const ventas = await this.reembolsarProductoCliente(productoId, fecha, userId, m);
+    if (!ventas.length) return false;
+    r.reversionReclamo = { cierreMotivo: r.reversionReclamo?.cierreMotivo ?? null,
+      ventas: [...(r.reversionReclamo?.ventas || []), ...ventas] };
+    await m.getRepository(Reembolso).save(r);
+    return true;
   }
   async prepararCambioSaldo(clienteId:number,dto:AplicarSaldoDto,m:EntityManager) {
     this.externo(await this.cliente(m,clienteId));

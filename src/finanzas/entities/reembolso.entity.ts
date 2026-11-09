@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -19,11 +20,18 @@ export const ESTADOS_REEMBOLSO = [
   'recibido',
   'rechazado',
   'perdida_definitiva',
+  'anulado',
 ] as const;
 export type EstadoReembolso = (typeof ESTADOS_REEMBOLSO)[number];
 
 @Entity('reembolsos')
+@Check('chk_reembolso_estado', `estado IN (${ESTADOS_REEMBOLSO.map(e => `'${e}'`).join(',')})`)
 export class Reembolso {
+  @Column({ name: 'reversion_reclamo', type: 'jsonb', nullable: true })
+  reversionReclamo?: {
+    cierreMotivo: string | null;
+    ventas: Array<{ id: number; estadoComercial: string; anuladaAt: string | null; anuladaPor: number | null; anulacionMotivo: string | null; saldoIds: number[] }>;
+  } | null;
   @PrimaryGeneratedColumn()
   id: number;
 

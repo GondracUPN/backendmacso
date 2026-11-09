@@ -8,7 +8,8 @@ export async function ensureSaldosClientesProtections(
         IF EXISTS(SELECT 1 FROM cliente_saldos WHERE pago_id=OLD.id) OR EXISTS(SELECT 1 FROM cliente_saldo_movimientos WHERE pago_id=OLD.id) THEN
           IF TG_OP='DELETE' THEN RAISE EXCEPTION 'El pago tiene saldo a favor vinculado'; END IF;
           IF (to_jsonb(OLD)-'saldo_convertido'-'updated_at') IS DISTINCT FROM (to_jsonb(NEW)-'saldo_convertido'-'updated_at')
-             OR (OLD.saldo_convertido>0 AND NEW.saldo_convertido<>OLD.saldo_convertido) THEN
+             OR (OLD.saldo_convertido>0 AND NEW.saldo_convertido<>OLD.saldo_convertido
+                 AND EXISTS(SELECT 1 FROM cliente_saldos WHERE pago_id=OLD.id AND anulada_at IS NULL)) THEN
             RAISE EXCEPTION 'No se puede modificar el historial de un pago con saldo a favor';
           END IF;
         END IF;
