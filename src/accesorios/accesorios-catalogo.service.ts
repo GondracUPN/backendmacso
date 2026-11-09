@@ -116,7 +116,14 @@ export class AccesoriosCatalogoService implements OnModuleInit, OnModuleDestroy 
             const response = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(10000),
               headers: { 'Content-Type': 'application/json', 'x-idempotency-key': randomUUID(), ...catalogSyncHeaders() },
               body: JSON.stringify({ event: 'accessory.snapshot', product: payload }) });
-            if (!response.ok) throw new Error(`Catálogo HTTP ${response.status}.`);
+            if (!response.ok) {
+              // Muestra el motivo que devuelve el catálogo (p. ej. un error de base de datos) para diagnosticarlo.
+              const body = await response.text().catch(() => '');
+              let motivo = '';
+              try { const parsed = JSON.parse(body); motivo = Array.isArray(parsed?.message) ? parsed.message.join(' | ') : String(parsed?.message || ''); } catch { motivo = body; }
+              motivo = motivo.trim() && !/^internal server error$/i.test(motivo.trim()) ? `: ${motivo.trim().slice(0, 300)}` : '';
+              throw new Error(`Catálogo HTTP ${response.status}${motivo || '.'}`);
+            }
             const result = await response.json();
             if (result?.accessorySnapshot !== true) throw new Error('El receptor del catálogo necesita la actualización de accesorios.');
             state.payload = payload; state.syncHash = hash; state.sincronizadoAt = new Date();
