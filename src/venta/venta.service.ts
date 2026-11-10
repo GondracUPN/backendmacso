@@ -1058,7 +1058,7 @@ export class VentaService {
       const adelanto = adelantosByVenta.get(venta.id);
       const deudaCliente = Number((venta as any).deudaCliente || 0);
       const montoAdelanto = deudaCliente > 0 ? Math.max(0, precioVenta - deudaCliente) : adelanto ? toMoneyNumber(adelanto.montoAdelanto) : precioVenta;
-      const status = getPedidoStatus(producto, deudaCliente > 0 ? 'adelanto' : 'pagado');
+      const status = getPedidoStatus(producto, deudaCliente > 0 ? (montoAdelanto > 0 ? 'adelanto' : 'sin_pago') : 'pagado');
 
       rows.push({
         id: `venta-${venta.id}`,

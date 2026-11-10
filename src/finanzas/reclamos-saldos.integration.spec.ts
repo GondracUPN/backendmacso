@@ -1171,7 +1171,7 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     expect((await svc.findLatestByProductos([p.id]))[0]).toMatchObject({ deudaCliente: 1000 - pagado });
     const row = (await svc.pedidoSummary()).rows.find(r => r.ventaId === v.id);
     expect(row.saldo).toBe(1000 - pagado);
-    expect(row.estadoPago === 'pagado').toBe(pagado === 1000);
+    expect(row.estadoPago).toBe(pagado === 1000 ? 'pagado' : pagado > 0 ? 'adelanto' : 'sin_pago');
     const recibidos = await ds.getRepository(VentaPago).findBy({ ventaId: v.id });
     expect(recibidos.reduce((n, p) => n + Number(p.montoPen), 0)).toBe(pagado);
     if (pagado < 1000) {
