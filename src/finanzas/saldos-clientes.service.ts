@@ -792,8 +792,10 @@ export class SaldosClientesService {
         where: { saleId: ventaId, concepto: 'ingreso' },
         order: { id: 'ASC' },
       });
+      let ingresoDiferencia: Gasto | undefined;
       if (!ingresos.length && restante > 0) {
-        await m.getRepository(Gasto).save({
+        const [producto] = await m.query('SELECT id,tipo,"codigoInventario" FROM producto WHERE id=$1', [v.productoId]);
+        ingresoDiferencia = await m.getRepository(Gasto).save({
           userId,
           concepto: 'ingreso',
           metodoPago: 'debito',
@@ -802,6 +804,7 @@ export class SaldosClientesService {
           montoPen: money(restante),
           fecha: v.fechaVenta,
           saleId: ventaId,
+          saleSku: `${String(producto.tipo).toLowerCase() === 'accesorios' ? 'ACC' : 'MS'}-${producto.codigoInventario || producto.id}`,
           salePaymentType: 'debt',
           saleReceivedAmount: '0.00',
           salePaidAt: null,
@@ -833,7 +836,7 @@ export class SaldosClientesService {
           throw new BadRequestException(
             'Indica la fecha efectiva y cuenta del pago adicional.',
           );
-        await this.ledger.registrarPago(
+        const pago = await this.ledger.registrarPago(
           {
             ventaId,
             monto: fromCents(restante),
@@ -845,6 +848,14 @@ export class SaldosClientesService {
           },
           m,
         );
+        if (ingresoDiferencia) {
+          const cuenta = await m.getRepository(CuentaFinanciera).findOneByOrFail({ id: dto.cuentaId });
+          await m.getRepository(Gasto).update(ingresoDiferencia.id, {
+            salePaymentType: 'direct', saleReceivedAmount: money(restante), salePaidAt: dto.fechaPago,
+            fecha: dto.fechaPago, tarjeta: cuenta.legacyCodigo || cuenta.codigo,
+          });
+          await m.getRepository(VentaPago).update(pago.id, { gastoId: ingresoDiferencia.id });
+        }
       }
       return {
         ventaId,

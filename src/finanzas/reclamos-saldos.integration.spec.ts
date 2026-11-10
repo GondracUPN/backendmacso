@@ -19,6 +19,7 @@ import { prepareLocalDatabase } from '../db/local-schema';
 import { finanzasVenta } from './finanzas-calc';
 import { ReclamoSaldoInmediato1794096000000 } from '../migrations/1794096000000-ReclamoSaldoInmediato';
 import { ConstanciaVentaOculta1794268800000 } from '../migrations/1794268800000-ConstanciaVentaOculta';
+import { DiferenciaSaldoDirecta1794355200000 } from '../migrations/1794355200000-DiferenciaSaldoDirecta';
 import { repararSaldosReclamoSinCobro } from './reclamo-saldos-reparacion';
 import { reabrirProductoConReclamosAnulados } from './reclamo-producto-disponibilidad';
 import { Inventario } from '../inventario/inventario.entity';
@@ -344,6 +345,8 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     const g = await ds.getRepository(Gasto).findOneBy({ saleId: v.id });
     expect(g?.salePaidAt).toBeNull();
     expect(g?.saleReceivedAmount).toBe('0.00');
+    expect(g?.salePaymentType).toBe('debt');
+    expect(g?.saleSku).toBe('MS-' + v.productoId);
   });
   it('saldo 1000 y venta 1300: SÍ registra solo 300 nuevos con fecha', async () => {
     const { c } = await conSaldo(1000),
@@ -357,6 +360,24 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     expect(
       (await ds.getRepository(Gasto).findOneBy({ saleId: v.id }))?.salePaidAt,
     ).toBe(dia);
+    const g = await ds.getRepository(Gasto).findOneByOrFail({ saleId: v.id });
+    expect(g.salePaymentType).toBe('direct');
+    expect(g.saleSku).toBe('MS-' + v.productoId);
+    expect(g.saleReceivedAmount).toBe('300.00');
+    expect(g.tarjeta).toBe('bcp');
+    await ledger.sincronizarIngresosVenta(v.id);
+    expect(await ds.getRepository(VentaPago).countBy({ ventaId: v.id })).toBe(2);
+    // Reproduce la presentación antigua y comprueba su reparación idempotente.
+    await ds.getRepository(Gasto).update(g.id, { salePaymentType: 'debt', saleSku: null, tarjeta: null });
+    const q = ds.createQueryRunner();
+    try {
+      await q.connect();
+      await new DiferenciaSaldoDirecta1794355200000().up(q);
+      await new DiferenciaSaldoDirecta1794355200000().up(q);
+    } finally { await q.release(); }
+    expect(await ds.getRepository(Gasto).findOneByOrFail({ id: g.id })).toMatchObject({
+      salePaymentType: 'direct', saleSku: 'MS-' + v.productoId, tarjeta: 'bcp', monto: '300.00', saleReceivedAmount: '300.00',
+    });
   });
   it('deuda adicional se paga posteriormente mediante el ledger existente', async () => {
     const { c } = await conSaldo(1000),
@@ -364,6 +385,7 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     await aplicar(v, 1000);
     await pago(v, 300);
     expect((await situacion(v)).saldoPendienteCents).toBe(0);
+    expect((await ds.getRepository(Gasto).findOneByOrFail({ saleId: v.id })).salePaymentType).toBe('debt');
   });
   it('consume varios SKU por orden de antigüedad', async () => {
     const c = await cliente(),
