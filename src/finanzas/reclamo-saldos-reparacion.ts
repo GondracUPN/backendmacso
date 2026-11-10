@@ -10,6 +10,7 @@ export async function repararSaldosReclamoSinCobro(m: EntityManager, productoId:
       AND v."anulacionMotivo"='Anulación: pago conservado como saldo a favor del cliente'
       AND s.motivo='Venta anulada y pago conservado como saldo a favor del cliente'
       AND p.origen='ingreso_venta' AND (g.sale_payment_type IS NULL OR g.sale_payment_type<>'direct')
+      AND NOT (g.sale_payment_type IS NULL AND v."conciliacionHistorica"='confirmada')
       AND COALESCE(g.sale_received_amount,0)=0
       AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(g.sale_payment_history,'[]'::jsonb)) h WHERE COALESCE((h->>'amount')::numeric,0)>0)
       AND NOT EXISTS(SELECT 1 FROM cliente_saldo_movimientos mov WHERE mov.saldo_id=s.id)

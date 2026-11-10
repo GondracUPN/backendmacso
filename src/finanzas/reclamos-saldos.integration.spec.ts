@@ -848,6 +848,25 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
         ?.anuladoAt,
     ).toBeNull();
   });
+  it.each([true, false])('el reclamo convierte el ingreso histórico conciliado, derivado previamente: %s', async (derivado) => {
+    const c = await cliente(), v = await venta(c.id, 1000);
+    await ds.getRepository(Venta).update(v.id, {
+      vendedor: 'Gonzalo (' + c.nombre + ')', conciliacionHistorica: 'confirmada',
+    });
+    await ds.getRepository(Gasto).save({ userId, concepto: 'ingreso', metodoPago: 'debito', moneda: 'PEN',
+      monto: '1000.00', fecha: '2026-10-10', tarjeta: 'bcp', saleId: v.id,
+      notas: '__SALE_INCOME__:' + v.productoId + ':' + v.id });
+    if (derivado) await ledger.sincronizarIngresosVenta(v.id);
+    const r = await fin.crearReembolso({ productoId: v.productoId, motivo: 'No llegó a Eshopex.', fechaIncidencia: '2026-11-02' }, userId);
+    const h = await saldos.historial(c.id);
+    expect(h.disponible).toBe('1000.00');
+    expect(h.saldos[0].fecha).toBe('2026-11-02');
+    expect(await ds.transaction(m => repararSaldosReclamoSinCobro(m, v.productoId))).toEqual([]);
+    await fin.eventoReembolso(r.id, { tipo: 'recibido', fecha: '2026-11-03', monto: 750.19, moneda: 'USD', cuentaId: tarjetaId, idempotencyKey: key() }, userId);
+    expect((await saldos.historial(c.id)).disponible).toBe('1000.00');
+    await fin.eventoReembolso(r.id, { tipo: 'anulacion', fecha: '2026-11-04', idempotencyKey: key() }, userId);
+    expect((await saldos.historial(c.id)).disponible).toBe('0.00');
+  });
   it.each([0, 250])('un reembolso al vendedor solo genera el efectivo realmente cobrado: %s', async (recibido) => {
     const c = await cliente(), v = await venta(c.id, 1000);
     await ds.getRepository(Venta).update(v.id, { vendedor: 'Gonzalo (' + c.nombre + ')' });

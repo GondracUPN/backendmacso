@@ -247,14 +247,19 @@ export class SaldosClientesService {
       return toCents(g.monto);
     return toCents(g.saleReceivedAmount);
   }
-  private async pagosConCobroExplicito(m: EntityManager, pagos: VentaPago[]) {
+  private async pagosConCobroExplicito(m: EntityManager, pagos: VentaPago[], venta: Venta) {
     const ids = pagos.filter(p => p.origen === 'ingreso_venta' && p.gastoId).map(p => p.gastoId!);
     const ingresos = ids.length ? await m.getRepository(Gasto).findBy({ id: In(ids) }) : [];
     return pagos.filter(p => p.origen !== 'ingreso_venta' || !p.gastoId ||
-      ingresos.some(g => g.id === p.gastoId && Boolean(g.salePaymentType) && this.ingresoRecibido(g) > 0));
+      ingresos.some(g => g.id === p.gastoId && this.cobroConfirmado(g, venta) && this.ingresoRecibido(g) > 0));
+  }
+  private cobroConfirmado(g: Gasto, v: Venta) {
+    // Los ingresos anteriores al desglose de pagos carecen de salePaymentType.
+    // La conciliación explícita de la venta también confirma esos cobros.
+    return Boolean(g.salePaymentType) || v.conciliacionHistorica === 'confirmada';
   }
   private async conciliarIngresosLegacy(m: EntityManager, v: Venta, automatico = false) {
-    const ingresos = (await this.ingresosLegacy(m, v)).filter(g => !automatico || (g.salePaymentType && this.ingresoRecibido(g) > 0));
+    const ingresos = (await this.ingresosLegacy(m, v)).filter(g => !automatico || (this.cobroConfirmado(g, v) && this.ingresoRecibido(g) > 0));
     if (!ingresos.length) return;
     const pagos = await m
       .getRepository(VentaPago)
@@ -301,12 +306,12 @@ export class SaldosClientesService {
   }
   async importePagadoParaSaldo(v: Venta, m: EntityManager, automatico = false): Promise<number> {
     const pagos = automatico ? await this.pagosConCobroExplicito(m,
-      await m.getRepository(VentaPago).find({ where: { ventaId: v.id }, relations: ['liquidaciones'] })) : null;
+      await m.getRepository(VentaPago).find({ where: { ventaId: v.id }, relations: ['liquidaciones'] }), v) : null;
     const resumen = finanzasVenta(
       this.ledger.ventaCalc(v),
       pagos ? pagos.map(toPagoCalc) : await this.ledger.pagosCalc(m, { ventaId: v.id }),
     );
-    const legacy = (await this.ingresosLegacy(m, v)).filter(g => !automatico || g.salePaymentType);
+    const legacy = (await this.ingresosLegacy(m, v)).filter(g => !automatico || this.cobroConfirmado(g, v));
     return (
       Math.max(0, resumen.cobradoClienteCents) +
       legacy.reduce((n, g) => n + this.ingresoRecibido(g), 0)
@@ -528,7 +533,7 @@ export class SaldosClientesService {
         relations: ['liquidaciones'],
         order: { id: 'ASC' },
       });
-      const pagos = automatico ? await this.pagosConCobroExplicito(m, registrados) : registrados;
+      const pagos = automatico ? await this.pagosConCobroExplicito(m, registrados, v) : registrados;
       if (!pagos.length)
         throw new BadRequestException(
           'La venta no tiene pagos efectivos registrados.',
