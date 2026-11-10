@@ -1183,7 +1183,18 @@ export class FinanzasService {
         };
       }
       const cuenta = dto.saldoCliente ? null : await this.cuentaParaCobro(dto, manager);
-      const tipoCambio = dto.tipoCambio || (await this.ultimoTipoCambio(manager));
+      let cambioAdicionalGrupo: number | undefined;
+      if (dto.saldoCliente?.pagoAdicional) {
+        const adicional = dto.items.reduce((n, i) => n + toCents(i.precioUnitario) * i.cantidad, 0) - toCents(dto.saldoCliente.monto);
+        const cliente = await this.saldos!.resolverPedido(dto.vendedor, userId!, manager);
+        if (!cliente) throw new BadRequestException('Selecciona el cliente del saldo.');
+        const historico = await this.saldos!.prepararCambioSaldo(cliente.id, { ...dto.saldoCliente, pagoAdicional: false }, manager);
+        if (adicional > 0 && adicional >= toCents(dto.saldoCliente.monto)) {
+          if (!(Number(dto.saldoCliente.tipoCambioPagoAdicional) > 0)) throw new BadRequestException('Indica el tipo de cambio del pago adicional.');
+          cambioAdicionalGrupo = dto.saldoCliente.tipoCambioPagoAdicional;
+        } else cambioAdicionalGrupo = historico.tipoCambio;
+      }
+      const tipoCambio = cambioAdicionalGrupo || dto.tipoCambio || (await this.ultimoTipoCambio(manager));
       const creadas: Venta[] = [];
       for (const [index, item] of dto.items.entries()) {
         const productoId =
@@ -1194,6 +1205,7 @@ export class FinanzasService {
         saldoRestante -= saldoParte;
         const credito = dto.saldoCliente && saldoParte > 0 ? {
           ...dto.saldoCliente, monto: fromCents(saldoParte), operacion: `${dto.idempotencyKey}:${index}:saldo`,
+          tipoCambioPagoAdicional: cambioAdicionalGrupo ?? dto.saldoCliente.tipoCambioPagoAdicional,
         } : undefined;
         const parte =
           dto.estadoCobro === 'pagado' && dto.metodo === 'efectivo' && cuenta?.tipo !== 'tercero'

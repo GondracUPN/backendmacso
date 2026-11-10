@@ -1,4 +1,14 @@
 import { BadRequestException } from '@nestjs/common';
+
+/** Cuando el saldo no supera el dinero nuevo, ambos importes fijan el cambio de la venta. */
+export function cambioVentaConSaldo(partes: Array<{ cents: number; tipoCambio: unknown }>, adicionalCents: number, tipoCambioAdicional?: unknown) {
+  const saldoCents = partes.reduce((n, p) => n + p.cents, 0);
+  if (adicionalCents > 0 && adicionalCents >= saldoCents) {
+    if (!(Number(tipoCambioAdicional) > 0)) throw new BadRequestException('Indica el tipo de cambio del pago adicional.');
+    return cambioSaldoHistorico([...partes, { cents: adicionalCents, tipoCambio: tipoCambioAdicional }]);
+  }
+  return cambioSaldoHistorico(partes);
+}
 /** Equivalente histórico: PEN total / USD históricos, sin redondear cada tramo a centavos. */
 export function cambioSaldoHistorico(
   partes: Array<{ cents: number; tipoCambio: unknown }>,

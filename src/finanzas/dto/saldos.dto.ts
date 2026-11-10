@@ -28,6 +28,7 @@ export class AplicarSaldoDto {
   @IsBoolean() pagoAdicional: boolean;
   @IsOptional() @IsDateString() fechaPago?: string;
   @IsOptional() @IsInt() @Min(1) cuentaId?: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 4 }) @Min(0.0001) tipoCambioPagoAdicional?: number;
 }
 export class DevolverSaldoDto {
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(0.01) monto: number;

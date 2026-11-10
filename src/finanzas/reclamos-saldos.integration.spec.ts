@@ -886,6 +886,44 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     }
   });
 
+  it.each([
+    { usado: 950, adicional: 350, tc: 3.4 },
+    { usado: 650, adicional: 650, tc: 3.4971 },
+    { usado: 350, adicional: 950, tc: 3.5439 },
+  ])('la venta conserva o combina el cambio según el saldo $usado y adicional $adicional', async ({ usado, adicional, tc }) => {
+    const { c } = await conSaldo(1000);
+    const p = await producto();
+    const fecha = reclamoDia();
+    const v = await servicioVentas().create({ productoId: p.id, vendedor: 'Gonzalo (' + c.nombre + ')',
+      precioVenta: 1300, fechaVenta: fecha, operacionKey: key(), saldoCliente: {
+        monto: usado, fecha, operacion: key(), pagoAdicional: true, fechaPago: fecha, cuentaId,
+        ...(usado <= adicional ? { tipoCambioPagoAdicional: 3.6 } : {}),
+      } }, userId);
+    expect(Number(v.tipoCambio)).toBe(tc);
+    const pagos = await ds.getRepository(VentaPago).findBy({ ventaId: v.id });
+    const credito = pagos.find(pago => pago.origen === 'saldo_cliente')!;
+    const extra = pagos.find(pago => pago.origen !== 'saldo_cliente')!;
+    expect(Number(credito.tipoCambio)).toBe(3.4);
+    expect(Number(extra.tipoCambio)).toBe(usado <= adicional ? 3.6 : 3.4);
+    await servicioVentas().anular(v.id, userId);
+    const h = await saldos.historial(c.id);
+    expect(Number(h.disponible)).toBe(1000 + adicional);
+    expect(Number(h.saldos.find(s => s.pago_id === credito.id).tipo_cambio)).toBe(3.4);
+    expect(Number(h.saldos.find(s => s.pago_id === extra.id).tipo_cambio)).toBe(usado <= adicional ? 3.6 : 3.4);
+  });
+
+  it('exige el cambio adicional cuando el dinero nuevo supera el saldo y revierte todo si falta', async () => {
+    const { c } = await conSaldo(1000);
+    const p = await producto();
+    const fecha = reclamoDia();
+    await expect(servicioVentas().create({ productoId: p.id, vendedor: 'Gonzalo (' + c.nombre + ')',
+      precioVenta: 1300, fechaVenta: fecha, operacionKey: key(), saldoCliente: {
+        monto: 350, fecha, operacion: key(), pagoAdicional: true, fechaPago: fecha, cuentaId,
+      } }, userId)).rejects.toThrow('tipo de cambio del pago adicional');
+    expect(await ds.getRepository(Venta).countBy({ productoId: p.id })).toBe(0);
+    expect((await saldos.historial(c.id)).disponible).toBe('1000.00');
+  });
+
   it('anular un pedido pagado genera saldo automáticamente y conserva sus cobros', async () => {
     const c = await cliente(),
       v = await venta(c.id, 1000);

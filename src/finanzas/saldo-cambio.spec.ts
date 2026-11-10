@@ -1,4 +1,4 @@
-import { cambioSaldoHistorico } from './saldo-cambio';
+import { cambioSaldoHistorico, cambioVentaConSaldo } from './saldo-cambio';
 describe('cambio histórico de saldo aplicado', () => {
   it('un origen conserva exactamente su cambio', () =>
     expect(
@@ -23,4 +23,12 @@ describe('cambio histórico de saldo aplicado', () => {
     expect(() =>
       cambioSaldoHistorico([{ cents: 100, tipoCambio: null }]),
     ).toThrow('histórico'));
+  it('conserva el histórico cuando el saldo supera al adicional', () => {
+    expect(cambioVentaConSaldo([{ cents: 95000, tipoCambio: 3.4 }], 35000).tipoCambio).toBe(3.4);
+  });
+  it.each([[65000, 65000], [35000, 95000]])('combina cada cambio cuando el saldo es igual o menor: %s/%s', (saldo, extra) => {
+    const r = cambioVentaConSaldo([{ cents: saldo, tipoCambio: 3.4 }], extra, 3.6);
+    expect(r.tipoCambio).toBe(Number(((saldo + extra) / (saldo / 3.4 + extra / 3.6)).toFixed(4)));
+    expect(() => cambioVentaConSaldo([{ cents: saldo, tipoCambio: 3.4 }], extra)).toThrow('adicional');
+  });
 });

@@ -1797,7 +1797,7 @@ export class VentaService {
       const clienteSaldo=await this.saldos!.resolverPedido(dto.vendedor || productoSaldo.vendedor,userId,this.transactionManager);
       const clienteIdSaldo=clienteSaldo?.id ?? dto.clienteId;
       if (!clienteIdSaldo || (dto.clienteId && dto.clienteId!==clienteIdSaldo)) throw new BadRequestException('El saldo no pertenece al cliente de la venta.');
-      const cambio=await this.saldos!.prepararCambioSaldo(clienteIdSaldo,dto.saldoCliente,this.transactionManager);
+      const cambio=await this.saldos!.prepararCambioSaldo(clienteIdSaldo,dto.saldoCliente,this.transactionManager,Number(dto.precioVenta));
       datosVenta={...dto,tipoCambio:cambio.tipoCambio,tipoCambioGonzalo:undefined,tipoCambioRenato:undefined};
     }
     const saved = await this.createSale(datosVenta);

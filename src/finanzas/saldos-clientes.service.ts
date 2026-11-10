@@ -1,4 +1,4 @@
-import { cambioSaldoHistorico } from './saldo-cambio';
+import { cambioSaldoHistorico, cambioVentaConSaldo } from './saldo-cambio';
 import { pedidoCliente } from '../venta/pedido-cliente';
 import { operationHash } from '../venta/operation-hash';
 import { Gasto } from '../gastos/entities/gasto.entity';
@@ -580,7 +580,8 @@ export class SaldosClientesService {
           );
         const cents = toCents(p.montoPen) - r.devueltoCents;
         if (cents <= 0) continue;
-        const tc = String(p.origen === 'saldo_cliente' ? p.tipoCambio : v.tipoCambio);
+        const tc = String(p.origen === 'saldo_cliente' || p.idempotencyKey?.startsWith('extra:')
+          ? p.tipoCambio || v.tipoCambio : v.tipoCambio);
         if (!(Number(tc) > 0))
           throw new BadRequestException('Falta el tipo de cambio histórico.');
         await m.query(
@@ -697,11 +698,12 @@ export class SaldosClientesService {
     await m.getRepository(Reembolso).save(r);
     return true;
   }
-  async prepararCambioSaldo(clienteId:number,dto:AplicarSaldoDto,m:EntityManager) {
+  async prepararCambioSaldo(clienteId:number,dto:AplicarSaldoDto,m:EntityManager, precioVenta?: number) {
     this.externo(await this.cliente(m,clienteId));
     const saldos=await m.query('SELECT *,fecha::text AS fecha FROM cliente_saldos WHERE cliente_id=$1 AND disponible>0 ORDER BY cliente_saldos.fecha,cliente_saldos.id FOR UPDATE',[clienteId]);
     const partes=distribuirSaldo(saldos,dto.monto,dto.fecha);
-    return cambioSaldoHistorico(partes.map(p=>({cents:p.cents,tipoCambio:saldos.find(s=>s.id===p.id)!.tipo_cambio})));
+    return cambioVentaConSaldo(partes.map(p=>({cents:p.cents,tipoCambio:saldos.find(s=>s.id===p.id)!.tipo_cambio})),
+      dto.pagoAdicional ? Math.max(0, toCents(precioVenta) - toCents(dto.monto)) : 0, dto.tipoCambioPagoAdicional);
   }
   async aplicar(
     ventaId: number,
@@ -853,11 +855,14 @@ export class SaldosClientesService {
           throw new BadRequestException(
             'Indica la fecha efectiva y cuenta del pago adicional.',
           );
+        const tipoCambioAdicional = restante >= toCents(dto.monto) ? dto.tipoCambioPagoAdicional : cambio.tipoCambio;
+        if (!(Number(tipoCambioAdicional) > 0)) throw new BadRequestException('Indica el tipo de cambio del pago adicional.');
         const pago = await this.ledger.registrarPago(
           {
             ventaId,
             monto: fromCents(restante),
             moneda: 'PEN',
+            tipoCambio: Number(tipoCambioAdicional),
             fechaPago: dto.fechaPago,
             metodo: 'transferencia',
             cuentaReceptoraId: dto.cuentaId,
@@ -870,9 +875,13 @@ export class SaldosClientesService {
           await m.getRepository(Gasto).update(ingresoDiferencia.id, {
             salePaymentType: 'direct', saleReceivedAmount: money(restante), salePaidAt: dto.fechaPago,
             fecha: dto.fechaPago, tarjeta: cuenta.legacyCodigo || cuenta.codigo,
+            saleExchangeRate: Number(tipoCambioAdicional).toFixed(4),
           });
-          await m.getRepository(VentaPago).update(pago.id, { gastoId: ingresoDiferencia.id });
         }
+        await m.getRepository(VentaPago).update(pago.id, {
+          tipoCambio: Number(tipoCambioAdicional).toFixed(4),
+          ...(ingresoDiferencia ? { gastoId: ingresoDiferencia.id } : {}),
+        });
       }
       return {
         ventaId,
