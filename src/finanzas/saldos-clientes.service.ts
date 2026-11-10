@@ -44,7 +44,9 @@ export function distribuirSaldo(
   )
     throw new BadRequestException('Importe inválido.');
   const partes: Array<{ id: number; cents: number }> = [];
-  for (const saldo of saldos) {
+  const ordenados = [...saldos].sort((a, b) => toCents(a.disponible) - toCents(b.disponible) ||
+    a.fecha.localeCompare(b.fecha) || a.id - b.id);
+  for (const saldo of ordenados) {
     if (saldo.fecha > fecha) continue;
     const cents = Math.min(restante, toCents(saldo.disponible));
     if (cents > 0) partes.push({ id: saldo.id, cents });
@@ -335,11 +337,17 @@ export class SaldosClientesService {
     );
     if (!cliente) throw new NotFoundException('Cliente no encontrado.');
     const saldos = await this.db.query(
-      'SELECT *, fecha::text AS fecha FROM cliente_saldos WHERE cliente_id=$1 ORDER BY cliente_saldos.fecha,cliente_saldos.id',
+      `SELECT s.*, s.fecha::text AS fecha, p.origen AS pago_origen,
+        CASE WHEN p.origen='saldo_cliente' THEN 'saldo_recuperado'
+          WHEN p.idempotency_key LIKE 'extra:%' THEN 'pago_recuperado'
+          ELSE 'pago_convertido' END AS origen_saldo
+       FROM cliente_saldos s LEFT JOIN venta_pagos p ON p.id=s.pago_id
+       WHERE s.cliente_id=$1 ORDER BY s.fecha,s.id`,
       [clienteId],
     );
     const movimientos = await this.db.query(
-      `SELECT m.*, m.fecha::text AS fecha, s.sku AS sku_origen, COALESCE(p."codigoInventario",p.id) AS sku_destino, s.tipo_cambio
+      `SELECT m.*, m.fecha::text AS fecha, s.sku AS sku_origen, COALESCE(p."codigoInventario",p.id) AS sku_destino, s.tipo_cambio,
+        EXISTS(SELECT 1 FROM cliente_saldos retorno WHERE retorno.pago_id=m.pago_id AND retorno.anulada_at IS NULL) AS saldo_recuperado
       FROM cliente_saldo_movimientos m JOIN cliente_saldos s ON s.id=m.saldo_id
       LEFT JOIN venta v ON v.id=m.venta_id LEFT JOIN producto p ON p.id=v."productoId"
       WHERE s.cliente_id=$1 ORDER BY m.fecha,m.id`,

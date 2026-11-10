@@ -388,7 +388,7 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     expect((await situacion(v)).saldoPendienteCents).toBe(0);
     expect((await ds.getRepository(Gasto).findOneByOrFail({ saleId: v.id })).salePaymentType).toBe('debt');
   });
-  it('consume varios SKU por orden de antigüedad', async () => {
+  it('consume varios SKU de menor a mayor saldo disponible', async () => {
     const c = await cliente(),
       a = await venta(c.id, 800),
       b = await venta(c.id, 1200);
@@ -401,6 +401,35 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     const h = await saldos.historial(c.id);
     expect(h.saldos.map((s) => s.disponible)).toEqual(['0.00', '500.00']);
     expect(h.movimientos.filter((m) => m.venta_id === v.id)).toHaveLength(2);
+  });
+  it('usa el saldo más pequeño aunque el mayor se haya generado antes', async () => {
+    const c = await cliente(), grande = await venta(c.id, 1200), pequeno = await venta(c.id, 800);
+    await pago(grande, 1200);
+    await pago(pequeno, 800);
+    await generar(grande);
+    await generar(pequeno);
+    const destino = await venta(c.id, 1000);
+    await aplicar(destino, 1000);
+    const h = await saldos.historial(c.id);
+    expect(h.saldos.find(s => s.venta_id === pequeno.id).disponible).toBe('0.00');
+    expect(h.saldos.find(s => s.venta_id === grande.id).disponible).toBe('1000.00');
+    expect(h.movimientos.filter(m => m.venta_id === destino.id).map(m => m.sku_origen)).toEqual([pequeno.productoId, grande.productoId]);
+  });
+  it('el pago adicional solo vuelve a saldo después de anular y queda identificado en el desglose', async () => {
+    const { c } = await conSaldo(3140);
+    const destino = await venta(c.id, 1300);
+    await ds.getRepository(Venta).update(destino.id, { vendedor: 'Gonzalo (' + c.nombre + ')' });
+    const fecha = reclamoDia();
+    await saldos.aplicar(destino.id, { monto: 1000, fecha, operacion: key(), pagoAdicional: true,
+      fechaPago: fecha, cuentaId }, userId);
+    expect((await saldos.historial(c.id)).disponible).toBe('2140.00');
+    await servicioVentas().anular(destino.id, userId);
+    await servicioVentas().anular(destino.id, userId);
+    const h = await saldos.historial(c.id);
+    expect(h.disponible).toBe('3440.00');
+    expect(h.saldos.filter(s => s.origen_saldo === 'pago_recuperado').map(s => s.disponible)).toEqual(['300.00']);
+    expect(h.saldos.filter(s => s.origen_saldo === 'saldo_recuperado').map(s => s.disponible)).toEqual(['1000.00']);
+    expect(h.movimientos.filter(m => m.venta_id === destino.id).every(m => m.saldo_recuperado)).toBe(true);
   });
   it('mantiene equivalencia USD y TC 3.40 aunque la venta nueva use 3.50', async () => {
     const c = await cliente(),
