@@ -18,6 +18,7 @@ import { SaldosClientesService } from './saldos-clientes.service';
 import { prepareLocalDatabase } from '../db/local-schema';
 import { finanzasVenta } from './finanzas-calc';
 import { ReclamoSaldoInmediato1794096000000 } from '../migrations/1794096000000-ReclamoSaldoInmediato';
+import { ConstanciaVentaOculta1794268800000 } from '../migrations/1794268800000-ConstanciaVentaOculta';
 import { repararSaldosReclamoSinCobro } from './reclamo-saldos-reparacion';
 import { reabrirProductoConReclamosAnulados } from './reclamo-producto-disponibilidad';
 import { Inventario } from '../inventario/inventario.entity';
@@ -830,7 +831,7 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     const constancia = await servicioVentas().constanciaProducto(v.productoId);
     expect(constancia.ventas).toHaveLength(1);
     expect(constancia.ventas[0]).toMatchObject({ id: v.id, precioVenta: '1000.00',
-      pagado: '1000.00', saldoGenerado: '1000.00', saldoDisponible: '1000.00' });
+      tipoCambio: '3.4000', pagado: '1000.00', saldoGenerado: '1000.00', saldoDisponible: '1000.00' });
     expect(constancia.ventas[0].pagos).toHaveLength(1);
     expect(constancia.ventas[0].pagos[0]).toMatchObject({ monto: '1000.00', verificado: true, anulado: false });
     expect(constancia.reclamos[0].estado).toBe('reclamo_abierto');
@@ -855,6 +856,32 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
       (await ds.getRepository(VentaPago).findOneBy({ ventaId: v.id }))
         ?.anuladoAt,
     ).toBeNull();
+  });
+  it('quitar una venta duplicada solo la oculta de la constancia y conserva cobros y saldo', async () => {
+    const { c, v } = await conSaldo(1000);
+    const duplicada = await ds.getRepository(Venta).save(ds.getRepository(Venta).create({
+      ...v, id: undefined, createdAt: undefined, estadoComercial: 'cancelada',
+    }));
+    const antes = await saldos.historial(c.id);
+    await servicioVentas().quitarDeConstancia(v.productoId, duplicada.id, userId);
+    await servicioVentas().quitarDeConstancia(v.productoId, duplicada.id, userId);
+    expect((await servicioVentas().constanciaProducto(v.productoId)).ventas.map(row => row.id)).toEqual([v.id]);
+    expect(await ds.getRepository(Venta).findOneByOrFail({ id: duplicada.id })).toMatchObject({ constanciaOcultaPor: userId });
+    expect((await ds.getRepository(Venta).findOneByOrFail({ id: duplicada.id })).constanciaOcultaAt).toBeTruthy();
+    const despues = await saldos.historial(c.id);
+    expect(despues.disponible).toBe(antes.disponible);
+    expect(despues.saldos).toEqual(antes.saldos);
+    expect(await ds.getRepository(VentaPago).countBy({ ventaId: v.id })).toBe(1);
+    const otro = await producto();
+    await expect(servicioVentas().quitarDeConstancia(otro.id, v.id, userId)).rejects.toThrow('no pertenece');
+    expect((await servicioVentas().constanciaProducto(v.productoId)).ventas.map(row => row.id)).toEqual([v.id]);
+    const q = ds.createQueryRunner();
+    try {
+      await q.connect();
+      await new ConstanciaVentaOculta1794268800000().up(q);
+      await new ConstanciaVentaOculta1794268800000().up(q);
+    } finally { await q.release(); }
+    expect((await servicioVentas().constanciaProducto(v.productoId)).ventas.map(row => row.id)).toEqual([v.id]);
   });
   it.each([true, false])('el reclamo convierte el ingreso histórico conciliado, derivado previamente: %s', async (derivado) => {
     const c = await cliente(), v = await venta(c.id, 1000);

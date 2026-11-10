@@ -144,6 +144,13 @@ export class Venta {
   @Column({ type: 'text', nullable: true })
   anulacionMotivo?: string | null;
 
+  // Solo presentación de constancias: no anula la venta ni altera pagos o saldos.
+  @Column({ type: 'timestamptz', nullable: true })
+  constanciaOcultaAt?: Date | null;
+
+  @Column({ type: 'int', nullable: true })
+  constanciaOcultaPor?: number | null;
+
   @CreateDateColumn()
   createdAt: Date;
 }

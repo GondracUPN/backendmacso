@@ -927,7 +927,7 @@ export class VentaService {
   async constanciaProducto(productoId: number) {
     const producto = await this.productoRepo.findOneBy({ id: productoId });
     if (!producto) throw new NotFoundException('Producto no encontrado');
-    const ventas = await this.ventaRepo.find({ where: { productoId }, order: { id: 'DESC' } });
+    const ventas = await this.ventaRepo.find({ where: { productoId, constanciaOcultaAt: IsNull() }, order: { id: 'DESC' } });
     const manager = this.ventaRepo.manager;
     const pagos = ventas.length ? await manager.getRepository(VentaPago).find({
       where: { ventaId: In(ventas.map(v => v.id)) }, relations: ['liquidaciones'], order: { id: 'ASC' },
@@ -944,7 +944,7 @@ export class VentaService {
         const credito = saldos.find(s => Number(s.venta_id) === v.id);
         return {
           id: v.id, vendedor: v.vendedor || producto.vendedor, fechaVenta: v.fechaVenta,
-          precioVenta: v.precioVenta, estadoComercial: v.estadoComercial, anuladaAt: v.anuladaAt,
+          precioVenta: v.precioVenta, tipoCambio: v.tipoCambio, estadoComercial: v.estadoComercial, anuladaAt: v.anuladaAt,
           // Importe original: saldoConvertido no se descuenta de la constancia del cobro.
           pagado: fromCents(activos.reduce((n, p) => n + toCents(p.montoPen), 0)).toFixed(2),
           saldoGenerado: credito?.generado || '0.00', saldoDisponible: credito?.disponible || '0.00',
@@ -954,6 +954,14 @@ export class VentaService {
         };
       }),
     };
+  }
+
+  async quitarDeConstancia(productoId: number, ventaId: number, userId: number) {
+    const result = await this.ventaRepo.update({ id: ventaId, productoId }, {
+      constanciaOcultaAt: new Date(), constanciaOcultaPor: userId,
+    });
+    if (!result.affected) throw new NotFoundException('La venta no pertenece a este producto.');
+    return { ventaId, productoId, oculta: true };
   }
 
   async findLatestAdelantosByProductos(productoIds?: number[]): Promise<VentaAdelanto[]> {

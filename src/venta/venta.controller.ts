@@ -153,6 +153,13 @@ export class VentaController {
     return this.svc.constanciaProducto(pid);
   }
 
+  @Roles('admin')
+  @Delete('producto/:pid/constancia/:id')
+  quitarDeConstancia(@Param('pid', ParseIntPipe) pid: number, @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: JwtUserPayload) {
+    return this.svc.quitarDeConstancia(pid, id, user.userId);
+  }
+
   @Get('ultimas')
   latestByProducto(@Query('ids') ids?: string) {
     const parsedIds =
