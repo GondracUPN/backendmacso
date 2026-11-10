@@ -1190,7 +1190,7 @@ export class ProductoService {
       relations: ['valor', 'tracking'],
       order: { id: 'DESC' },
     });
-    const visibles = todos.filter((p) => !p.archivadoAt && p.cierreMotivo !== 'no_comercializable');
+    const visibles = todos.filter((p) => !p.archivadoAt && !['perdido', 'cancelado', 'no_comercializable'].includes(p.cierreMotivo || ''));
     const productos = anio
       ? visibles.filter((p: any) => (purchaseYearOf(p?.valor?.fechaCompra) ?? 'sin-fecha') === anio)
       : visibles;

@@ -148,6 +148,11 @@ export class VentaController {
     return this.svc.findByProducto(pid);
   }
 
+  @Get('producto/:pid/constancia')
+  constanciaProducto(@Param('pid', ParseIntPipe) pid: number) {
+    return this.svc.constanciaProducto(pid);
+  }
+
   @Get('ultimas')
   latestByProducto(@Query('ids') ids?: string) {
     const parsedIds =

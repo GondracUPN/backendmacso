@@ -827,6 +827,13 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     const inmediato = await saldos.historial(c.id);
     expect(inmediato.disponible).toBe('1000.00');
     expect(inmediato.saldos[0].fecha).toBe('2026-11-02');
+    const constancia = await servicioVentas().constanciaProducto(v.productoId);
+    expect(constancia.ventas).toHaveLength(1);
+    expect(constancia.ventas[0]).toMatchObject({ id: v.id, precioVenta: '1000.00',
+      pagado: '1000.00', saldoGenerado: '1000.00', saldoDisponible: '1000.00' });
+    expect(constancia.ventas[0].pagos).toHaveLength(1);
+    expect(constancia.ventas[0].pagos[0]).toMatchObject({ monto: '1000.00', verificado: true, anulado: false });
+    expect(constancia.reclamos[0].estado).toBe('reclamo_abierto');
     expect(await ds.getRepository(Gasto).count({ where: { productoVinculadoId: v.productoId } })).toBe(0);
     await fin.eventoReembolso(
       r.id,
@@ -843,6 +850,7 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     expect((await saldos.historial(c.id)).disponible).toBe('1000.00');
     await servicioVentas().anular(v.id, userId);
     expect((await saldos.historial(c.id)).saldos).toHaveLength(1);
+    expect((await servicioVentas().constanciaProducto(v.productoId)).ventas[0].pagado).toBe('1000.00');
     expect(
       (await ds.getRepository(VentaPago).findOneBy({ ventaId: v.id }))
         ?.anuladoAt,
@@ -877,6 +885,7 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     await ledger.sincronizarIngresosVenta(v.id);
     const r = await fin.crearReembolso({ productoId: v.productoId, motivo: 'No llegó a Eshopex.', fechaIncidencia: '2026-11-02' }, userId);
     expect((await saldos.historial(c.id)).disponible).toBe(recibido.toFixed(2));
+    expect((await servicioVentas().constanciaProducto(v.productoId)).ventas[0].pagado).toBe(recibido.toFixed(2));
     await fin.eventoReembolso(r.id, { tipo: 'recibido', fecha: '2026-11-03', monto: 750.19, moneda: 'USD', cuentaId: tarjetaId, idempotencyKey: key() }, userId);
     expect((await saldos.historial(c.id)).disponible).toBe(recibido.toFixed(2));
     expect((await saldos.historial(c.id)).saldos).toHaveLength(recibido ? 1 : 0);

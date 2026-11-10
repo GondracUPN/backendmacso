@@ -33,7 +33,7 @@ import { reservaActivaSql, reservaActivaWhere } from './estado-comercial';
 import { VentaDevolucion } from './venta-devolucion.entity';
 import { DevolverVentaDto } from './dto/devolver-venta.dto';
 import { VentaPago } from '../finanzas/entities/venta-pago.entity';
-import { resumenPago } from '../finanzas/finanzas-calc';
+import { fromCents, resumenPago } from '../finanzas/finanzas-calc';
 import { toPagoCalc } from '../finanzas/finanzas-ledger.service';
 import { ConflictException } from '@nestjs/common';
 import { operationHash } from './operation-hash';
@@ -921,6 +921,39 @@ export class VentaService {
     qb.andWhere('v."estadoComercial" <> :cancelada', { cancelada: 'cancelada' });
     if (!productoIds?.length) qb.innerJoin(Producto, 'activeProduct', 'activeProduct.id = v.productoId AND activeProduct.archivadoAt IS NULL');
     return qb.getMany();
+  }
+
+  /** Lectura histórica: un reclamo no borra la venta ni los cobros convertidos en saldo. */
+  async constanciaProducto(productoId: number) {
+    const producto = await this.productoRepo.findOneBy({ id: productoId });
+    if (!producto) throw new NotFoundException('Producto no encontrado');
+    const ventas = await this.ventaRepo.find({ where: { productoId }, order: { id: 'DESC' } });
+    const manager = this.ventaRepo.manager;
+    const pagos = ventas.length ? await manager.getRepository(VentaPago).find({
+      where: { ventaId: In(ventas.map(v => v.id)) }, relations: ['liquidaciones'], order: { id: 'ASC' },
+    }) : [];
+    const reclamos = await manager.getRepository(Reembolso).find({ where: { productoId }, order: { id: 'DESC' } });
+    const saldos = await manager.query(`SELECT venta_id, COALESCE(sum(original),0)::text generado,
+      COALESCE(sum(disponible),0)::text disponible FROM cliente_saldos
+      WHERE venta_id=ANY($1::int[]) AND anulada_at IS NULL GROUP BY venta_id`, [ventas.map(v => v.id)]);
+    return {
+      productoId, cierreMotivo: producto.cierreMotivo, reclamos,
+      ventas: ventas.map(v => {
+        const registrados = pagos.filter(p => p.ventaId === v.id);
+        const activos = registrados.filter(p => !p.anuladoAt && p.verificado);
+        const credito = saldos.find(s => Number(s.venta_id) === v.id);
+        return {
+          id: v.id, vendedor: v.vendedor || producto.vendedor, fechaVenta: v.fechaVenta,
+          precioVenta: v.precioVenta, estadoComercial: v.estadoComercial, anuladaAt: v.anuladaAt,
+          // Importe original: saldoConvertido no se descuenta de la constancia del cobro.
+          pagado: fromCents(activos.reduce((n, p) => n + toCents(p.montoPen), 0)).toFixed(2),
+          saldoGenerado: credito?.generado || '0.00', saldoDisponible: credito?.disponible || '0.00',
+          pagos: registrados.map(p => ({ id: p.id, fecha: p.fechaPago, monto: p.montoPen,
+            verificado: p.verificado, anulado: Boolean(p.anuladoAt),
+            devuelto: fromCents(resumenPago(toPagoCalc(p)).devueltoCents).toFixed(2) })),
+        };
+      }),
+    };
   }
 
   async findLatestAdelantosByProductos(productoIds?: number[]): Promise<VentaAdelanto[]> {
