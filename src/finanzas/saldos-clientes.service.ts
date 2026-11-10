@@ -35,6 +35,7 @@ export function distribuirSaldo(
   saldos: Array<{ id: number; disponible: string; fecha: string }>,
   monto: number,
   fecha: string,
+  permitirFechaAnterior = false,
 ) {
   let restante = toCents(monto);
   if (
@@ -47,7 +48,7 @@ export function distribuirSaldo(
   const ordenados = [...saldos].sort((a, b) => toCents(a.disponible) - toCents(b.disponible) ||
     a.fecha.localeCompare(b.fecha) || a.id - b.id);
   for (const saldo of ordenados) {
-    if (saldo.fecha > fecha) continue;
+    if (!permitirFechaAnterior && saldo.fecha > fecha) continue;
     const cents = Math.min(restante, toCents(saldo.disponible));
     if (cents > 0) partes.push({ id: saldo.id, cents });
     restante -= cents;
@@ -701,7 +702,7 @@ export class SaldosClientesService {
   async prepararCambioSaldo(clienteId:number,dto:AplicarSaldoDto,m:EntityManager, precioVenta?: number) {
     this.externo(await this.cliente(m,clienteId));
     const saldos=await m.query('SELECT *,fecha::text AS fecha FROM cliente_saldos WHERE cliente_id=$1 AND disponible>0 ORDER BY cliente_saldos.fecha,cliente_saldos.id FOR UPDATE',[clienteId]);
-    const partes=distribuirSaldo(saldos,dto.monto,dto.fecha);
+    const partes=distribuirSaldo(saldos,dto.monto,dto.fecha,true);
     return cambioVentaConSaldo(partes.map(p=>({cents:p.cents,tipoCambio:saldos.find(s=>s.id===p.id)!.tipo_cambio})),
       dto.pagoAdicional ? Math.max(0, toCents(precioVenta) - toCents(dto.monto)) : 0, dto.tipoCambioPagoAdicional);
   }
@@ -764,7 +765,7 @@ export class SaldosClientesService {
         'SELECT *, fecha::text AS fecha FROM cliente_saldos WHERE cliente_id=$1 AND disponible>0 ORDER BY cliente_saldos.fecha,cliente_saldos.id FOR UPDATE',
         [v.clienteId],
       );
-      const partes = distribuirSaldo(saldos, dto.monto, dto.fecha);
+      const partes = distribuirSaldo(saldos, dto.monto, dto.fecha, true);
       const cambio=cambioSaldoHistorico(partes.map(p=>({cents:p.cents,tipoCambio:saldos.find(s=>s.id===p.id)!.tipo_cambio})));
       const repo = m.getRepository(VentaPago);
       const p = await repo.save(

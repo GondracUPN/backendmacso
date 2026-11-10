@@ -389,6 +389,25 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     expect((await situacion(v)).saldoPendienteCents).toBe(0);
     expect((await ds.getRepository(Gasto).findOneByOrFail({ saleId: v.id })).salePaymentType).toBe('debt');
   });
+  it('registra una venta y su diferencia antes del registro del saldo sin duplicarlo', async () => {
+    const { c } = await conSaldo(1000), p = await producto();
+    const v = await servicioVentas().create({
+      productoId: p.id, clienteId: c.id, vendedor: 'Gonzalo', precioVenta: 1300,
+      tipoCambio: 3.5, fechaVenta: '2026-10-27', operacionKey: key(),
+      saldoCliente: { monto: 1000, fecha: '2026-10-27', operacion: key(),
+        pagoAdicional: true, fechaPago: '2026-10-20', cuentaId },
+    }, userId);
+    expect(Number(v.tipoCambio)).toBe(3.4);
+    expect((await situacion(v)).saldoPendienteCents).toBe(0);
+    const h = await saldos.historial(c.id);
+    expect(h.disponible).toBe('0.00');
+    expect(h.movimientos.find(m => m.venta_id === v.id).fecha).toBe('2026-10-27');
+    const pagos = await ds.getRepository(VentaPago).findBy({ ventaId: v.id });
+    expect(pagos.find(p => p.origen === 'saldo_cliente')?.fechaPago).toBe('2026-10-27');
+    expect(pagos.find(p => p.origen !== 'saldo_cliente')?.fechaPago).toBe('2026-10-20');
+    const otra = await venta(c.id, 100);
+    await expect(saldos.aplicar(otra.id, { monto: 100, fecha: '2026-10-27', operacion: key(), pagoAdicional: false }, userId)).rejects.toThrow('saldo disponible');
+  });
   it('consume varios SKU de menor a mayor saldo disponible', async () => {
     const c = await cliente(),
       a = await venta(c.id, 800),
