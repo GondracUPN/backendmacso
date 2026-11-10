@@ -21,6 +21,7 @@ import { ReclamoSaldoInmediato1794096000000 } from '../migrations/1794096000000-
 import { ConstanciaVentaOculta1794268800000 } from '../migrations/1794268800000-ConstanciaVentaOculta';
 import { DiferenciaSaldoDirecta1794355200000 } from '../migrations/1794355200000-DiferenciaSaldoDirecta';
 import { AnulacionVentaSinPerdida1794441600000 } from '../migrations/1794441600000-AnulacionVentaSinPerdida';
+import { CorregirSaldoJorge478SinCobro1794528000000 } from '../migrations/1794528000000-CorregirSaldoJorge478SinCobro';
 import { repararSaldosReclamoSinCobro } from './reclamo-saldos-reparacion';
 import { reabrirProductoConReclamosAnulados } from './reclamo-producto-disponibilidad';
 import { Inventario } from '../inventario/inventario.entity';
@@ -1269,6 +1270,39 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     expect(Number(v.tipoCambio)).toBe(3.4642);const h=await saldos.historial(c.id);
     expect(h.movimientos.filter(m=>m.venta_id===v.id).map(m=>[m.monto,m.tipo_cambio])).toEqual([['1000.00','3.4000'],['500.00','3.6000']]);
     expect(h.disponible).toBe('500.00');expect((await situacion(v)).saldoPendienteCents).toBe(0);
+  });
+  it('retira solo los 1300 ficticios de Jorge/MS-478 y conserva la venta de 1220 con 1000 de saldo y 220 pagados', async () => {
+    const c = await saldos.resolverPedido('Gonzalo (Jorge)', userId);
+    const previo = Number((await saldos.historial(c.id)).disponible);
+    const origen = await venta(c.id, 3140);
+    await pago(origen, 3140);
+    await generar(origen);
+    const vigente = await venta(c.id, 1220);
+    const fecha = reclamoDia();
+    await saldos.aplicar(vigente.id, { monto: 1000, fecha, operacion: key(), pagoAdicional: true,
+      fechaPago: fecha, cuentaId }, userId);
+    const erronea = await venta(c.id, 1300);
+    await ds.getRepository(Producto).update(erronea.productoId, { codigoInventario: 478 });
+    await ds.getRepository(Venta).update(erronea.id, { vendedor: 'Gonzalo (Jorge)' });
+    await ds.getRepository(Gasto).save({ userId, concepto: 'ingreso', metodoPago: 'debito', moneda: 'PEN',
+      monto: '1300.00', montoPen: '1300.00', fecha, tarjeta: 'bcp', saleId: erronea.id,
+      salePaymentType: 'direct', saleReceivedAmount: '1300.00', salePaidAt: fecha,
+      notas: '__SALE_INCOME__:' + erronea.productoId + ':' + erronea.id });
+    await ledger.sincronizarIngresosVenta(erronea.id);
+    await servicioVentas().anular(erronea.id, userId);
+    expect(Number((await saldos.historial(c.id)).disponible)).toBe(previo + 3440);
+    const q = ds.createQueryRunner();
+    try {
+      await q.connect();
+      await new CorregirSaldoJorge478SinCobro1794528000000().up(q);
+      await new CorregirSaldoJorge478SinCobro1794528000000().up(q);
+    } finally { await q.release(); }
+    const h = await saldos.historial(c.id);
+    expect(Number(h.disponible)).toBe(previo + 2140);
+    expect(h.saldos.find(s => s.venta_id === erronea.id)).toMatchObject({ original: '1300.00', disponible: '0.00' });
+    expect(h.saldos.find(s => s.venta_id === erronea.id).anulada_at).toBeTruthy();
+    expect((await ds.getRepository(Venta).findOneByOrFail({ id: vigente.id })).anuladaAt).toBeNull();
+    expect((await ds.getRepository(Gasto).findOneByOrFail({ saleId: vigente.id })).saleReceivedAmount).toBe('220.00');
   });
   it('el saldo guarda el TC de la venta de origen aunque el pago USD tuviera otra tasa bancaria',async()=>{
     const c=await cliente(),v=await venta(c.id,1000);await ds.getRepository(Venta).update(v.id,{tipoCambio:3.6});
