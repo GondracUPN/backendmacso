@@ -597,10 +597,8 @@ export class SaldosClientesService {
       await m
         .getRepository(Venta)
         .update(v.id, { estadoComercial: 'cancelada' });
-      await m.query(
-        `UPDATE producto SET "cierreMotivo"=COALESCE("cierreMotivo",'no_comercializable') WHERE id=$1`,
-        [v.productoId],
-      );
+      // Convertir el cobro en saldo cancela la venta, pero no cierra el producto.
+      // El reclamo de compra establece su propio cierre en FinanzasService.
       return { monto: money(total), ventaId, clienteId: v.clienteId };
     };
     return manager ? run(manager) : this.db.transaction(run);

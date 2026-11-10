@@ -20,6 +20,7 @@ import { finanzasVenta } from './finanzas-calc';
 import { ReclamoSaldoInmediato1794096000000 } from '../migrations/1794096000000-ReclamoSaldoInmediato';
 import { ConstanciaVentaOculta1794268800000 } from '../migrations/1794268800000-ConstanciaVentaOculta';
 import { DiferenciaSaldoDirecta1794355200000 } from '../migrations/1794355200000-DiferenciaSaldoDirecta';
+import { AnulacionVentaSinPerdida1794441600000 } from '../migrations/1794441600000-AnulacionVentaSinPerdida';
 import { repararSaldosReclamoSinCobro } from './reclamo-saldos-reparacion';
 import { reabrirProductoConReclamosAnulados } from './reclamo-producto-disponibilidad';
 import { Inventario } from '../inventario/inventario.entity';
@@ -829,11 +830,27 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     await pago(v, 1000);
     await servicioVentas().anular(v.id, userId, 'Reemplazo');
     await servicioVentas().anular(v.id, userId, 'Reintento');
+    expect((await ds.getRepository(Producto).findOneByOrFail({ id: v.productoId })).cierreMotivo).toBeNull();
     expect(
       (await ds.getRepository(VentaPago).findOneBy({ ventaId: v.id }))
         ?.anuladoAt,
     ).toBeNull();
     expect((await saldos.historial(c.id)).disponible).toBe('1000.00');
+    // Repara el cierre heredado de versiones anteriores sin retirar dinero del cliente.
+    await ds.getRepository(Producto).update(v.productoId, { cierreMotivo: 'no_comercializable' });
+    const q = ds.createQueryRunner();
+    try {
+      await q.connect();
+      await new AnulacionVentaSinPerdida1794441600000().up(q);
+      await new AnulacionVentaSinPerdida1794441600000().up(q);
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: v.productoId })).cierreMotivo).toBeNull();
+      const nueva = await servicioVentas().create({ productoId: v.productoId, vendedor: 'Gonzalo (' + c.nombre + ')',
+        precioVenta: 1200, tipoCambio: 3.4, fechaVenta: dia, operacionKey: key() }, userId, true);
+      expect(nueva.id).not.toBe(v.id);
+      await fin.crearReembolso({ productoId: v.productoId, motivo: 'No llegó a Eshopex.', fechaIncidencia: dia }, userId);
+      await new AnulacionVentaSinPerdida1794441600000().up(q);
+      expect((await ds.getRepository(Producto).findOneByOrFail({ id: v.productoId })).cierreMotivo).toBe('no_comercializable');
+    } finally { await q.release(); }
   });
 
   it('el reclamo genera saldo inmediatamente con su fecha y el reembolso posterior no lo duplica', async () => {
