@@ -821,6 +821,41 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     );
   });
 
+  it.each([
+    { precio: 1000, extra: false, esperado: '1000.00' },
+    { precio: 1300, extra: false, esperado: '1000.00' },
+    { precio: 1300, extra: true, esperado: '1300.00' },
+  ])('anula una venta pagada con saldo y devuelve solo lo pagado: $esperado', async ({ precio, extra, esperado }) => {
+    const { c } = await conSaldo(1000);
+    const v = await venta(c.id, precio);
+    // La identidad persistente también funciona si el texto del vendedor no lleva el nombre del cliente.
+    if (precio === 1000 || extra) await ds.getRepository(Venta).update(v.id, { vendedor: 'Gonzalo (' + c.nombre + ')' });
+    const fecha = reclamoDia();
+    await saldos.aplicar(v.id, { monto: 1000, fecha, operacion: key(), pagoAdicional: extra,
+      ...(extra ? { fechaPago: fecha, cuentaId } : {}) }, userId);
+    const pagosAntes = await ds.getRepository(VentaPago).findBy({ ventaId: v.id });
+    const saldoPago = pagosAntes.find(p => p.origen === 'saldo_cliente')!;
+    if (extra) {
+      // Los adicionales antiguos solo quedaron enlazados desde salePaymentHistory.
+      const pagoExtra = pagosAntes.find(p => p.origen !== 'saldo_cliente')!;
+      await ds.getRepository(VentaPago).update(pagoExtra.id, { gastoId: null });
+    }
+    expect((await saldos.historial(c.id)).disponible).toBe('0.00');
+    await Promise.all([servicioVentas().anular(v.id, userId), servicioVentas().anular(v.id, userId)]);
+    const h = await saldos.historial(c.id);
+    expect(h.disponible).toBe(esperado);
+    expect(h.saldos.filter(s => s.venta_id === v.id)).toHaveLength(extra ? 2 : 1);
+    expect(h.saldos.find(s => s.pago_id === saldoPago.id)?.tipo_cambio).toBe(saldoPago.tipoCambio);
+    expect(await ds.getRepository(VentaPago).countBy({ ventaId: v.id })).toBe(pagosAntes.length);
+    expect((await ds.getRepository(Venta).findOneByOrFail({ id: v.id })).anuladaAt).toBeTruthy();
+    expect((await ds.getRepository(Producto).findOneByOrFail({ id: v.productoId })).cierreMotivo).toBeNull();
+    if (extra) {
+      const g = await ds.getRepository(Gasto).findOneByOrFail({ saleId: v.id });
+      expect(g.monto).toBe('300.00');
+      expect(g.saleReceivedAmount).toBe('300.00');
+    }
+  });
+
   it('anular un pedido pagado genera saldo automáticamente y conserva sus cobros', async () => {
     const c = await cliente(),
       v = await venta(c.id, 1000);

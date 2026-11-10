@@ -264,6 +264,17 @@ export class SaldosClientesService {
     const pagos = await m
       .getRepository(VentaPago)
       .findBy({ ventaId: v.id, anuladoAt: IsNull() });
+    // Versiones anteriores guardaban el adicional en el historial del ingreso,
+    // sin enlazar gastoId en el pago. Recupera solo esa referencia exacta.
+    for (const g of ingresos) {
+      if (g.notas !== '__SALE_CREDIT_DIFFERENCE__:' + v.id) continue;
+      const candidatos = pagos.filter(p => !p.gastoId && p.idempotencyKey?.startsWith('extra:') &&
+        toCents(p.montoPen) === this.ingresoRecibido(g) &&
+        g.salePaymentHistory?.some(h => h.pagoId === p.id));
+      if (candidatos.length !== 1) continue;
+      await m.getRepository(VentaPago).update(candidatos[0].id, { gastoId: g.id });
+      candidatos[0].gastoId = g.id;
+    }
     if (pagos.some((p) => !p.gastoId && p.origen !== 'saldo_cliente'))
       throw new BadRequestException(
         'Concilia los pagos manuales con los ingresos originales antes de convertirlos.',
@@ -550,7 +561,7 @@ export class SaldosClientesService {
           !p.verificado ||
           !p.fechaPago ||
           p.fechaPago > fecha ||
-          p.origen === 'saldo_cliente' ||
+          (p.origen === 'saldo_cliente' && !automatico) ||
           calc.disputado ||
           r.contracargoCents ||
           r.pendienteLiquidacionCents ||
@@ -561,7 +572,7 @@ export class SaldosClientesService {
           );
         const cents = toCents(p.montoPen) - r.devueltoCents;
         if (cents <= 0) continue;
-        const tc = String(v.tipoCambio);
+        const tc = String(p.origen === 'saldo_cliente' ? p.tipoCambio : v.tipoCambio);
         if (!(Number(tc) > 0))
           throw new BadRequestException('Falta el tipo de cambio histórico.');
         await m.query(
@@ -616,11 +627,11 @@ export class SaldosClientesService {
     const v = await m
       .getRepository(Venta)
       .findOne({ where: { id: ventaId }, relations: ['producto'] });
-    if (
-      !v ||
-      !(pedidoCliente(v.vendedor) || pedidoCliente(v.producto?.vendedor))
-    )
-      return false;
+    if (!v) return false;
+    const esPedido = pedidoCliente(v.vendedor) || pedidoCliente(v.producto?.vendedor);
+    if (!esPedido && !(v.clienteId && await m.getRepository(VentaPago).countBy({
+      ventaId, origen: 'saldo_cliente', anuladoAt: IsNull(),
+    }))) return false;
     const existentes = await m.query(
       'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL',
       [ventaId],
