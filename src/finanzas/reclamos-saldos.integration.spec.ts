@@ -1159,6 +1159,18 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
       fechaVenta: '2026-11-08', operacionKey: key(), incomeBank: 'bcp' }, userId);
     return { c, p, r, v };
   };
+  it('identifica reembolsos abiertos y recibidos en los pedidos y deja de marcarlos al anular', async () => {
+    const c = await cliente(), p = await producto();
+    await ds.getRepository(Producto).update(p.id, { vendedor: 'Gonzalo (' + c.nombre + ')' });
+    const summary = () => servicioVentas().pedidoSummary();
+    expect((await summary()).rows.find(row => row.productoId === p.id)?.tieneReembolso).toBe(false);
+    const r = await fin.crearReembolso({ productoId: p.id, motivo: 'No llegó a Eshopex.', fechaIncidencia: '2026-11-01' }, userId);
+    expect((await summary()).rows.find(row => row.productoId === p.id)?.tieneReembolso).toBe(true);
+    await ds.getRepository(Reembolso).update(r.id, { estado: 'recibido' });
+    expect((await summary()).rows.find(row => row.productoId === p.id)?.tieneReembolso).toBe(true);
+    await ds.getRepository(Reembolso).update(r.id, { estado: 'anulado' });
+    expect((await summary()).rows.find(row => row.productoId === p.id)?.tieneReembolso).toBe(false);
+  });
   it('MS-455: tras recibir el reembolso y habilitar el producto, la venta nueva no se anula ni pasa a saldo', async () => {
     const { c, p, v } = await reembolsadoYHabilitado();
     const guardada = await ds.getRepository(Venta).findOneByOrFail({ id: v.id });

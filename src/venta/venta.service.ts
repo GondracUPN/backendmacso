@@ -1016,6 +1016,8 @@ export class VentaService {
       }
     }
 
+    const reclamos = await this.ventaRepo.manager.getRepository(Reembolso).find({ select: ['productoId', 'estado'] });
+    const conReembolso = new Set(reclamos.filter(r => r.estado !== 'anulado').map(r => r.productoId));
     const rows: any[] = [];
     const soldProductIds = new Set<number>();
     const pendingProductIds = new Set<number>();
@@ -1206,7 +1208,7 @@ export class VentaService {
       clients: Array.from(clientsMap.values())
         .map(finalize)
         .sort((a, b) => b.ventaTotal - a.ventaTotal),
-      rows: rows.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))),
+      rows: rows.map(row => ({ ...row, tieneReembolso: conReembolso.has(row.productoId) })).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))),
     };
   }
 
