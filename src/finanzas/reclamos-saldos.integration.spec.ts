@@ -1159,6 +1159,26 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
       fechaVenta: '2026-11-08', operacionKey: key(), incomeBank: 'bcp' }, userId);
     return { c, p, r, v };
   };
+  it.each([0, 250, 1000])('cliente paga %s: el resto queda como deuda y desaparece al cobrarlo', async pagado => {
+    const c = await cliente(), p = await producto();
+    const partes = [...(pagado ? [{ type: 'direct' as const, amount: pagado }] : []),
+      ...(pagado < 1000 ? [{ type: 'cash' as const, amount: 1000 - pagado }] : [])];
+    const svc = servicioVentas();
+    const v = await svc.create({ productoId: p.id, vendedor: 'Gonzalo (' + c.nombre + ')',
+      precioVenta: 1000, fechaVenta: dia, tipoCambio: 3.4, incomeBank: 'efectivo',
+      incomeMethod: 'efectivo', incomeParts: partes, operacionKey: key() }, userId);
+    expect(await svc.resultadoVenta(v)).toMatchObject({ deudaCliente: 1000 - pagado });
+    expect((await svc.findLatestByProductos([p.id]))[0]).toMatchObject({ deudaCliente: 1000 - pagado });
+    const row = (await svc.pedidoSummary()).rows.find(r => r.ventaId === v.id);
+    expect(row.saldo).toBe(1000 - pagado);
+    expect(row.estadoPago === 'pagado').toBe(pagado === 1000);
+    const recibidos = await ds.getRepository(VentaPago).findBy({ ventaId: v.id });
+    expect(recibidos.reduce((n, p) => n + Number(p.montoPen), 0)).toBe(pagado);
+    if (pagado < 1000) {
+      await pago(v, 1000 - pagado);
+      expect((await svc.findLatestByProductos([p.id]))[0]).toMatchObject({ deudaCliente: 0, estadoPagoCliente: 'pagado' });
+    }
+  });
   it('solo suma deuda confirmada y no atribuye ventas propias antiguas al cliente actual del producto', async () => {
     const c = await cliente(), historica = await venta(c.id, 30000), p = await producto();
     await ds.getRepository(Venta).update(historica.id, { conciliacionHistorica: 'pendiente' });

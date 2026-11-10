@@ -79,8 +79,8 @@ export class CreateVentaDto {
   loteInicialId?: number;
 
   @IsOptional()
-  @IsIn(['bcp', 'interbank', 'bbva', 'bcp_amex', 'bcp_visa', 'visa_qore', 'io', 'saga'])
-  incomeBank?: 'bcp' | 'interbank' | 'bbva' | 'bcp_amex' | 'bcp_visa' | 'visa_qore' | 'io' | 'saga';
+  @IsIn(['efectivo', 'bcp', 'interbank', 'bbva', 'bcp_amex', 'bcp_visa', 'visa_qore', 'io', 'saga'])
+  incomeBank?: 'efectivo' | 'bcp' | 'interbank' | 'bbva' | 'bcp_amex' | 'bcp_visa' | 'visa_qore' | 'io' | 'saga';
 
   @IsOptional()
   @IsIn(['direct', 'card', 'debt'])

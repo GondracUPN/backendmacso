@@ -33,7 +33,7 @@ import { reservaActivaSql, reservaActivaWhere } from './estado-comercial';
 import { VentaDevolucion } from './venta-devolucion.entity';
 import { DevolverVentaDto } from './dto/devolver-venta.dto';
 import { VentaPago } from '../finanzas/entities/venta-pago.entity';
-import { fromCents, resumenPago } from '../finanzas/finanzas-calc';
+import { finanzasVenta, fromCents, resumenPago } from '../finanzas/finanzas-calc';
 import { toPagoCalc } from '../finanzas/finanzas-ledger.service';
 import { ConflictException } from '@nestjs/common';
 import { operationHash } from './operation-hash';
@@ -724,7 +724,8 @@ export class VentaService {
 
   async resultadoVenta(venta: Venta) {
     const rows = this.gastoRepo ? await this.gastoRepo.find({ where: { saleId: venta.id, concepto: 'ingreso' } }) : [];
-    return { ...venta, ingreso: {
+    const [resumen] = await this.conDeudaCliente([venta]);
+    return { ...resumen, ingreso: {
       estado: rows.length ? 'registrado' : 'sin_ingreso_asignado',
       monto: rows.reduce((sum, row) => sum + Number(row.monto), 0),
       cuentas: [...new Set(rows.map((row) => row.tarjeta).filter(Boolean))],
@@ -906,6 +907,25 @@ export class VentaService {
   }
 
   // Devuelve la Ð¥ltima venta por producto (opcionalmente filtrando por IDs) en una sola query
+  private async conDeudaCliente(ventas: Venta[]) {
+    const clientes = ventas.filter(v => v.clienteId || getPedidoClient(normalizeSellerLabel(v.vendedor)));
+    if (!clientes.length || !this.ledger || !this.gastoRepo) return ventas;
+    const ids = clientes.map(v => v.id);
+    const manager = this.transactionManager || this.ventaRepo.manager;
+    const [pagos, ingresos] = await Promise.all([
+      manager.getRepository(VentaPago).find({ where: { ventaId: In(ids) }, relations: ['liquidaciones'] }),
+      manager.getRepository(Gasto).find({ where: { saleId: In(ids), concepto: 'ingreso' } }),
+    ]);
+    for (const v of clientes) {
+      const pendiente = ingresos.filter(g => g.saleId === v.id && ['cash', 'debt'].includes(g.salePaymentType || ''))
+        .reduce((n, g) => n + Math.max(0, toCents(g.monto) - toCents(g.saleReceivedAmount)), 0);
+      const estado = finanzasVenta(this.ledger.ventaCalc(v), pagos.filter(p => p.ventaId === v.id).map(toPagoCalc));
+      const deuda = Math.min(pendiente, estado.saldoPendienteCents);
+      Object.assign(v, { deudaCliente: fromCents(deuda), estadoPagoCliente: deuda > 0 ? 'pendiente' : 'pagado' });
+    }
+    return ventas;
+  }
+
   async findLatestByProductos(productoIds?: number[]): Promise<Venta[]> {
     const qb = this.ventaRepo
       .createQueryBuilder('v')
@@ -920,7 +940,7 @@ export class VentaService {
 
     qb.andWhere('v."estadoComercial" <> :cancelada', { cancelada: 'cancelada' });
     if (!productoIds?.length) qb.innerJoin(Producto, 'activeProduct', 'activeProduct.id = v.productoId AND activeProduct.archivadoAt IS NULL');
-    return qb.getMany();
+    return this.conDeudaCliente(await qb.getMany());
   }
 
   /** Lectura histórica: un reclamo no borra la venta ni los cobros convertidos en saldo. */
@@ -983,7 +1003,7 @@ export class VentaService {
   }
 
   async pedidoSummary() {
-    const ventas = await this.ventaRepo
+    const ventas = await this.conDeudaCliente(await this.ventaRepo
       .createQueryBuilder('v')
       .leftJoinAndSelect('v.producto', 'p')
       .leftJoinAndSelect('p.valor', 'val')
@@ -992,7 +1012,7 @@ export class VentaService {
       .where('v."anuladaAt" IS NULL')
       .orderBy('v.fechaVenta', 'DESC')
       .addOrderBy('v.id', 'DESC')
-      .getMany();
+      .getMany());
 
     const adelantos = await this.adelantoRepo
       .createQueryBuilder('a')
@@ -1036,8 +1056,9 @@ export class VentaService {
       const costo = precioVenta || gananciaRegistrada ? precioVenta - gananciaRegistrada : getProductCost(producto);
       const stats = buildMoneyStats(precioVenta, costo);
       const adelanto = adelantosByVenta.get(venta.id);
-      const montoAdelanto = adelanto ? toMoneyNumber(adelanto.montoAdelanto) : precioVenta;
-      const status = getPedidoStatus(producto, 'pagado');
+      const deudaCliente = Number((venta as any).deudaCliente || 0);
+      const montoAdelanto = deudaCliente > 0 ? Math.max(0, precioVenta - deudaCliente) : adelanto ? toMoneyNumber(adelanto.montoAdelanto) : precioVenta;
+      const status = getPedidoStatus(producto, deudaCliente > 0 ? 'adelanto' : 'pagado');
 
       rows.push({
         id: `venta-${venta.id}`,
@@ -1054,7 +1075,7 @@ export class VentaService {
         fecha: venta.fechaVenta,
         montoVenta: +precioVenta.toFixed(2),
         montoAdelanto: +montoAdelanto.toFixed(2),
-        saldo: 0,
+        saldo: deudaCliente,
         costo: +costo.toFixed(2),
         ganancia: stats.ganancia,
         utilidadPct: stats.utilidadPct,
