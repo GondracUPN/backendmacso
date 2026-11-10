@@ -377,7 +377,7 @@ export class SaldosClientesService {
       (v) =>
         v.clienteId === clienteId ||
         (cliente.pedido_key &&
-          (pedidoCliente(v.vendedor) || pedidoCliente(v.producto?.vendedor))
+          (pedidoCliente(v.vendedor) || (!v.vendedor?.trim() ? pedidoCliente(v.producto?.vendedor) : null))
             ?.key === cliente.pedido_key),
     );
     const ids = ventas.map((v) => v.id),
@@ -456,8 +456,19 @@ export class SaldosClientesService {
       const convertible = v.anuladaAt
         ? 0
         : Math.min(toCents(v.precioVenta), recibido);
+      const ingresosVenta = [...legacy, ...ingresos.filter(g => g.saleId === v.id || pagos.some(p => p.gastoId === g.id))];
+      const pendienteExplicito = ingresosVenta.some(g => g.salePaymentType === 'debt' || g.salePaymentType === 'cash');
+      const tienePagosConfirmados = pagos.some(p => !p.anuladoAt && p.verificado && p.origen !== 'historico');
+      const deudaCalculada = Math.max(0, resumen.saldoPendienteCents - legacyPagado);
+      const deudaConfirmada = pendienteExplicito || tienePagosConfirmados ? deudaCalculada : 0;
       operaciones.push({
         sku: producto?.sku,
+        fecha: v.fechaVenta,
+        producto: v.producto?.tipo || '',
+        precioVenta: money(toCents(v.precioVenta)),
+        pagado: money(recibido),
+        deudaConfirmada: money(deudaConfirmada),
+        pendienteConciliacion: deudaCalculada > 0 && !pendienteExplicito && !tienePagosConfirmados,
         ventaId: v.id,
         productoId: v.productoId,
         estadoComercial: v.estadoComercial,

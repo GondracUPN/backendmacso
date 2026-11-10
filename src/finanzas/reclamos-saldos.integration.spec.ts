@@ -1159,6 +1159,21 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
       fechaVenta: '2026-11-08', operacionKey: key(), incomeBank: 'bcp' }, userId);
     return { c, p, r, v };
   };
+  it('solo suma deuda confirmada y no atribuye ventas propias antiguas al cliente actual del producto', async () => {
+    const c = await cliente(), historica = await venta(c.id, 30000), p = await producto();
+    await ds.getRepository(Venta).update(historica.id, { conciliacionHistorica: 'pendiente' });
+    const pendiente = await servicioVentas().create({ productoId: p.id, clienteId: c.id,
+      vendedor: 'Gonzalo (' + c.nombre + ')', precioVenta: 1300, tipoCambio: 3.4,
+      fechaVenta: dia, operacionKey: key(), incomeParts: [{ type: 'cash', amount: 1300 }] }, userId);
+    await pago(pendiente, 300);
+    const ajena = await venta(null as any, 1500);
+    await ds.getRepository(Producto).update(ajena.productoId, { vendedor: 'Gonzalo (' + c.nombre + ')' });
+    const h = await saldos.historial(c.id);
+    expect(h.ventas.find(v => v.ventaId === historica.id)).toMatchObject({ deudaConfirmada: '0.00', pendienteConciliacion: true });
+    expect(h.ventas.find(v => v.ventaId === pendiente.id)).toMatchObject({ precioVenta: '1300.00', pagado: '300.00', deudaConfirmada: '1000.00', pendienteConciliacion: false });
+    expect(h.ventas.some(v => v.ventaId === ajena.id)).toBe(false);
+    expect((await situacion(pendiente)).saldoPendienteCents).toBe(100000);
+  });
   it('identifica reembolsos abiertos y recibidos en los pedidos y deja de marcarlos al anular', async () => {
     const c = await cliente(), p = await producto();
     await ds.getRepository(Producto).update(p.id, { vendedor: 'Gonzalo (' + c.nombre + ')' });
