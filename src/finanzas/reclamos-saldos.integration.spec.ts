@@ -1159,6 +1159,24 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
       fechaVenta: '2026-11-08', operacionKey: key(), incomeBank: 'bcp' }, userId);
     return { c, p, r, v };
   };
+  it('pedido sin pagar usa fecha de pedido y costo de compra sin exigir ni inventar un cambio de cobro', async () => {
+    const c = await cliente(), p = await producto();
+    const original = await ds.getRepository(ProductoValor).findOneByOrFail({ id: p.valor.id });
+    const svc = servicioVentas();
+    const v = await svc.create({ productoId: p.id, vendedor: 'Gonzalo (' + c.nombre + ')',
+      precioVenta: 1300, fechaVenta: '2026-11-10', pedidoSinPago: true,
+      incomeBank: 'efectivo', incomeParts: [{ type: 'cash', amount: 1300 }], operacionKey: key(),
+    }, userId);
+    expect(v).toMatchObject({ fechaReserva: '2026-11-10', estadoComercial: 'reservada' });
+    const referencia = Number(original.tipoCambioCompra) || Number(original.valorSoles) / Number(original.valorProducto);
+    expect(Number(v.tipoCambio)).toBe(Number(referencia.toFixed(4)));
+    expect((await ds.getRepository(ProductoValor).findOneByOrFail({ id: p.valor.id })).costoTotal).toBe(original.costoTotal);
+    expect(await ds.getRepository(VentaPago).countBy({ ventaId: v.id })).toBe(0);
+    expect(await svc.resultadoVenta(v)).toMatchObject({ deudaCliente: 1300 });
+    const otro = await producto();
+    await expect(svc.create({ productoId: otro.id, vendedor: 'Gonzalo', precioVenta: 1300, fechaVenta: dia,
+      pedidoSinPago: true, incomeParts: [{ type: 'cash', amount: 1300 }], operacionKey: key() }, userId)).rejects.toThrow('solo corresponde a un cliente');
+  });
   it.each([0, 250, 1000])('cliente paga %s: el resto queda como deuda y desaparece al cobrarlo', async pagado => {
     const c = await cliente(), p = await producto();
     const partes = [...(pagado ? [{ type: 'direct' as const, amount: pagado }] : []),

@@ -1814,6 +1814,18 @@ export class VentaService {
     if (dto.saldoCliente && (!this.saldos || !userId)) throw new BadRequestException('Falta el cliente o la sesión para aplicar saldo.');
     this.ventaConSaldo = Boolean(dto.saldoCliente) || sinIngresoAutomatico;
     let datosVenta: CreateVentaDto = { ...dto, incomePaymentType: dto.incomePaymentType ?? (dto.incomeParts === undefined ? 'direct' : undefined) };
+    if (dto.pedidoSinPago) {
+      const pedido = await this.productoRepo.findOne({ where: { id: dto.productoId }, relations: ['valor'] });
+      if (!pedido || !getPedidoClient(normalizeSellerLabel(dto.vendedor || pedido.vendedor)) || dto.saldoCliente ||
+          !dto.incomeParts?.length || dto.incomeParts.some(p => p.type !== 'cash') ||
+          toCents(dto.incomeParts.reduce((n,p) => n + p.amount, 0)) !== toCents(dto.precioVenta))
+        throw new BadRequestException('La fecha de pedido sin pago solo corresponde a un cliente con todo el importe pendiente.');
+      const valor = pedido.valor;
+      const referencia = String(valor?.monedaCompra || 'USD').toUpperCase() === 'PEN' ? 1
+        : Number(valor?.tipoCambioCompra) || (Number(valor?.valorProducto) > 0 ? Number(valor?.valorSoles) / Number(valor.valorProducto) : 0);
+      if (!(referencia > 0) || referencia > 1000) throw new BadRequestException('El producto necesita su costo de compra para registrar el pedido.');
+      datosVenta = { ...datosVenta, tipoCambio: Number(referencia.toFixed(4)), tipoCambioGonzalo: undefined, tipoCambioRenato: undefined };
+    }
     if (dto.saldoCliente) {
       const productoSaldo=await this.productoRepo.findOne({where:{id:dto.productoId},relations:['valor']});
       if (!productoSaldo) throw new NotFoundException('Producto no encontrado.');
@@ -1824,6 +1836,10 @@ export class VentaService {
       datosVenta={...dto,tipoCambio:cambio.tipoCambio,tipoCambioGonzalo:undefined,tipoCambioRenato:undefined};
     }
     const saved = await this.createSale(datosVenta);
+    if (dto.pedidoSinPago) {
+      await this.ventaRepo.update(saved.id, { fechaReserva: dto.fechaVenta, estadoComercial: 'reservada' });
+      Object.assign(saved, { fechaReserva: dto.fechaVenta, estadoComercial: 'reservada' });
+    }
     const clientePedido = userId && this.saldos ? await this.saldos.resolverPedido(saved.vendedor,userId,this.transactionManager) : null;
     if (clientePedido && dto.clienteId && dto.clienteId !== clientePedido.id) throw new BadRequestException('El saldo no pertenece al cliente del pedido seleccionado.');
     const clienteId = clientePedido?.id ?? dto.clienteId;
@@ -2007,6 +2023,21 @@ export class VentaService {
     const resolvedSeller =
       normalizeSellerLabel((dto as any).vendedor) ?? sellerFromProducto(producto, null);
 
+    if (dto.pedidoSinPago) {
+      const costo = getProductCost(producto);
+      const precioVenta = Number(dto.precioVenta);
+      const ganancia = +(precioVenta - costo).toFixed(2);
+      const pendiente = await this.saveIdempotent(this.ventaRepo.create({
+        productoId: producto.id, tipoCambio: dto.tipoCambio, fechaVenta: dto.fechaVenta,
+        fechaReserva: dto.fechaVenta, estadoComercial: 'reservada', precioVenta,
+        ganancia, porcentajeGanancia: calculateProfitPercentage(ganancia, costo),
+        cantidad: 1, modalidad: 'unidad', vendedor: resolvedSeller,
+      }));
+      await this.syncSaleIncome(pendiente, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts, { cuentaId: dto.incomeAccountId, metodo: dto.incomeMethod });
+      await this.cache.del?.('productos:stats').catch?.(() => {});
+      await this.cache.del?.('productos:resumen').catch?.(() => {});
+      return pendiente;
+    }
     // 2) Recalcular costos con el tipo de cambio ingresado
     const costoEnvioSoles = Number(
       (v as any).costoEnvioProrrateado ?? v.costoEnvio ?? 0,
