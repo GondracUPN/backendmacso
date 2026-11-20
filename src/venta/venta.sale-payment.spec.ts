@@ -135,6 +135,23 @@ describe('cobro de venta del catálogo', () => {
     expect(rows.map((row) => [row.salePaymentType, row.monto, row.tarjeta])).toEqual([['direct', '3000.00', 'bcp'], ['card', '485.00', 'interbank']]);
   });
 
+  it('corrige importes explícitos conservando las cuentas y el historial de cada cobro', async () => {
+    const history = [{ amount: 200, paidAt: '2026-11-19', bank: 'interbank' }];
+    const rows = [
+      { id: 1, userId: 1, saleId: 12, notas: '__SALE_INCOME__:340:12:direct', salePaymentType: 'direct', monto: '400.00', saleReceivedAmount: '400.00', tarjeta: 'bcp' },
+      { id: 2, userId: 1, saleId: 12, notas: '__SALE_INCOME__:340:12:card', salePaymentType: 'card', monto: '600.00', saleReceivedAmount: '200.00', tarjeta: 'interbank', salePaymentHistory: history },
+    ];
+    const gastoRepo = { find: jest.fn(async () => rows), create: jest.fn(value => value), save: jest.fn(async value => value), remove: jest.fn() };
+    const venta = { id: 12, productoId: 340, vendedor: 'Gonzalo', precioVenta: 1000, tipoCambio: 1, fechaVenta: '2026-11-19' };
+    const ventaRepo = { save: jest.fn(async value => value) };
+    const productoRepo = { findOne: jest.fn(async () => ({ id: 340, tipo: 'macbook', vendedor: 'Gonzalo', valor: { monedaCompra: 'PEN', valorProducto: 500 } })) };
+    const service = withTransactionMocks(new VentaService(ventaRepo as any, {} as any, productoRepo as any, { save: jest.fn(async value => value) } as any, {} as any, gastoRepo as any, { findOne: jest.fn(async () => ({ id: 1 })) } as any));
+    jest.spyOn(service, 'findOne').mockResolvedValue(venta as any);
+    await expect(service.update(12, { precioVenta: 1200, incomeParts: [{ type: 'direct', amount: 400 }, { type: 'card', amount: 800 }] } as any)).resolves.toMatchObject({ precioVenta: 1200 });
+    expect(rows.map(row => [row.tarjeta, row.monto, row.saleReceivedAmount])).toEqual([['bcp', '400.00', '400.00'], ['interbank', '800.00', '200.00']]);
+    expect(rows[1].salePaymentHistory).toEqual(history);
+  });
+
   it('registra completo el ingreso directo desde la fecha de venta', async () => {
     const gastoRepo = {
       find: jest.fn(async () => []),

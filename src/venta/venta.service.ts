@@ -455,8 +455,9 @@ export class VentaService {
     let parts: Array<{ type: 'direct' | 'card' | 'debt' | 'cash'; cents: number }> | null = null;
     const hasPartReference = (row: Gasto) => ['direct', 'card', 'debt', 'cash']
       .some((type) => String(row.notas || '').endsWith(`:${type}`));
-    const keepRowBanks = submittedParts === undefined && linked.some(hasPartReference);
-    if (keepRowBanks) {
+    const inferParts = submittedParts === undefined && linked.some(hasPartReference);
+    const keepRowBanks = inferParts || (incomeBank === undefined && linked.length > 0);
+    if (inferParts) {
       submittedParts = (['direct', 'card', 'debt', 'cash'] as const).map((type) => ({
         type,
         amount: linked.filter((row) => row.salePaymentType === type).reduce((sum, row) => sum + Number(row.monto || 0), 0),
@@ -478,7 +479,7 @@ export class VentaService {
       });
       // Las partes conservadas de filas existentes pueden estar ya expresadas en el monto ingresado.
       const partsCents = parts.reduce((sum, part) => sum + part.cents, 0);
-      if (partsCents !== totalCents && !(keepRowBanks && partsCents === incomeCents)) {
+      if (partsCents !== totalCents && !(inferParts && partsCents === incomeCents)) {
         throw new BadRequestException('Las partes del cobro deben sumar el precio total de la venta.');
       }
       if (partsCents !== incomeCents) {
@@ -489,7 +490,7 @@ export class VentaService {
           return { ...part, cents };
         }).filter((part) => part.cents > 0);
       }
-      if (parts.some((part) => part.type !== 'cash') && !incomeBank) {
+      if (parts.some((part) => part.type !== 'cash' && !(keepRowBanks && linked.some(row => row.salePaymentType === part.type && row.tarjeta))) && !incomeBank) {
         throw new BadRequestException('Selecciona la cuenta de débito para el cobro que no es en efectivo.');
       }
       const receivedByType = new Map<string, number>();
@@ -2188,12 +2189,12 @@ export class VentaService {
         }) || parts.reduce((sum, part) => sum + Math.round(Number(part.amount) * 100), 0) !== expectedCents) {
         throw new BadRequestException('Las partes del cobro deben sumar el precio de la venta.');
       }
-      if (parts.some((part) => part.type !== 'cash') && !dto.incomeBank) {
+      const incomes = this.gastoRepo ? (await this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } }))
+        .filter((income) => !isAdvanceIncome(income)) : [];
+      if (parts.some((part) => part.type !== 'cash' && !incomes.some(row => row.salePaymentType === part.type && row.tarjeta)) && !dto.incomeBank) {
         throw new BadRequestException('Selecciona la cuenta de débito para el cobro.');
       }
       if (this.gastoRepo) {
-        const incomes = (await this.gastoRepo.find({ where: { saleId: id, concepto: 'ingreso' } }))
-          .filter((income) => !isAdvanceIncome(income));
         for (const type of ['card', 'debt', 'cash'] as const) {
           const received = incomes.filter((income) => income.salePaymentType === type)
             .reduce((sum, income) => sum + Math.round(Number(income.saleReceivedAmount || 0) * 100), 0);
