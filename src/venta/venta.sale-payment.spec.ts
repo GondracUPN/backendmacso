@@ -2,6 +2,21 @@ import { withTransactionMocks } from './venta-transaction.test-helper';
 import { VentaService } from './venta.service';
 
 describe('cobro de venta del catálogo', () => {
+  it('distingue deuda del cliente de efectivo por depositar usando la venta persistida', async () => {
+    const ventaRepo = { find: jest.fn(async () => [
+      { id: 12, clienteId: 3, vendedor: 'Gonzalo' },
+      { id: 13, vendedor: 'Gonzalo (Jorge)' },
+      { id: 14, vendedor: 'Gonzalo' },
+    ]) };
+    const service = new VentaService(ventaRepo as any, {} as any, {} as any, {} as any, {} as any);
+    const rows = [12, 13, 14].map(saleId => ({ id: saleId, saleId, salePaymentType: 'cash' }));
+    expect(await service.describirDeudasCliente(rows as any)).toEqual([
+      { ...rows[0], saleClientDebt: true }, { ...rows[1], saleClientDebt: true }, { ...rows[2], saleClientDebt: false },
+    ]);
+    expect(ventaRepo.find).toHaveBeenCalledTimes(1);
+    expect(await service.describirDeudasCliente([])).toEqual([]);
+    expect(ventaRepo.find).toHaveBeenCalledTimes(1);
+  });
   it('al cambiar una parte de tarjeta a efectivo no la convierte en ingreso directo', async () => {
     let rows: any[] = [];
     let nextId = 1;

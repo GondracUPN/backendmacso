@@ -694,6 +694,16 @@ export class VentaService {
     return savedIncome;
   }
 
+  // Metadato de presentación: la deuda del cliente reutiliza el ingreso de efectivo,
+  // pero aún no representa dinero recibido pendiente de depositar.
+  async describirDeudasCliente(rows: Gasto[]) {
+    const ids = [...new Set(rows.filter(row => row.saleId && row.salePaymentType === 'cash').map(row => row.saleId!))];
+    if (!ids.length) return rows;
+    const ventas = await this.ventaRepo.find({ where: { id: In(ids) }, select: ['id', 'clienteId', 'vendedor'], loadEagerRelations: false });
+    const clientes = new Set(ventas.filter(v => v.clienteId || pedidoCliente(v.vendedor)).map(v => v.id));
+    return rows.map(row => ({ ...row, saleClientDebt: row.salePaymentType === 'cash' && clientes.has(row.saleId!) }));
+  }
+
   async getSalePayments(id: number) {
     const [sale, incomeRows, advance] = await Promise.all([
       this.findOne(id),
@@ -719,6 +729,8 @@ export class VentaService {
       exchangeRate: Number(sale.tipoCambio),
       incomeBank: incomes.find((income) => income.tarjeta && income.tarjeta !== 'efectivo')?.tarjeta || '',
       parts,
+      incomes: incomes.map(row => ({ ...row, saleClientDebt: row.salePaymentType === 'cash' && Boolean(sale.clienteId || pedidoCliente(sale.vendedor)) })),
+      venta: (await this.conDeudaCliente([sale]))[0],
     };
   }
 

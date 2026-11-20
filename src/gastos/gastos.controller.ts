@@ -32,16 +32,16 @@ export class GastosController {
 
   // Cualquier usuario: sus propios gastos
   @Get()
-  findMine(@CurrentUser() user: JwtUserPayload) {
-    return this.svc.findAllByUser(user.userId); // <-- usar user.userId
+  async findMine(@CurrentUser() user: JwtUserPayload) {
+    return this.ventaService.describirDeudasCliente(await this.svc.findAllByUser(user.userId));
   }
 
   // ADMIN: ver todos, o filtrar por ?userId=#
   @Roles('admin')
   @Get('all')
-  findAll(@Query('userId') userId?: string) {
-    if (userId) return this.svc.findAllByUser(Number(userId));
-    return this.svc.findAll();
+  async findAll(@Query('userId') userId?: string) {
+    const rows = userId ? await this.svc.findAllByUser(Number(userId)) : await this.svc.findAll();
+    return this.ventaService.describirDeudasCliente(rows);
   }
 
   @Get('budget')
@@ -77,7 +77,8 @@ export class GastosController {
     @Body() body: { paymentAmount?: number; paymentCount?: number; paidAt?: string; exchangeRate?: number; bank?: string; cancelPaymentIndex?: number },
   ) {
     await this.svc.findOneAuth(user.userId, user.role, id);
-    return this.ventaService.updateSaleIncomePayment(id, body);
+    const saved = await this.ventaService.updateSaleIncomePayment(id, body);
+    return (await this.ventaService.describirDeudasCliente([saved]))[0];
   }
 
   @Post('bolsa-registro')
@@ -100,11 +101,11 @@ export class GastosController {
 
   // Obtener un gasto por id (propio o admin)
   @Get(':id')
-  getOne(
+  async getOne(
     @CurrentUser() user: JwtUserPayload,
     @Param('id', ParseIntPipe) id: number,
   ) {
-    return this.svc.findOneAuth(user.userId, user.role, id);
+    return (await this.ventaService.describirDeudasCliente([await this.svc.findOneAuth(user.userId, user.role, id)]))[0];
   }
 
   @Post()
