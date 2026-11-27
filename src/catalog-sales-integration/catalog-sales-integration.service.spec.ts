@@ -83,7 +83,7 @@ describe('CatalogSalesIntegrationService.confirm', () => {
       }),
     };
     const productoRepo = {
-      findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' })),
+      find: jest.fn(async () => [{ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' }]),
     };
     const ventaService = {
       update: options?.updateError
@@ -161,7 +161,7 @@ describe('CatalogSalesIntegrationService.paymentOptions', () => {
   it('ofrece solo cuentas de debito para recibir una venta del catalogo', async () => {
     const dataSource = { query: jest.fn(async () => [{ id: 'event-id', sku: 'MS-366' }]) };
     const productoRepo = {
-      findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' })),
+      find: jest.fn(async () => [{ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' }]),
     };
     const cardRepo = { find: jest.fn(async () => [{ tipo: 'bcp_visa' }, { tipo: 'io' }]) };
     const userRepo = { findOne: jest.fn(async () => ({ id: 1 })) };
@@ -306,7 +306,7 @@ describe('CatalogSalesIntegrationService aviso al catalogo', () => {
     };
     const service = new CatalogSalesIntegrationService(
       dataSource as any,
-      { findOne: jest.fn(async () => ({ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' })) } as any,
+      { find: jest.fn(async () => [{ id: 366, codigoInventario: 366, vendedor: 'Gonzalo' }]) } as any,
       { find: jest.fn(async () => [{ tipo: 'bcp' }]) } as any,
       { findOne: jest.fn(async () => ({ id: 1 })) } as any,
       { update: jest.fn(), create: jest.fn(async () => ({ id: 92 })) } as any,

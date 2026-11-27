@@ -111,7 +111,19 @@ export class CatalogSalesIntegrationService {
     }
     if (String(sku).startsWith('acc-')) return null;
     const code = Number(String(sku).match(/(\d+)(?!.*\d)/)?.[1]);
-    return Number.isInteger(code) && code > 0 ? this.productoRepo.findOne({ where: [{ id: code }, { codigoInventario: code }] }) : null;
+    if (!Number.isInteger(code) || code <= 0) return null;
+    // El SKU visible es MS-<codigoInventario || id> (ACC-<...> para accesorios). Un mismo
+    // número puede ser el id de un equipo y el codigoInventario de otro producto, así que
+    // se elige el candidato cuyo SKU visible coincide en vez del primero que devuelva la BD.
+    const candidates = await this.productoRepo.find({ where: [{ id: code }, { codigoInventario: code }] });
+    const wantsAccessory = /^acc-/i.test(String(sku));
+    const score = (p: Producto) => {
+      const visibleCode = p.codigoInventario ?? p.id;
+      return (isAccessoryStock(p.tipo) === wantsAccessory ? 4 : 0)
+        + (Number(visibleCode) === code ? 2 : 0)
+        + (Number(p.codigoInventario) === code ? 1 : 0);
+    };
+    return candidates.sort((a, b) => score(b) - score(a) || a.id - b.id)[0] || null;
   }
 
   async paymentOptions(id: string) {

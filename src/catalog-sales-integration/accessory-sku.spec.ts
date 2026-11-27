@@ -16,3 +16,16 @@ test('SKU por referencia encuentra un lote disponible del comprador correcto sin
   expect(repo.findOne).toHaveBeenCalledWith({ where: { id: 15, tipo: 'accesorios' } });
   expect(await (service as any).productFromSku('acc-ref-invalida-15')).toBeNull();
 });
+
+test('SKU MS-<n> elige el equipo cuyo código visible coincide aunque un accesorio tenga ese codigoInventario', async () => {
+  const accesorio = { id: 473, codigoInventario: 512, tipo: 'accesorios' };
+  const macbook = { id: 512, codigoInventario: null, tipo: 'macbook' };
+  const repo = { find: jest.fn(async () => [accesorio, macbook]) };
+  const service = new CatalogSalesIntegrationService({} as any, repo as any, {} as any, {} as any, {} as any);
+  expect(await (service as any).productFromSku('MS-512')).toBe(macbook);
+  expect(repo.find).toHaveBeenCalledWith({ where: [{ id: 512 }, { codigoInventario: 512 }] });
+  expect(await (service as any).productFromSku('ACC-512')).toBe(accesorio);
+  const conCodigo = { id: 600, codigoInventario: 512, tipo: 'macbook' };
+  repo.find.mockResolvedValueOnce([macbook, conCodigo] as any);
+  expect(await (service as any).productFromSku('MS-512')).toBe(conCodigo);
+});
