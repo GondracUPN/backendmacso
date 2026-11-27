@@ -31,9 +31,22 @@ const ALLOWED: Record<string, string[]> = {
   airpods: ['Caja', 'Cable', 'Case', 'Eartips'],
 };
 
-export function normalizeIncludedAccessories(tipo: unknown, values: unknown, airpodsModel?: unknown): string[] {
+export const isNewEquipment = (estado: unknown): boolean => slug(estado) === 'nuevo';
+
+/** Un equipo nuevo siempre incluye su caja, sin importar lo seleccionado. */
+export function ensureNewEquipmentBox(tipo: unknown, estado: unknown, values: string[]): string[] {
+  if (isAccessoryStock(tipo) || !isNewEquipment(estado)) return values;
+  const rest = values.filter((item) => !['caja', 'ninguno'].includes(slug(item)));
+  return ['Caja', ...rest];
+}
+
+export function normalizeIncludedAccessories(tipo: unknown, values: unknown, airpodsModel?: unknown, estado?: unknown): string[] {
   const type = slug(tipo);
   if (isAccessoryStock(type)) return [];
+  return ensureNewEquipmentBox(type, estado, normalizeSelection(type, values, airpodsModel));
+}
+
+function normalizeSelection(type: string, values: unknown, airpodsModel?: unknown): string[] {
   let allowed = ALLOWED[type] || ['Caja'];
   if (type === 'airpods') {
     const model = slug(airpodsModel);

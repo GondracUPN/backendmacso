@@ -15,7 +15,7 @@ import { Producto } from '../producto/producto.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { UpdateInventarioDto } from './dto/update-inventario.dto';
 import { Inventario } from './inventario.entity';
-import { isAccessoryStock, normalizeIncludedAccessories } from '../producto/accessory-rules';
+import { isAccessoryStock, isNewEquipment, normalizeIncludedAccessories } from '../producto/accessory-rules';
 import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 import { validateInventoryValues, type InventoryValues } from '../apple-catalog/device-capabilities';
 import { lockAccessoryTopology } from '../venta/accessory-locks';
@@ -277,9 +277,9 @@ export class InventarioService {
       const accesorios = Array.from(
         new Set(data.accesorios.map((item) => cleanText(item, 80)).filter(Boolean)),
       ) as string[];
-      patch.accesorios = isAccessoryStock(producto.tipo) ? [] : accesorios.some((item) => item.toLowerCase() === 'ninguno')
+      patch.accesorios = isAccessoryStock(producto.tipo) ? [] : accesorios.some((item) => item.toLowerCase() === 'ninguno') && !isNewEquipment(producto.estado)
         ? ['Ninguno']
-        : normalizeIncludedAccessories(producto.tipo, accesorios, (producto.detalle as any)?.modelo);
+        : normalizeIncludedAccessories(producto.tipo, accesorios, (producto.detalle as any)?.modelo, producto.estado);
     }
 
     Object.assign(ficha, patch);

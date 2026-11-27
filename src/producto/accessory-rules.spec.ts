@@ -1,6 +1,14 @@
 import { normalizeIncludedAccessories } from './accessory-rules';
 
 describe('reglas de accesorios incluidos', () => {
+  it('agrega siempre la caja a los equipos nuevos', () => {
+    expect(normalizeIncludedAccessories('macbook', [], undefined, 'nuevo')).toEqual(['Caja']);
+    expect(normalizeIncludedAccessories('iphone', ['Cable original', 'Caja'], undefined, 'Nuevo')).toEqual(['Caja', 'Cable original']);
+    expect(normalizeIncludedAccessories('otro', ['Ninguno'], undefined, 'nuevo')).toEqual(['Caja']);
+    expect(normalizeIncludedAccessories('macbook', [], undefined, 'usado')).toEqual([]);
+    expect(normalizeIncludedAccessories('accesorios', [], undefined, 'nuevo')).toEqual([]);
+  });
+
   it('deja caja opcional y conserva una sola variante de cubo y cable', () => {
     expect(normalizeIncludedAccessories('macbook', [
       'Cubo original', 'Cubo fake', 'Cable fake', 'Cable original', 'Case',

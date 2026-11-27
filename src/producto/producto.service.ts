@@ -22,7 +22,7 @@ import { Inventario } from '../inventario/inventario.entity';
 import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 import * as crypto from 'node:crypto';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
-import { isAccessoryStock, normalizeIncludedAccessories } from './accessory-rules';
+import { ensureNewEquipmentBox, isAccessoryStock, isNewEquipment, normalizeIncludedAccessories } from './accessory-rules';
 import { accesorioParaCatalogo, liberarAccesoriosAlRetirarProducto, lotesDeAccesoriosStock } from '../inventario/accesorios-stock';
 
 function normalizeEstado(str?: string | null): string {
@@ -217,6 +217,7 @@ export class ProductoService {
       data.tipo,
       data.accesorios,
       (data.detalle as any)?.modelo,
+      data.estado,
     );
 
     const producto = this.productoRepo.create({
@@ -709,8 +710,15 @@ export class ProductoService {
         producto.tipo,
         (dto as any).accesorios,
         (dto.detalle as any)?.modelo ?? (producto.detalle as any)?.modelo,
+        producto.estado,
       );
       await this.productoRepo.save(producto);
+    } else if (!isAccessoryStock(producto.tipo) && isNewEquipment(producto.estado)) {
+      const conCaja = ensureNewEquipmentBox(producto.tipo, producto.estado, producto.accesorios || []);
+      if (conCaja.join('|') !== (producto.accesorios || []).join('|')) {
+        producto.accesorios = conCaja;
+        await this.productoRepo.save(producto);
+      }
     }
 
     if ((dto as any).cantidad !== undefined && isAccessoryStock(producto.tipo)) {
