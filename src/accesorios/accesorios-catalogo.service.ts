@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, LessThan } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { AccesoriosService } from './accesorios.service';
 import { AccesorioCatalogo } from './accesorio-catalogo.entity';
@@ -7,38 +7,108 @@ import { Inventario } from '../inventario/inventario.entity';
 import { operationHash } from '../venta/operation-hash';
 import { accessoryOwner } from '../venta/accessory-quote';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
+import { ProductoAccesoriosStock } from '../inventario/producto-accesorios-stock.entity';
+import { accesorioParaCatalogo, lotesDeAccesoriosStock } from '../inventario/accesorios-stock';
+import { accessoryUnitCost } from '../producto/accessory-cost';
+
+function modelosParaCatalogo(
+  lotes: { detalle?: { modelosCompatibles?: string[] } | null }[],
+  compatibilidadReferencia?: string | null,
+) {
+  const modeloKey = (value: string) => value.toLowerCase();
+  const referencia = compatibilidadReferencia?.trim() || '';
+  const listas = lotes.map((lote) => new Map(
+    (lote.detalle?.modelosCompatibles || []).map((modelo) => modelo.trim()).filter(Boolean)
+      .map((modelo) => [modeloKey(modelo), modelo]),
+  )).filter((lista) => lista.size > 0 && !(lista.size === 1 && lista.has(modeloKey(referencia))));
+  if (!listas.length) return referencia ? [referencia] : [];
+  const [primera, ...resto] = listas;
+  // Una publicación agrupa los lotes bajo una sola ficha. Solo anuncia compatibilidades compartidas.
+  return [...primera].filter(([key]) => resto.every((lista) => lista.has(key))).map(([, modelo]) => modelo);
+}
 
 @Injectable()
 export class AccesoriosCatalogoService implements OnModuleInit, OnModuleDestroy {
   private timer?: ReturnType<typeof setInterval>;
-  private running = false;
+  private running: Promise<void> | null = null;
   private readonly logger = new Logger(AccesoriosCatalogoService.name);
   constructor(private readonly ds: DataSource, private readonly accessories: AccesoriosService) {}
 
   onModuleInit() {
     if (process.env.NODE_ENV === 'test') return;
-    const run = () => { void this.synchronize().catch(() => this.logger.warn('No se pudo sincronizar accesorios; se reintentará.')); };
+    const run = () => {
+      void this.synchronize().catch(() => this.logger.warn('No se pudo sincronizar accesorios; se reintentará.'));
+      void this.sincronizarIncluidos().catch(() => this.logger.warn('No se pudieron sincronizar accesorios incluidos; se reintentará.'));
+    };
     this.timer = setInterval(run, 30000);
     this.timer.unref();
     run();
   }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
 
+  private async sincronizarIncluidos() {
+    const url = process.env.CATALOG_SYNC_URL;
+    if (!url) return;
+    await this.ds.transaction(async (em) => {
+      const [lock] = await em.query(
+        "SELECT pg_try_advisory_xact_lock(hashtext('accessory-includes-catalog-sync')) AS acquired",
+      );
+      if (!lock.acquired) return;
+      const repo = em.getRepository(ProductoAccesoriosStock);
+      const pendientes = await repo.createQueryBuilder('stock').innerJoin('stock.producto', 'p')
+        .where('p."catalogoEnviado" = true')
+        .andWhere('stock.revision > stock."revisionSincronizada"')
+        .orderBy('stock.productoId', 'ASC').getMany();
+      const lotes = await lotesDeAccesoriosStock(em, pendientes.flatMap((item) => item.accesorios));
+      for (const stock of pendientes) {
+        try {
+          const response = await fetch(url, {
+            method: 'POST', signal: AbortSignal.timeout(10000),
+            headers: { 'Content-Type': 'application/json', 'x-idempotency-key': randomUUID(), ...catalogSyncHeaders() },
+            body: JSON.stringify({
+              event: 'product.accessories.updated',
+              product: {
+                sku: `svc-${stock.productoId}`,
+                accesoriosStock: stock.accesorios.map((item) => accesorioParaCatalogo(item, lotes.get(item.productoId))),
+                accesoriosStockRevision: stock.revision,
+              },
+            }),
+          });
+          const result = response.ok ? await response.json() : null;
+          if (result?.productAccessoriesUpdated !== true || result.skipped === 'not_found') {
+            throw new Error(`Catálogo HTTP ${response.status}`);
+          }
+          await repo.update({ productoId: stock.productoId, revisionSincronizada: LessThan(stock.revision) }, {
+            revisionSincronizada: stock.revision,
+          });
+        } catch {
+          this.logger.warn(`Accesorios incluidos pendientes de sincronización para svc-${stock.productoId}.`);
+        }
+      }
+    });
+  }
+
   private async groups() {
-    const rows = await this.accessories.operativo();
+    const rows = await this.accessories.operativo(false);
     return rows.map((row) => {
       const owner = accessoryOwner(row.comprador);
       // El comprador delimita la asignación FIFO existente; nunca mezclar sus lotes.
-      const key = row.referenciaId ? `ref-${row.referenciaId}-${operationHash(owner).slice(0, 16)}` : `lot-${Math.min(...row.lotes.map((lot) => lot.id))}`;
+      const esReferenciaLegada = row.referenciaId && !row.producto.empaqueAccesorio && !row.producto.fusionAccesorioId;
+      const key = esReferenciaLegada ? `ref-${row.referenciaId}-${operationHash(owner).slice(0, 16)}`
+        : `lot-${row.producto.fusionAccesorioId || Math.min(...row.lotes.map((lot) => lot.id))}`;
       const sku = `acc-${key}`;
       const faltantes: string[] = [];
       if (!row.nombre?.trim()) faltantes.push('nombre comercial');
       if (!owner) faltantes.push('comprador en la ficha de inventario');
       if (!(Number(row.precioPublicado) > 0)) faltantes.push('precio publicado mayor que cero');
       if (row.referencia?.activo === false) faltantes.push('referencia activa');
+      const costo = row.costoProximaUnidad ?? accessoryUnitCost(row.producto);
+      const costoCompraUnitario = costo == null ? null : +costo.toFixed(2);
       const payload = { id: sku, sku, title: row.nombre?.trim() || 'Accesorio', sourceTitle: row.nombre?.trim() || 'Accesorio', price: String(Number(row.precioPublicado) || 0), currency: 'PEN',
         legacySkus: row.lotes.map((lot) => `MS-${lot.id}`).sort(),
         stock: Math.max(0, row.disponible), selected: true,
+        costoCompraUnitario,
+        modelosCompatibles: modelosParaCatalogo(row.lotes, row.referencia?.compatibilidad),
         accessoryCode: row.codigo, productCondition: row.estado, category: 'accesorios', saleType: 'VENTA_SIMPLE',
         specs: { tipo: 'accesorios', estado: row.estado, detalle: { modelo: row.nombre, descripcionOtro: row.compatibilidad } } };
       return { key, row, payload, faltantes };
@@ -50,6 +120,7 @@ export class AccesoriosCatalogoService implements OnModuleInit, OnModuleDestroy 
     return groups.map(({ key, row, faltantes }) => {
       const state = states.find((item) => item.key === key);
       return { key, nombre: row.nombre, comprador: row.comprador, disponible: row.disponible, productoId: row.producto.id,
+        stockEnviado: state?.payload?.selected === true ? state.payload.stock : null,
         referenciaId: row.referenciaId, codigos: row.codigos, faltantes, seleccionado: state?.seleccionado ?? false,
         enviado: !!state?.payload?.selected && !!state?.syncHash, error: state?.error,
         sincronizadoAt: state?.sincronizadoAt };
@@ -77,11 +148,14 @@ export class AccesoriosCatalogoService implements OnModuleInit, OnModuleDestroy 
     return this.list();
   }
 
-  async synchronize() {
-    if (this.running) return;
-    this.running = true;
+  async synchronize(forzarSeleccionados = false) {
+    if (this.running) {
+      if (!forzarSeleccionados) return;
+      await this.running;
+      return this.synchronize(true);
+    }
     try {
-      await this.ds.transaction(async (em) => {
+      this.running = this.ds.transaction(async (em) => {
         await em.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['accessory-catalog-sync']);
         const repo = em.getRepository(AccesorioCatalogo);
         const states = await repo.find();
@@ -109,7 +183,7 @@ export class AccesoriosCatalogoService implements OnModuleInit, OnModuleDestroy 
           // Las fotos se suben en el catálogo para aplicar su marca de agua.
           delete (payload as any).images;
           const hash = operationHash(payload);
-          if (hash === state.syncHash) continue;
+          if (hash === state.syncHash && !(forzarSeleccionados && state.seleccionado)) continue;
           try {
             const url = process.env.CATALOG_SYNC_URL;
             if (!url) throw new Error('CATALOG_SYNC_URL no configurado.');
@@ -133,7 +207,8 @@ export class AccesoriosCatalogoService implements OnModuleInit, OnModuleDestroy 
           await repo.save(state);
         }
       });
-    } finally { this.running = false; }
+      await this.running;
+    } finally { this.running = null; }
   }
 
   async withdrawFromCatalog(sku: string) {

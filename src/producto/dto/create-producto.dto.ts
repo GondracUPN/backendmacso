@@ -7,6 +7,7 @@ import {
   IsArray,
   IsBoolean,
   IsInt,
+  IsIn,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -40,6 +41,8 @@ export class CreateProductoValorDto {
 }
 
 export class CreateProductoDto {
+  @IsOptional() @IsIn(['con_caja', 'sin_caja', 'sin_indicar'])
+  empaqueAccesorio?: 'con_caja' | 'sin_caja' | 'sin_indicar';
   @IsOptional() @IsInt() @Min(1) referenciaId?: number;
   @IsString() tipo: string; // macbook, ipad, iphone, watch, otro
   @IsString() estado: string; // nuevo, usado, roto

@@ -4,6 +4,7 @@ import { SaldosClientesService } from '../finanzas/saldos-clientes.service';
 import { lockAccessoryTopology } from './accessory-locks';
 import { allocateAccessory, accessoryOwner, accessoryGroupWhere, sameAccessoryInventoryGroup, resolveAccessoryPrices } from './accessory-quote';
 import { accessoryLotCost, isSimpleAccessory } from '../producto/accessory-cost';
+import { coincideSeleccionVendida, consumirAccesoriosStock, detalleVentaConAccesorios, validarSeleccionAccesoriosStock } from '../inventario/accesorios-stock';
 import { QuoteAccessoryDto } from './dto/quote-accessory.dto';
 import { Inventario } from '../inventario/inventario.entity';
 import {
@@ -16,7 +17,7 @@ import {
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, ILike, In, IsNull, Like, Not, Repository } from 'typeorm';
+import { EntityManager, ILike, In, IsNull, Like, Not, Raw, Repository } from 'typeorm';
 import { Venta } from './venta.entity';
 import { VentaAdelanto, VentaAdelantoCuota } from './venta-adelanto.entity';
 import { CreateVentaDto } from './dto/create-venta.dto';
@@ -28,6 +29,7 @@ import { isAccessoryStock } from '../producto/accessory-rules';
 import { Producto } from '../producto/producto.entity';
 import { ProductoValor } from '../producto/producto-valor.entity';
 import { calculateProfitPercentage } from './venta-profit.utils';
+import { aplicarReclamosParcialesPendientes } from '../finanzas/reclamo-ajuste-venta';
 import { Gasto } from '../gastos/entities/gasto.entity';
 import { reservaActivaSql, reservaActivaWhere } from './estado-comercial';
 import { VentaDevolucion } from './venta-devolucion.entity';
@@ -37,13 +39,14 @@ import { finanzasVenta, fromCents, resumenPago } from '../finanzas/finanzas-calc
 import { toPagoCalc } from '../finanzas/finanzas-ledger.service';
 import { ConflictException } from '@nestjs/common';
 import { operationHash } from './operation-hash';
-import { unidadesPorReponer } from './stock-restore';
+import { ajustarStockAccesoriosDeEquipo, unidadesPorReponer } from './stock-restore';
 import { costoEnSoles } from './costo-en-soles';
 import { CuentaFinanciera } from '../finanzas/entities/cuenta-financiera.entity';
 import { User } from '../auth/entities/user.entity';
 import { formatAppleWatchName } from '../common/product-name.util';
 import { FinanzasLedgerService } from '../finanzas/finanzas-ledger.service';
 import { toCents } from '../finanzas/finanzas-calc';
+import { desgloseVentaConAccesorios, ventaConDesglose } from './reparto-venta-equipo';
 
 const normalizeSeller = (s?: string | null) =>
   s == null ? '' : String(s).trim().toLowerCase();
@@ -738,7 +741,7 @@ export class VentaService {
   async resultadoVenta(venta: Venta) {
     const rows = this.gastoRepo ? await this.gastoRepo.find({ where: { saleId: venta.id, concepto: 'ingreso' } }) : [];
     const [resumen] = await this.conDeudaCliente([venta]);
-    return { ...resumen, ingreso: {
+    return { ...ventaConDesglose(resumen), ingreso: {
       estado: rows.length ? 'registrado' : 'sin_ingreso_asignado',
       monto: rows.reduce((sum, row) => sum + Number(row.monto), 0),
       cuentas: [...new Set(rows.map((row) => row.tarjeta).filter(Boolean))],
@@ -808,8 +811,20 @@ export class VentaService {
       .orderBy('v.fechaVenta', 'DESC')
       .addOrderBy('v.id', 'DESC')
       .getMany();
+    // Equipos con devolución parcial: ganancia real = ganancia + costo recuperado - precio devuelto al cliente.
+    for (const sale of sales) {
+      if (isAccessoryStock(sale.producto?.tipo) || sale.costoPendiente || sale.ganancia == null) continue;
+      const costoDev = Number(sale.costoDevuelto || 0), precioDev = Number(sale.precioDevuelto || 0);
+      if (!costoDev && !precioDev) continue;
+      const costoOriginal = Number(sale.precioVenta || 0) - Number(sale.ganancia);
+      const profit = +(Number(sale.ganancia) + costoDev - precioDev).toFixed(2);
+      const costoNeto = +(costoOriginal - costoDev + precioDev).toFixed(2);
+      sale.ganancia = profit;
+      sale.porcentajeGanancia = calculateProfitPercentage(profit, costoNeto);
+      (sale as any).costoVendido = costoNeto;
+    }
     const accessorySales = sales.filter((sale) => isAccessoryStock(sale.producto?.tipo));
-    if (!accessorySales.length) return sales;
+    if (!accessorySales.length) return sales.map(ventaConDesglose);
     const ids = [...new Set(accessorySales.flatMap((sale) =>
       (sale.distribucionStock?.length ? sale.distribucionStock : [{ productoId: sale.productoId, cantidad: sale.cantidad || 1 }])
         .map((row) => Number(row.productoId)).filter(Boolean),
@@ -832,14 +847,15 @@ export class VentaService {
       sale.porcentajeGanancia = calculateProfitPercentage(profit, cost);
       (sale as any).costoVendido = +(cost - Number(sale.costoDevuelto || 0)).toFixed(2);
     }
-    return sales;
+    return sales.map(ventaConDesglose);
   }
 
   async findByProducto(productoId: number): Promise<Venta[]> {
-    return this.ventaRepo.find({
+    const ventas = await this.ventaRepo.find({
       where: { productoId, estadoComercial: Not('cancelada') },
       order: { id: 'DESC' },
     });
+    return ventas.map(ventaConDesglose);
   }
 
   async findSimilarSold(productoId: number, requestedLimit = 8): Promise<any> {
@@ -953,7 +969,7 @@ export class VentaService {
 
     qb.andWhere('v."estadoComercial" <> :cancelada', { cancelada: 'cancelada' });
     if (!productoIds?.length) qb.innerJoin(Producto, 'activeProduct', 'activeProduct.id = v.productoId AND activeProduct.archivadoAt IS NULL');
-    return this.conDeudaCliente(await qb.getMany());
+    return (await this.conDeudaCliente(await qb.getMany())).map(ventaConDesglose);
   }
 
   /** Lectura histórica: un reclamo no borra la venta ni los cobros convertidos en saldo. */
@@ -1023,6 +1039,7 @@ export class VentaService {
       .leftJoinAndSelect('p.detalle', 'det')
       .leftJoinAndSelect('p.tracking', 'trk')
       .where('v."anuladaAt" IS NULL')
+      .andWhere('v."estadoComercial" <> :cancelada', { cancelada: 'cancelada' })
       .orderBy('v.fechaVenta', 'DESC')
       .addOrderBy('v.id', 'DESC')
       .getMany());
@@ -1041,6 +1058,9 @@ export class VentaService {
     const productosPedido = await this.productoRepo.find({
       relations: ['valor', 'detalle', 'tracking'],
     });
+    const porId = new Map(productosPedido.map((producto) => [producto.id, producto]));
+    const codigoPedido = (id: number, producto?: Producto | null) => isAccessoryStock(producto?.tipo)
+      ? `ACC-${producto?.codigoInventario || id}` : `MS-${id}`;
 
     const adelantosByVenta = new Map<number, VentaAdelanto>();
     for (const adelanto of adelantos) {
@@ -1064,25 +1084,34 @@ export class VentaService {
       if (!cliente) continue;
 
       soldProductIds.add(venta.productoId);
-      const precioVenta = toMoneyNumber(venta.precioVenta);
+      const precioOriginal = toMoneyNumber(venta.precioVenta);
+      const precioVenta = Math.max(0, precioOriginal - toMoneyNumber(venta.precioDevuelto));
       const gananciaRegistrada = toMoneyNumber(venta.ganancia);
-      const costo = precioVenta || gananciaRegistrada ? precioVenta - gananciaRegistrada : getProductCost(producto);
+      const costoOriginal = precioOriginal || gananciaRegistrada ? precioOriginal - gananciaRegistrada : getProductCost(producto);
+      const costo = costoOriginal - toMoneyNumber(venta.costoDevuelto);
       const stats = buildMoneyStats(precioVenta, costo);
       const adelanto = adelantosByVenta.get(venta.id);
       const deudaCliente = Number((venta as any).deudaCliente || 0);
-      const montoAdelanto = deudaCliente > 0 ? Math.max(0, precioVenta - deudaCliente) : adelanto ? toMoneyNumber(adelanto.montoAdelanto) : precioVenta;
+      const montoAdelanto = deudaCliente > 0 ? Math.max(0, precioVenta - deudaCliente)
+        : adelanto ? Math.min(precioVenta, toMoneyNumber(adelanto.montoAdelanto)) : precioVenta;
       const status = getPedidoStatus(producto, deudaCliente > 0 ? (montoAdelanto > 0 ? 'adelanto' : 'sin_pago') : 'pagado');
+      const incluidos = (venta.distribucionStock || []).filter((parte) => parte.nombre && parte.productoId !== venta.productoId);
+      const unidadesIncluidas = incluidos.reduce((total, parte) => total + Number(parte.cantidad), 0);
 
       rows.push({
         id: `venta-${venta.id}`,
         ventaId: venta.id,
         adelantoId: adelanto?.id ?? null,
         productoId: venta.productoId,
-        codigoProducto: `${isAccessoryStock(producto?.tipo) ? 'ACC' : 'MS'}-${producto?.codigoInventario || venta.productoId}`,
+        codigoProducto: codigoPedido(venta.productoId, producto),
+        codigosAccesorios: [...new Set(incluidos.map((parte) => `ACC-${porId.get(parte.productoId)?.codigoInventario || parte.productoId}`))],
+        cantidad: Math.max(0, Number(venta.cantidad || 1) - Number(venta.cantidadDevuelta || 0)) + unidadesIncluidas,
+        estadoComercial: venta.estadoComercial,
         cliente,
         vendedor: seller,
         estadoPago: status.estadoPago,
-        estadoPedido: status.estadoPedido,
+        estadoPedido: isAccessoryStock(producto?.tipo) && venta.estadoComercial === 'entregada' && status.estadoPago === 'pagado'
+          ? 'cancelado_entregado' : status.estadoPedido,
         trackingEstado: status.trackingEstado,
         producto: buildProductoNombre(producto),
         fecha: venta.fechaVenta,
@@ -1115,7 +1144,7 @@ export class VentaService {
         ventaId: null,
         adelantoId: adelanto.id,
         productoId: adelanto.productoId,
-        codigoProducto: `${isAccessoryStock(producto?.tipo) ? 'ACC' : 'MS'}-${producto?.codigoInventario || adelanto.productoId}`,
+        codigoProducto: codigoPedido(adelanto.productoId, producto),
         cliente,
         vendedor: seller,
         estadoPago: status.estadoPago,
@@ -1157,7 +1186,7 @@ export class VentaService {
         ventaId: null,
         adelantoId: null,
         productoId: producto.id,
-        codigoProducto: `${isAccessoryStock(producto.tipo) ? 'ACC' : 'MS'}-${producto.codigoInventario || producto.id}`,
+        codigoProducto: codigoPedido(producto.id, producto),
         cliente,
         vendedor: seller,
         estadoPago: status.estadoPago,
@@ -1178,6 +1207,9 @@ export class VentaService {
     const clientsMap = new Map<string, any>();
     const totals = {
       productos: 0,
+      compras: 0,
+      unidadesVendidas: 0,
+      totalVendido: 0,
       pagados: 0,
       pendientes: 0,
       ventaTotal: 0,
@@ -1195,6 +1227,9 @@ export class VentaService {
         {
           cliente: row.cliente,
           productos: 0,
+          compras: 0,
+          unidadesVendidas: 0,
+          totalVendido: 0,
           pagados: 0,
           pendientes: 0,
           ventaTotal: 0,
@@ -1206,6 +1241,13 @@ export class VentaService {
           markupPct: 0,
         };
 
+      if (row.ventaId && row.estadoComercial !== 'reservada') {
+        for (const resumen of [current, totals]) {
+          resumen.compras += 1;
+          resumen.unidadesVendidas += toMoneyNumber(row.cantidad);
+          resumen.totalVendido += toMoneyNumber(row.montoVenta);
+        }
+      }
       current.productos += 1;
       current.pagados += row.estadoPago === 'pagado' ? 1 : 0;
       current.pendientes += row.estadoPago === 'pagado' ? 0 : 1;
@@ -1228,6 +1270,7 @@ export class VentaService {
 
     const finalize = (obj: any) => {
       obj.ventaTotal = +obj.ventaTotal.toFixed(2);
+      obj.totalVendido = +obj.totalVendido.toFixed(2);
       obj.adelantos = +obj.adelantos.toFixed(2);
       obj.saldo = +obj.saldo.toFixed(2);
       obj.costo = +obj.costo.toFixed(2);
@@ -1410,7 +1453,7 @@ export class VentaService {
   async resumenAdelanto(id: number) {
     const adelanto = await this.findAdelanto(id);
     const [producto, venta, rows] = await Promise.all([
-      this.productoRepo.findOne({ where: { id: adelanto.productoId } }),
+      this.productoRepo.findOne({ where: { id: adelanto.productoId }, relations: ['accesoriosStock'] }),
       adelanto.ventaId ? this.findOne(adelanto.ventaId) : Promise.resolve(null),
       this.gastoRepo ? this.gastoRepo.find({ where: [
         { concepto: 'ingreso', notas: Like(`__SALE_ADVANCE__:${id}:%`) },
@@ -1420,7 +1463,10 @@ export class VentaService {
         ] : []),
       ] }) : Promise.resolve([]),
     ]);
-    return this.buildAdelantoResumen(adelanto, producto, venta, rows);
+    return {
+      ...this.buildAdelantoResumen(adelanto, producto, venta, rows),
+      accesoriosStock: producto && !isAccessoryStock(producto.tipo) ? producto.accesoriosStock : undefined,
+    };
   }
 
   async resumenAdelantos(ids: number[]) {
@@ -1631,6 +1677,7 @@ export class VentaService {
       return savedSale;
     }
 
+    await this.transactionManager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [adelanto.productoId]);
     const producto = await this.productoRepo.findOne({
       where: { id: adelanto.productoId },
       relations: ['valor'],
@@ -1662,6 +1709,8 @@ export class VentaService {
     await this.valorRepo.save(v);
 
     const precioVenta = Number(adelanto.montoVenta);
+    const accesorios = isAccessoryStock(producto.tipo) ? []
+      : await consumirAccesoriosStock(this.transactionManager, producto.id, dto);
     const ganancia = +(precioVenta - costoTotalRecalc).toFixed(2);
     const porcentajeGanancia = calculateProfitPercentage(
       ganancia,
@@ -1677,6 +1726,7 @@ export class VentaService {
       ganancia,
       porcentajeGanancia,
       vendedor: sellerFromProducto(producto, null),
+      ...detalleVentaConAccesorios(producto.id, precioVenta, costoTotalRecalc, accesorios),
     });
     const saved = await this.ventaRepo.save(venta);
 
@@ -1729,6 +1779,18 @@ export class VentaService {
   }
 
   async getAccessorySalesSummary(productoId: number) {
+    type Fila = {
+      id: number;
+      fechaVenta: string;
+      cantidad: number;
+      equipoId: number | null;
+      precioUnitario: number | null;
+      ventaBruta: number | null;
+      costo: number | null;
+      gananciaNeta: number | null;
+      tipoCambio: number;
+      distribucionStock: NonNullable<Venta['distribucionStock']>;
+    };
     const requested = await this.productoRepo.findOne({
       where: { id: productoId },
       relations: ['valor', 'tracking'],
@@ -1746,17 +1808,40 @@ export class VentaService {
     const lotIds = validLots.map((lot) => lot.id);
     const sales = lotIds.length
       ? await this.ventaRepo.find({
-          where: { productoId: In(lotIds), estadoComercial: Not('cancelada') },
+          where: [
+            { productoId: In(lotIds), estadoComercial: Not('cancelada') },
+            {
+              estadoComercial: Not('cancelada'),
+              distribucionStock: Raw((alias) => `EXISTS (
+                SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${alias}) = 'array' THEN ${alias} ELSE '[]'::jsonb END) parte
+                WHERE parte ? 'nombre' AND parte->>'productoId' IN (:...lotesAccesorio))`, { lotesAccesorio: lotIds.map(String) }),
+            },
+          ],
           order: { fechaVenta: 'ASC', id: 'ASC' },
         })
       : [];
 
     const lotsById = new Map(validLots.map((lot) => [Number(lot.id), lot]));
-    let unidadesVendidas = 0;
-    let ventaBruta = 0;
-    let costoVendido = 0;
-    let weightedTc = 0;
-    const detalleVentas = sales.map((sale) => {
+    const detalleVentas = sales.flatMap<Fila>((sale) => {
+      const reparto = desgloseVentaConAccesorios(sale);
+      if (reparto.length) {
+        const partes = reparto.filter((parte) => lotsById.has(parte.productoId) && parte.nombre);
+        if (!partes.length) return [];
+        const cantidad = partes.reduce((suma, parte) => suma + parte.cantidad, 0);
+        const ingreso = partes.some((parte) => parte.ingreso == null) ? null
+          : partes.reduce((suma, parte) => suma + toCents(parte.ingreso), 0);
+        const costo = partes.some((parte) => parte.costo == null) ? null
+          : partes.reduce((suma, parte) => suma + toCents(parte.costo), 0);
+        return [{
+          id: sale.id, fechaVenta: sale.fechaVenta, cantidad, equipoId: sale.productoId,
+          precioUnitario: ingreso == null ? null : fromCents(ingreso / cantidad),
+          ventaBruta: ingreso == null ? null : fromCents(ingreso),
+          costo: costo == null ? null : fromCents(costo),
+          gananciaNeta: ingreso == null || costo == null ? null : fromCents(ingreso - costo),
+          tipoCambio: Number(sale.tipoCambio || 0),
+          distribucionStock: (sale.distribucionStock || []).filter((parte) => lotsById.has(parte.productoId)),
+        }];
+      }
       const cantidad = Math.max(1, Number(sale.cantidad || 1) - Number(sale.cantidadDevuelta || 0));
       const distribution = Array.isArray(sale.distribucionStock) && sale.distribucionStock.length
         ? sale.distribucionStock
@@ -1771,32 +1856,33 @@ export class VentaService {
         return sum + unitCost * Math.max(0, Number(item.cantidad || 0));
       }, 0) - Number(sale.costoDevuelto || 0);
       const gananciaNeta = bruto - costo;
-      unidadesVendidas += cantidad;
-      ventaBruta += bruto;
-      costoVendido += costo;
-      weightedTc += Number(sale.tipoCambio || 0) * cantidad;
-      return {
+      return [{
         id: sale.id,
         fechaVenta: sale.fechaVenta,
         cantidad,
+        equipoId: null,
         precioUnitario: +(bruto / cantidad).toFixed(2),
         ventaBruta: +bruto.toFixed(2),
         costo: sale.costoPendiente ? null : +costo.toFixed(2),
         gananciaNeta: sale.costoPendiente ? null : +gananciaNeta.toFixed(2),
         tipoCambio: Number(sale.tipoCambio || 0),
         distribucionStock: distribution,
-      };
+      }];
     });
+    const unidadesVendidas = detalleVentas.reduce((suma, fila) => suma + fila.cantidad, 0);
+    const weightedTc = detalleVentas.reduce((suma, fila) => suma + fila.tipoCambio * fila.cantidad, 0);
+    const total = (campo: 'ventaBruta' | 'costo' | 'gananciaNeta') => detalleVentas.some((fila) => fila[campo] == null)
+      ? null : fromCents(detalleVentas.reduce((suma, fila) => suma + toCents(fila[campo]), 0));
 
     return {
       codigoInventario: visibleCode,
       unidadesCompradas: validLots.reduce((sum, lot) => sum + Number(lot.stockInicial || 0), 0),
       unidadesDisponibles: validLots.reduce((sum, lot) => sum + Number(lot.stockActual || 0), 0),
       unidadesVendidas,
-      ventaBruta: +ventaBruta.toFixed(2),
-      costosPendientes: sales.filter((sale) => sale.costoPendiente).length,
-      costoVendido: sales.some((sale) => sale.costoPendiente) ? null : +costoVendido.toFixed(2),
-      gananciaNeta: sales.some((sale) => sale.costoPendiente) ? null : +(ventaBruta - costoVendido).toFixed(2),
+      ventaBruta: total('ventaBruta'),
+      costosPendientes: detalleVentas.filter((fila) => fila.gananciaNeta == null).length,
+      costoVendido: total('costo'),
+      gananciaNeta: total('gananciaNeta'),
       tipoCambioPromedio: unidadesVendidas ? +(weightedTc / unidadesVendidas).toFixed(4) : null,
       ventas: detalleVentas.reverse(),
     };
@@ -1804,6 +1890,7 @@ export class VentaService {
 
   async create(dto: CreateVentaDto, userId = 0, sinIngresoAutomatico = false): Promise<Venta> {
     this.validateSaleAmounts(dto);
+    validarSeleccionAccesoriosStock(dto);
     if (!this.transactionManager) return this.inTransaction((service) => service.create(dto, userId, sinIngresoAutomatico));
     await lockAccessoryTopology(this.transactionManager);
     const hash = operationHash(dto);
@@ -1869,6 +1956,11 @@ export class VentaService {
       await this.ventaRepo.update(saved.id, { operacionKey: dto.operacionKey, operacionHash: hash });
       Object.assign(saved, { operacionKey: dto.operacionKey, operacionHash: hash });
     }
+    // Equipo con devolución parcial previa (daño): ese reembolso baja el costo de esta venta.
+    if (!isAccessoryStock(base?.tipo) && await aplicarReclamosParcialesPendientes(this.transactionManager, saved.productoId, { id: saved.id, tipoCambio: Number(saved.tipoCambio) || null })) {
+      const ajustada = await this.ventaRepo.findOneByOrFail({ id: saved.id });
+      Object.assign(saved, { costoDevuelto: ajustada.costoDevuelto, precioDevuelto: ajustada.precioDevuelto });
+    }
     const final = await this.applyFinancialFields(saved, dto);
     if (vendidoConReclamoVigente && clientePedido && !dto.saldoCliente && this.saldos && userId &&
         await this.saldos.actualizarSaldoPorReclamo(saved.productoId, userId, this.transactionManager))
@@ -1932,6 +2024,9 @@ export class VentaService {
     }
     const existing = await this.findExistingByProducto(dto.productoId);
     if (existing && !isAccessoryStock(existing.producto?.tipo)) {
+      if (dto.accesoriosStockIds && !coincideSeleccionVendida(existing, dto.accesoriosStockIds)) {
+        throw new ConflictException('El equipo ya tiene una venta con otros accesorios.');
+      }
       await this.syncSaleIncome(existing, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts, { cuentaId: dto.incomeAccountId, metodo: dto.incomeMethod });
       return existing;
     }
@@ -1956,6 +2051,7 @@ export class VentaService {
       );
 
     if (isAccessoryStock(producto.tipo)) {
+      if (dto.accesoriosStockIds !== undefined) throw new BadRequestException('La selección de accesorios incluidos corresponde a un equipo.');
       await lockAccessoryTopology(this.transactionManager!);
       const cantidad = Number(dto.cantidad || 1);
       const modalidad = dto.modalidad === 'mayor' || cantidad > 1 ? 'mayor' : 'unidad';
@@ -1972,10 +2068,14 @@ export class VentaService {
         const tipoCambio = Number(dto.tipoCambio);
         if (!tipoCambio) throw new BadRequestException('Tipo de cambio invalido.');
         const visibleCode = Number(lockedBase.codigoInventario || lockedBase.id);
+        const scope = lockedBase.fusionAccesorioId ? 'producto.fusionAccesorioId = :fusion'
+          : lockedBase.empaqueAccesorio ? 'producto.id = :requestedId'
+          : lockedBase.referenciaId ? 'producto.referenciaId = :referenciaId'
+          : '(producto.id = :requestedId OR producto.codigoInventario = :visibleCode) AND producto.referenciaId IS NULL';
         const lockedIdRows = await transactionProductRepo
           .createQueryBuilder('producto')
           .select('producto.id', 'id')
-          .where(lockedBase.referenciaId ? 'producto.referenciaId = :referenciaId' : '(producto.id = :requestedId OR producto.codigoInventario = :visibleCode) AND producto.referenciaId IS NULL', { referenciaId: lockedBase.referenciaId, requestedId: lockedBase.id, visibleCode })
+          .where(scope, { referenciaId: lockedBase.referenciaId, requestedId: lockedBase.id, visibleCode, fusion: lockedBase.fusionAccesorioId })
           .orderBy('producto.id', 'ASC')
           .setLock('pessimistic_write')
           .getRawMany();
@@ -2035,6 +2135,7 @@ export class VentaService {
     const v = producto.valor;
     const resolvedSeller =
       normalizeSellerLabel((dto as any).vendedor) ?? sellerFromProducto(producto, null);
+    const accesorios = await consumirAccesoriosStock(this.transactionManager!, producto.id, dto);
 
     if (dto.pedidoSinPago) {
       const costo = getProductCost(producto);
@@ -2045,6 +2146,7 @@ export class VentaService {
         fechaReserva: dto.fechaVenta, estadoComercial: 'reservada', precioVenta,
         ganancia, porcentajeGanancia: calculateProfitPercentage(ganancia, costo),
         cantidad: 1, modalidad: 'unidad', vendedor: resolvedSeller,
+        ...detalleVentaConAccesorios(producto.id, precioVenta, costo, accesorios),
       }));
       await this.syncSaleIncome(pendiente, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts, { cuentaId: dto.incomeAccountId, metodo: dto.incomeMethod });
       await this.cache.del?.('productos:stats').catch?.(() => {});
@@ -2100,6 +2202,7 @@ export class VentaService {
         vendedor:
           normalizeSellerLabel((dto as any).vendedor) ??
           sellerFromProducto(producto, 'ambos'),
+        ...detalleVentaConAccesorios(producto.id, precioVenta, total, accesorios),
       });
       const saved = await this.saveIdempotent(venta);
       await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts, { cuentaId: dto.incomeAccountId, metodo: dto.incomeMethod });
@@ -2136,6 +2239,7 @@ export class VentaService {
       cantidad: 1,
       modalidad: 'unidad',
       vendedor: resolvedSeller,
+      ...detalleVentaConAccesorios(producto.id, precioVenta, costoTotalRecalc, accesorios),
     });
     const saved = await this.saveIdempotent(venta);
     await this.syncSaleIncome(saved, dto.incomeBank, dto.incomePaymentType, dto.incomeSku, dto.incomeParts, { cuentaId: dto.incomeAccountId, metodo: dto.incomeMethod });
@@ -2310,6 +2414,8 @@ export class VentaService {
           Number(venta.ganancia),
           total,
         );
+        Object.assign(venta, detalleVentaConAccesorios(producto.id, precioVenta, total,
+          (venta.distribucionStock || []).filter((part) => part.productoId !== producto.id)));
       } else {
         const tipoCambio =
           dto.tipoCambio !== undefined
@@ -2335,6 +2441,8 @@ export class VentaService {
           Number(venta.ganancia),
           costoTotalRecalc,
         );
+        Object.assign(venta, detalleVentaConAccesorios(producto.id, precioVenta, costoTotalRecalc,
+          (venta.distribucionStock || []).filter((part) => part.productoId !== producto.id)));
       }
     }
     // permitir asignar vendedor
@@ -2409,15 +2517,15 @@ export class VentaService {
     let unidades = dto.cantidad; let costoRecuperado = 0;
     const lotes: VentaDevolucion['lotes'] = [];
     for (const part of distribucion) {
-      const take = Math.min(unidades, part.cantidad - (usados.get(part.productoId) || 0));
+      const accesorioIncluido = Boolean(part.nombre) && part.productoId !== venta.productoId;
+      const take = Math.min(accesorioIncluido ? dto.cantidad : unidades, part.cantidad - (usados.get(part.productoId) || 0));
       if (take <= 0) continue;
+      if (!accesorioIncluido) unidades -= take;
       const producto = await this.productoRepo.findOneBy({ id: part.productoId });
       const unit = Number(part.costoUnitario ?? getAccessoryUnitCost(producto));
       lotes.push({ productoId: part.productoId, cantidad: take, costoUnitario: unit });
       if (!producto) {
         // Lote eliminado definitivamente: la unidad vuelve, pero no hay stock que reponer.
-        unidades -= take;
-        if (!unidades) break;
         continue;
       }
       if (dto.destino === 'disponible') {
@@ -2426,8 +2534,6 @@ export class VentaService {
         costoRecuperado += unit * take;
       } else if (!isAccessoryStock(producto.tipo)) producto.cierreMotivo = 'no_comercializable';
       await this.productoRepo.save(producto);
-      unidades -= take;
-      if (!unidades) break;
     }
     if (unidades) throw new BadRequestException('La distribución original de lotes no cubre la devolución.');
     venta.costoDevuelto = Number(venta.costoDevuelto || 0) + Number(costoRecuperado.toFixed(2));
@@ -2504,6 +2610,8 @@ export class VentaService {
         lote.stockActual = Number(lote.stockActual || 0) + part.cantidad;
         await this.productoRepo.save(lote);
       }
+    } else {
+      await ajustarStockAccesoriosDeEquipo(manager, venta, 'reponer');
     }
 
     // Libro financiero: pagos de la venta y de su reserva dejan de aportar (con sus eventos).
@@ -2575,6 +2683,7 @@ export class VentaService {
         await this.productoRepo.save(venta.producto);
       }
     }
+    await ajustarStockAccesoriosDeEquipo(this.transactionManager, venta, 'reponer');
     await this.ventaRepo.remove(venta);
     await this.ledger?.marcarVentaEliminada(id, this.transactionManager);
     if (this.gastoRepo) {

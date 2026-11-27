@@ -14,3 +14,8 @@ export function accessoryLotCost(lot: Partial<Producto>): number | null {
   const cost = value.costoTotalProrrateado ?? value.costoTotal ?? value.valorSoles;
   return cost == null ? null : Number(cost);
 }
+
+export function accessoryUnitCost(lot: Partial<Producto>): number | null {
+  const total = accessoryLotCost(lot);
+  return total == null ? null : total / Math.max(1, Number(lot.stockInicial || 1));
+}

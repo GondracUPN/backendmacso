@@ -144,7 +144,7 @@ export class FinanzasAnalisisService {
        WHERE g.clasificacion_financiera IN ('costo_directo', 'comision_venta')
          AND (g.venta_vinculada_id IS NOT NULL OR g.producto_vinculado_id IS NOT NULL)`);
     const reembolsos: any[] = await this.dataSource.query(`
-      SELECT r.id, r.producto_id AS "productoId", r.estado, r.moneda, r.tipo_cambio_compra AS "tipoCambioCompra",
+      SELECT r.id, r.producto_id AS "productoId", r.estado, r.tipo_reclamo AS "tipoReclamo", r.moneda, r.tipo_cambio_compra AS "tipoCambioCompra",
              r.costo_original AS "costoOriginal", r.gastos_adicionales AS "gastosAdicionales", r.monto_reclamado AS "montoReclamado",
              r.monto_aprobado AS "montoAprobado", r.fecha_cierre::text AS "fechaCierre", r.fecha_incidencia::text AS "fechaIncidencia",
              COALESCE((SELECT sum(e.monto_pen) FROM reembolso_eventos e WHERE e.reembolso_id = r.id AND e.tipo = 'recibido'), 0) AS "recibidoPen"
@@ -413,6 +413,7 @@ export class FinanzasAnalisisService {
           reclamadoCents: aPen(r.montoReclamado),
           aprobadoCents: r.montoAprobado != null ? aPen(r.montoAprobado) : null,
           recibidoCents: toCents(r.recibidoPen),
+          parcial: r.tipoReclamo === 'dano_parcial',
         }),
       };
     });
@@ -1110,7 +1111,7 @@ export class FinanzasAnalisisService {
   ) {
     const enReclamo = new Set(
       reembolsos
-        .filter(({ r }) => !ESTADOS_REEMBOLSO_CERRADOS.includes(r.estado))
+        .filter(({ r }) => !ESTADOS_REEMBOLSO_CERRADOS.includes(r.estado) && r.tipoReclamo !== 'dano_parcial')
         .map(({ r }) => Number(r.productoId)),
     );
     const rows: any[] = await this.dataSource.query(

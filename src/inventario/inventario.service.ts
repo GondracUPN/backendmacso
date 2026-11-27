@@ -18,6 +18,11 @@ import { Inventario } from './inventario.entity';
 import { isAccessoryStock, normalizeIncludedAccessories } from '../producto/accessory-rules';
 import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 import { validateInventoryValues, type InventoryValues } from '../apple-catalog/device-capabilities';
+import { lockAccessoryTopology } from '../venta/accessory-locks';
+import { accessoryAvailable } from '../venta/accessory-quote';
+import { devolverAccesoriosStock, leerAccesoriosStock, nombreAccesorio } from './accesorios-stock';
+import { ProductoAccesoriosStock } from './producto-accesorios-stock.entity';
+import { UpdateAccesoriosStockDto } from './dto/update-accesorios-stock.dto';
 
 @Injectable()
 export class InventarioService {
@@ -51,6 +56,8 @@ export class InventarioService {
       .leftJoinAndSelect('p.detalle', 'detalle')
       .leftJoinAndSelect('p.valor', 'valor')
       .leftJoinAndSelect('p.tracking', 'tracking')
+      .leftJoinAndSelect('p.referencia', 'referencia')
+      .leftJoinAndSelect('p.accesoriosStock', 'accesoriosStock')
       .where(
         `(LOWER(p.tipo) = 'accesorios' OR (
           EXISTS (
@@ -139,12 +146,58 @@ export class InventarioService {
   async findProductoByCode(productoId: number) {
     const producto = await this.productoRepo.findOne({
       where: { id: productoId },
-      relations: ['detalle', 'valor', 'tracking'],
+      relations: ['detalle', 'valor', 'tracking', 'accesoriosStock'],
     });
     if (!producto) throw new NotFoundException(`Producto ${productoId} no encontrado.`);
     const ficha = await this.inventarioRepo.findOne({ where: { productoId } });
     const reglas = await this.reglasPorProducto([producto]);
     return { producto, ficha: ficha || null, reglas: this.withCompleteness(reglas.get(producto.id), ficha) };
+  }
+
+  async updateAccesoriosStock(productoId: number, { revision, productoIds }: UpdateAccesoriosStockDto, desdeCatalogo = false) {
+    return this.productoRepo.manager.transaction(async (manager) => {
+      await lockAccessoryTopology(manager, true);
+      const productos = manager.getRepository(Producto);
+      const producto = await productos.findOneBy({ id: productoId });
+      if (!producto) throw new NotFoundException('Producto no encontrado.');
+      const [disponible] = await manager.query(`
+        SELECT 1 WHERE (
+          $2::boolean OR EXISTS (
+            SELECT 1 FROM tracking t
+            WHERE t."productoId" = $1 AND (t.estado = 'recogido' OR t."fechaRecogido" IS NOT NULL)
+          )
+        )
+          AND NOT EXISTS (SELECT 1 FROM venta v WHERE v."productoId" = $1 AND ${ventaActivaSql()})
+          AND NOT EXISTS (SELECT 1 FROM venta_adelanto va WHERE va."productoId" = $1 AND ${reservaActivaSql()})
+        LIMIT 1`, [productoId, desdeCatalogo && producto.catalogoEnviado]);
+      if (!disponible || isAccessoryStock(producto.tipo) || producto.archivadoAt || producto.cierreMotivo) {
+        throw new BadRequestException('Los accesorios se agregan a equipos disponibles en Inventario.');
+      }
+      const stock = await leerAccesoriosStock(manager, productoId);
+      const anteriores = new Set(stock.accesorios.map((item) => item.productoId));
+      const deseados = new Set(productoIds);
+      const agregados = productoIds.filter((id) => !anteriores.has(id));
+      const retirados = stock.accesorios.filter((item) => !deseados.has(item.productoId));
+      if (!agregados.length && !retirados.length) return stock;
+      if (revision !== stock.revision) throw new ConflictException('La ficha cambió. Actualiza el inventario y vuelve a intentarlo.');
+
+      const lotes = agregados.length ? await productos.findBy({ id: In(agregados) }) : [];
+      if (lotes.length !== agregados.length || lotes.some((lote) => !accessoryAvailable(lote) || lote.stockActual < 1)) {
+        throw new ConflictException('Uno de los accesorios ya no tiene stock disponible.');
+      }
+      await devolverAccesoriosStock(manager, retirados);
+      for (const lote of lotes) await productos.decrement({ id: lote.id }, 'stockActual', 1);
+      const accesorios = [
+        ...stock.accesorios.filter((item) => deseados.has(item.productoId)),
+        ...lotes.map((lote) => ({
+          productoId: lote.id,
+          nombre: nombreAccesorio(lote),
+        })),
+      ];
+      const nuevo = { accesorios, revision: stock.revision + 1 };
+      await manager.getRepository(ProductoAccesoriosStock).save({ productoId, ...nuevo });
+      return nuevo;
+    });
   }
 
   async upsert(productoId: number, data: UpdateInventarioDto) {
@@ -160,11 +213,15 @@ export class InventarioService {
     };
     const patch: Partial<Inventario> = {};
     if (data.cantidadStock !== undefined && isAccessoryStock(producto.tipo)) {
-      const sold = Math.max(0, Number(producto.stockInicial || 0) - Number(producto.stockActual || 0));
-      if (data.cantidadStock < sold) throw new BadRequestException(`No puedes bajar el total por debajo de ${sold} unidades vendidas.`);
-      producto.stockInicial = data.cantidadStock;
-      producto.stockActual = data.cantidadStock - sold;
-      await this.productoRepo.save(producto);
+      const cantidadStock = data.cantidadStock;
+      await this.productoRepo.manager.transaction(async (manager) => {
+        await lockAccessoryTopology(manager, true);
+        const repo = manager.getRepository(Producto);
+        const lote = await repo.findOneByOrFail({ id: productoId });
+        const asignadas = Math.max(0, Number(lote.stockInicial) - Number(lote.stockActual));
+        if (cantidadStock < asignadas) throw new BadRequestException(`No puedes bajar el total por debajo de ${asignadas} unidades vendidas o reservadas.`);
+        await repo.update(productoId, { stockInicial: cantidadStock, stockActual: cantidadStock - asignadas });
+      });
     }
     if (data.enAlmacen !== undefined) patch.enAlmacen = data.enAlmacen;
     const avisos: string[] = [];

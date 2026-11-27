@@ -105,5 +105,5 @@ test('operativo separa lotes con código heredado y fotos distintas, incluidos s
  expect(rows.map(row=>row.lotes.map(lot=>lot.id))).toEqual([[471],[472]]);
  expect(rows.map(row=>row.disponible)).toEqual([1,1]);
  expect(rows.map(row=>row.precioPublicado)).toEqual([30,40]);
- expect(rows.map(row=>row.ultimaVenta.total)).toEqual([30,40]);
+ expect(rows.map(row=>row.ultimaVenta?.total)).toEqual([30,40]);
 });

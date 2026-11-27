@@ -62,6 +62,27 @@ const okFetch = (devices: any[] = feedDevices) => jest.fn(async (url: string) =>
   url.includes('/group/') ? response(200, APPLEDB_BASELINE.groups) : response(200, devices, { etag: 'W/"v1"' }));
 
 describe('AppleCatalogService sincronización', () => {
+  it('ofrece modelos compatibles con las fechas y tamaños de cada familia de accesorios', async () => {
+    const { service } = setup(okFetch());
+    const rows = await service.accessoryCompatibility();
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'iphone-13-mini', series: '13', range: 'Mini', screen: '5.4″', chip: 'A15' }),
+      expect.objectContaining({ id: 'iphone-x-air', series: 'Air', range: 'Air' }),
+      expect.objectContaining({ id: 'iphone-x-duo', series: 'Duo', range: 'Duo' }),
+      expect.objectContaining({ id: 'ipad-5', year: 2017, screen: '9.7″', chip: 'A9' }),
+      expect.objectContaining({ id: 'ipad-pro-a12x:11', year: 2018 }),
+      expect.objectContaining({ id: 'ipad-pro-a12x:12.9', year: 2018 }),
+      expect.objectContaining({ id: 'macbook-air-intel-2020', year: 2020 }),
+      expect.objectContaining({ id: 'macbook-air-m2:13', range: 'Air', chip: 'M2' }),
+      expect.objectContaining({ id: 'macbook-air-m2:15', range: 'Air', chip: 'M2' }),
+    ]));
+    expect(rows.some((row) => row.id.startsWith('iphone-12') || row.id.startsWith('iphone-se'))).toBe(false);
+    expect(rows.some((row) => row.id === 'macbook-air-m1:15')).toBe(false);
+    expect(rows.filter((row) => row.series === '13').map((row) => row.range).sort()).toEqual(['Mini', 'Normal', 'Pro', 'Pro Max']);
+    expect(rows.filter((row) => row.series === '14').map((row) => row.range).sort()).toEqual(['Normal', 'Plus', 'Pro', 'Pro Max']);
+    expect(new Set(rows.map((row) => row.label)).size).toBe(rows.length);
+  });
+
   it('publica una versión válida, es idempotente al repetir y el nuevo modelo aparece en formularios', async () => {
     const { repo, service } = setup(okFetch());
     const first = await service.syncNow('manual');

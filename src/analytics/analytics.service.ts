@@ -1614,6 +1614,53 @@ export class AnalyticsService {
     }).filter(Boolean) as Array<{ id: number; name: string; category: string; units: number; capital: number | null; purchaseDate: string; daysSincePurchase: number | null; status: string }>;
     const inventoryMissing = inventoryRows.filter((row) => row.capital == null).length;
     const inventoryCapital = inventoryMissing ? null : roundMoney(inventoryRows.reduce((sum, row) => sum + Number(row.capital), 0));
+    // Capital del stock que quedaba sin vender al cierre del período (`to`): comprado hasta esa
+    // fecha y sin venta registrada hasta esa fecha. Para accesorios suma al stock actual lo
+    // vendido después del cierre. Sin `to` (o con `to` hoy o después) coincide con inventoryCapital.
+    const periodEnd = params.to && params.to < businessToday() ? params.to : null;
+    let inventoryCapitalAtEnd: number | null = inventoryCapital;
+    if (periodEnd) {
+      const soldByEnd = new Set<number>();
+      const accessoryUnitsSoldAfter = new Map<number, number>();
+      for (const sale of ventas) {
+        const product = productsById.get(sale.productoId);
+        if (!product) continue;
+        const saleDate = dateKey(sale.fechaVenta);
+        if (String(product.tipo || '').toLowerCase() !== 'accesorios') {
+          if (saleDate && saleDate <= periodEnd) soldByEnd.add(product.id);
+          continue;
+        }
+        if (!saleDate || saleDate <= periodEnd) continue;
+        const distribution = sale.distribucionStock?.length ? sale.distribucionStock : [{ productoId: sale.productoId, cantidad: sale.cantidad || 1 }];
+        for (const row of distribution) {
+          const id = Number(row.productoId);
+          accessoryUnitsSoldAfter.set(id, (accessoryUnitsSoldAfter.get(id) || 0) + Number(row.cantidad || 0));
+        }
+      }
+      let missing = 0;
+      let total = 0;
+      for (const product of selectedProducts) {
+        const share = productoShareForSeller(product, seller);
+        if (seller && share <= 0) continue;
+        const purchaseDate = dateKey(product.valor?.fechaCompra);
+        if (!purchaseDate || purchaseDate > periodEnd) continue;
+        const accessory = String(product.tipo).toLowerCase() === 'accesorios';
+        const initial = Math.max(1, Number(product.stockInicial || 1));
+        const units = accessory
+          ? Math.min(initial, Math.max(0, Number(product.stockActual || 0)) + (accessoryUnitsSoldAfter.get(product.id) || 0))
+          : soldByEnd.has(product.id) ? 0 : 1;
+        if (!units) continue;
+        const cost = productCost(product);
+        if (cost == null) { missing += 1; continue; }
+        total += cost * units / (accessory ? initial : 1) * share;
+      }
+      inventoryCapitalAtEnd = missing ? null : roundMoney(total);
+    }
+    // Del stock actual, lo que se compró dentro del período.
+    const periodInventoryRows = inventoryRows.filter((row) => inRange(row.purchaseDate));
+    const inventoryFromPeriodPurchases = periodInventoryRows.some((row) => row.capital == null)
+      ? null
+      : roundMoney(periodInventoryRows.reduce((sum, row) => sum + Number(row.capital), 0));
     const recoveredCapital = totals.cost;
     const capitalInvested = allPurchaseMissing ? null : roundMoney(allPurchases.reduce((sum, product) => sum + productCost(product)! * productoShareForSeller(product, seller), 0));
     const purchaseCapitalInPeriod = purchasedMissing ? null : roundMoney(purchasedCost);
@@ -1777,9 +1824,11 @@ export class AnalyticsService {
         cost: 'Costo histórico de las unidades vendidas, incluidos los envíos prorrateados registrados.',
         capital: 'Costo acumulado de todos los productos comprados que coinciden con los filtros de producto y vendedor; no depende del rango de fechas.',
         inventory: 'Valor al costo del stock actual, independiente del filtro de fecha de venta.',
+        inventoryAtEnd: 'Valor al costo de lo que seguía sin vender al cierre del período (comprado hasta esa fecha y sin venta hasta esa fecha).',
       },
       summary: {
-        capitalInvested, purchaseCapitalInPeriod, inventoryCapital, recoveredCapital, income: totals.income,
+        capitalInvested, purchaseCapitalInPeriod, inventoryCapital, inventoryCapitalAtEnd, inventoryFromPeriodPurchases, periodEnd: periodEnd || null,
+        recoveredCapital, income: totals.income,
         cost: totals.cost, grossProfit: totals.grossProfit, margin: totals.margin, markup: totals.markup,
         medianDays: median(days), meanDays: mean(days), profitPerThousand: totals.cost && totals.grossProfit != null ? roundMoney(totals.grossProfit / totals.cost * 1000) : null,
         operatingExpenses: null, operatingResult: null, cashFlow: null,

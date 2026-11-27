@@ -17,6 +17,7 @@ import {
   toCents,
 } from './finanzas-calc';
 import { Venta } from '../venta/venta.entity';
+import { ajustarStockAccesoriosDeEquipo } from '../venta/stock-restore';
 import { VentaPago } from './entities/venta-pago.entity';
 import { Reembolso } from './entities/reembolso.entity';
 import {
@@ -339,7 +340,8 @@ export class SaldosClientesService {
     if (!cliente) throw new NotFoundException('Cliente no encontrado.');
     const saldos = await this.db.query(
       `SELECT s.*, s.fecha::text AS fecha, p.origen AS pago_origen,
-        CASE WHEN p.origen='saldo_cliente' THEN 'saldo_recuperado'
+        CASE WHEN s.reembolso_id IS NOT NULL AND s.pago_id IS NULL THEN 'reclamo_parcial'
+          WHEN p.origen='saldo_cliente' THEN 'saldo_recuperado'
           WHEN p.idempotency_key LIKE 'extra:%' THEN 'pago_recuperado'
           ELSE 'pago_convertido' END AS origen_saldo
        FROM cliente_saldos s LEFT JOIN venta_pagos p ON p.id=s.pago_id
@@ -551,7 +553,7 @@ export class SaldosClientesService {
         v.clienteId = clienteId;
       }
       const existentes = await m.query(
-        'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL',
+        'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL AND pago_id IS NOT NULL',
         [ventaId],
       );
       if (existentes.length)
@@ -626,6 +628,7 @@ export class SaldosClientesService {
           'No hay dinero pagado disponible para convertir.',
         );
       // Cancelación comercial: se conservan cobros, ingresos bancarios y el importe original.
+      if (v.estadoComercial !== 'cancelada') await ajustarStockAccesoriosDeEquipo(m, v, 'reponer');
       await m
         .getRepository(Venta)
         .update(v.id, { estadoComercial: 'cancelada' });
@@ -654,7 +657,7 @@ export class SaldosClientesService {
       ventaId, origen: 'saldo_cliente', anuladoAt: IsNull(),
     }))) return false;
     const existentes = await m.query(
-      'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL',
+      'SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL AND pago_id IS NOT NULL',
       [ventaId],
     );
     if (existentes.length) return true;
@@ -683,10 +686,10 @@ export class SaldosClientesService {
     const convertidas: NonNullable<import('./entities/reembolso.entity').Reembolso['reversionReclamo']>['ventas'] = [];
     for (const v of ventas) {
       await m.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['saldo-cancelacion:' + v.id]);
-      const existentes = await m.query('SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL', [v.id]);
+      const existentes = await m.query('SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL AND pago_id IS NOT NULL', [v.id]);
       if (existentes.length) continue;
       if (await this.cancelarPedidoConSaldo(v.id, fecha, userId, m)) {
-        const saldos = await m.query('SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL', [v.id]);
+        const saldos = await m.query('SELECT id FROM cliente_saldos WHERE venta_id=$1 AND anulada_at IS NULL AND pago_id IS NOT NULL', [v.id]);
         convertidas.push({ id: v.id, estadoComercial: v.estadoComercial, anuladaAt: v.anuladaAt?.toISOString() || null,
           anuladaPor: v.anuladaPor ?? null, anulacionMotivo: v.anulacionMotivo ?? null, saldoIds: saldos.map(s => s.id) });
       }
@@ -697,6 +700,8 @@ export class SaldosClientesService {
     const r = await m.getRepository(Reembolso).createQueryBuilder('r')
       .where('r.productoId=:productoId', { productoId })
       .andWhere("r.estado NOT IN ('anulado','rechazado','perdida_definitiva')")
+      // La devolución parcial por daño no cancela la venta ni convierte sus pagos.
+      .andWhere("r.tipoReclamo <> 'dano_parcial'")
       .orderBy('r.id', 'DESC').setLock('pessimistic_write').getOne();
     if (!r) return false;
     const [pago] = await m.query(`SELECT max(p.fecha_pago)::text fecha FROM venta_pagos p
@@ -709,6 +714,56 @@ export class SaldosClientesService {
       ventas: [...(r.reversionReclamo?.ventas || []), ...ventas] };
     await m.getRepository(Reembolso).save(r);
     return true;
+  }
+  /**
+   * Devolución parcial por equipo dañado: los soles indicados pasan a saldo a favor del cliente
+   * del pedido al emitirse el reclamo. La venta y sus cobros siguen vigentes.
+   */
+  async saldoParcialPorReclamo(
+    reembolso: Reembolso,
+    montoPen: number,
+    userId: number,
+    m: EntityManager,
+  ) {
+    const cents = toCents(montoPen);
+    if (!(cents > 0)) throw new BadRequestException('Indica cuánto se devuelve al cliente.');
+    const ventas = await m.getRepository(Venta).find({
+      where: { productoId: reembolso.productoId, anuladaAt: IsNull() },
+      relations: ['producto'],
+      order: { id: 'DESC' },
+    });
+    const v = ventas.find((x) => x.estadoComercial !== 'cancelada');
+    if (!v) throw new BadRequestException('El producto no tiene una venta vigente de un cliente.');
+    await m.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['saldo-cancelacion:' + v.id]);
+    const pedido = v.clienteId
+      ? null
+      : await this.resolverPedido(
+          pedidoCliente(v.vendedor) ? v.vendedor : v.producto?.vendedor,
+          userId,
+          m,
+        );
+    const clienteId = v.clienteId || pedido?.id;
+    if (!clienteId) throw new BadRequestException('La venta no pertenece a un cliente de pedido.');
+    this.externo(await this.cliente(m, clienteId));
+    if (!v.clienteId) await m.getRepository(Venta).update(v.id, { clienteId });
+    if (cents > toCents(v.precioVenta))
+      throw new BadRequestException('La devolución al cliente no puede superar el precio de venta.');
+    const tc = Number(v.tipoCambio);
+    if (!(tc > 0)) throw new BadRequestException('Falta el tipo de cambio histórico de la venta.');
+    const [producto] = await m.query(
+      'SELECT COALESCE("codigoInventario",id) AS sku FROM producto WHERE id=$1',
+      [reembolso.productoId],
+    );
+    const [saldo] = await m.query(
+      `INSERT INTO cliente_saldos(cliente_id,venta_id,pago_id,reembolso_id,sku,original,disponible,moneda,monto_original,tipo_cambio,fecha,motivo,creado_por,equivalente_usd)
+       VALUES($1,$2,NULL,$3,$4,$5,$5,'PEN',$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [clienteId, v.id, reembolso.id, producto.sku, money(cents), tc.toFixed(4),
+        reembolso.fechaIncidencia, 'Devolución parcial por equipo dañado', userId,
+        money(Math.round(cents / tc))],
+    );
+    // Se guarda el estado actual: anular el reclamo solo retira este saldo.
+    return [{ id: v.id, estadoComercial: v.estadoComercial, anuladaAt: null,
+      anuladaPor: v.anuladaPor ?? null, anulacionMotivo: v.anulacionMotivo ?? null, saldoIds: [saldo.id] }];
   }
   async prepararCambioSaldo(clienteId:number,dto:AplicarSaldoDto,m:EntityManager, precioVenta?: number) {
     this.externo(await this.cliente(m,clienteId));

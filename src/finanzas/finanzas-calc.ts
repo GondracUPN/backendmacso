@@ -460,6 +460,7 @@ export type ReembolsoCalc = {
   reclamadoCents: number; // en soles
   aprobadoCents: number | null; // en soles
   recibidoCents: number; // en soles, suma de eventos recibidos
+  parcial?: boolean; // devolución parcial por daño: el equipo no queda inmovilizado
 };
 
 export const ESTADOS_REEMBOLSO_CERRADOS = [
@@ -481,7 +482,7 @@ export function resumenReembolso(r: ReembolsoCalc) {
       ? r.recibidoCents
       : (r.aprobadoCents ?? r.reclamadoCents);
   const porRecuperar = cerrado ? 0 : Math.max(0, esperado - r.recibidoCents);
-  const capitalEnReclamo = cerrado
+  const capitalEnReclamo = cerrado || r.parcial
     ? 0
     : Math.max(0, invertido - r.recibidoCents);
   const resultado = r.estado === 'anulado' ? 0 : cerrado ? r.recibidoCents - invertido : null; // negativo = pérdida

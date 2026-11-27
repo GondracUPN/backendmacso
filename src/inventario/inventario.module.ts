@@ -10,5 +10,6 @@ import { AppleCatalogModule } from '../apple-catalog/apple-catalog.module';
   imports: [TypeOrmModule.forFeature([Inventario, Producto]), AppleCatalogModule],
   controllers: [InventarioController],
   providers: [InventarioService],
+  exports: [InventarioService],
 })
 export class InventarioModule {}

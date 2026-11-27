@@ -10,6 +10,7 @@ import { CatalogSalesIntegrationController } from '../catalog-sales-integration/
 import { CatalogSalesIntegrationService } from '../catalog-sales-integration/catalog-sales-integration.service';
 import { AccesoriosCatalogoController, AccesoriosCatalogoSyncController } from '../accesorios/accesorios-catalogo.controller';
 import { AccesoriosCatalogoService } from '../accesorios/accesorios-catalogo.service';
+import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 
 describe('permisos HTTP comerciales (sin base de datos)', () => {
   let app: any;
@@ -24,6 +25,9 @@ describe('permisos HTTP comerciales (sin base de datos)', () => {
       controllers: [VentaController, CatalogSalesIntegrationController, AccesoriosCatalogoController, AccesoriosCatalogoSyncController],
       providers: [JwtStrategy, { provide: ConfigService, useValue: { get: () => 'audit-http-secret' } },
         { provide: VentaService, useValue: svc },
+        { provide: AppleCatalogService, useValue: { accessoryCompatibility: async () => [
+          { id: 'iphone-13-mini', family: 'iphone', range: 'Mini', label: 'iPhone 13 mini', screen: '5.4″', chip: 'A15', year: 2021 },
+        ] } },
         { provide: AccesoriosCatalogoService, useValue: { list: async () => [], select: async () => [], withdrawFromCatalog: async () => ({ok:true,seleccionado:false}) } },
         { provide: CatalogSalesIntegrationService, useValue: { receive: async () => ({ ok: true }) } }],
     }).compile();
@@ -61,5 +65,11 @@ describe('permisos HTTP comerciales (sin base de datos)', () => {
     await request(app.getHttpServer()).post('/integrations/catalog-sales/events').send({}).expect(401);
     await request(app.getHttpServer()).post('/integrations/catalog-sales/events')
       .set('x-sync-secret', 'audit-catalog-secret').send({}).expect(201);
+  });
+  test('la integración solo ofrece los modelos compatibles con una credencial de catálogo', async () => {
+    const path = '/integrations/catalog-accessories/compatible-models';
+    await request(app.getHttpServer()).get(path).expect(401);
+    const result = await request(app.getHttpServer()).get(path).set('x-sync-secret', 'audit-catalog-secret').expect(200);
+    expect(result.body).toEqual([expect.objectContaining({ id: 'iphone-13-mini', family: 'iphone', screen: '5.4″' })]);
   });
 });

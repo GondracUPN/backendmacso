@@ -9,6 +9,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDes
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { CatalogItem } from '../catalog/catalog-item.entity';
+import { accessoryCompatibleModels } from './accessory-compatible-models';
 import {
   coverageReport,
   consolidateCatalog,
@@ -280,6 +281,11 @@ export class AppleCatalogService implements OnModuleInit, OnModuleDestroy {
       families: Object.fromEntries(CATALOG_TIPOS.map((t) => [t, { selectors: FAMILY_SELECTORS[t], hiddenFields: FAMILY_HIDDEN_FIELDS[t] }])),
       models,
     };
+  }
+
+  async accessoryCompatibility() {
+    const catalog = await this.getCatalog();
+    return accessoryCompatibleModels(catalog.models, new Date().toISOString().slice(0, 10));
   }
 
   async search(params: { q?: string; tipo?: string; page?: number; pageSize?: number }) {

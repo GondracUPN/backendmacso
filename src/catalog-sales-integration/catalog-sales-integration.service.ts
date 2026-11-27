@@ -2,9 +2,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, ILike, Repository } from 'typeorm';
+import { DataSource, ILike, IsNull, MoreThan, Repository } from 'typeorm';
 import { Producto } from '../producto/producto.entity';
 import { VentaService } from '../venta/venta.service';
 import { Card } from '../cards/card.entity';
@@ -12,12 +13,27 @@ import { User } from '../auth/entities/user.entity';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
 import { operationHash } from '../venta/operation-hash';
 import { accessoryAvailable, accessoryOwner } from '../venta/accessory-quote';
+import { accesorioParaCatalogo, coincideSeleccionVendida, leerAccesoriosStock, lotesDeAccesoriosStock, nombreAccesorio, SeleccionAccesoriosStock, validarSeleccionAccesoriosStock } from '../inventario/accesorios-stock';
+import { InventarioService } from '../inventario/inventario.service';
+import { UpdateAccesoriosStockDto } from '../inventario/dto/update-accesorios-stock.dto';
+import { isAccessoryStock } from '../producto/accessory-rules';
+import { desgloseVentaConAccesorios } from '../venta/reparto-venta-equipo';
 
 const DEBIT_PAYMENT_OPTIONS = [
   { tipo: 'bcp' },
   { tipo: 'interbank' },
   { tipo: 'bbva' },
 ];
+
+function cantidadCatalogo(cantidad: unknown) {
+  if (cantidad === undefined) return 1;
+  if (typeof cantidad !== 'number' || !Number.isSafeInteger(cantidad) || cantidad < 1 || cantidad > 2147483647) {
+    throw new BadRequestException('Cantidad inválida en la venta del catálogo.');
+  }
+  return cantidad;
+}
+
+type ConfirmacionAccesoriosStock = { accesoriosStockIds: number[]; desgloseAccesorios: ReturnType<typeof desgloseVentaConAccesorios> };
 
 @Injectable()
 export class CatalogSalesIntegrationService {
@@ -29,7 +45,47 @@ export class CatalogSalesIntegrationService {
     @InjectRepository(Card) private readonly cardRepo: Repository<Card>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly ventaService: VentaService,
+    @Optional() private readonly inventario?: InventarioService,
   ) {}
+
+  private async equipoDeCatalogo(sku: string) {
+    const match = /^(?:ms|svc)-(\d+)$/i.exec(sku.trim());
+    const id = Number(match?.[1]);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647) throw new BadRequestException('Se necesita el SKU de un equipo vinculado a Servicios.');
+    const producto = await this.productoRepo.findOneBy({ id });
+    if (!producto || isAccessoryStock(producto.tipo) || producto.archivadoAt || producto.cierreMotivo) {
+      throw new NotFoundException('Equipo disponible de Servicios no encontrado.');
+    }
+    return producto;
+  }
+
+  async getProductAccessories(sku: string) {
+    const producto = await this.equipoDeCatalogo(sku);
+    const stock = await leerAccesoriosStock(this.dataSource.manager, producto.id);
+    const disponibles = await this.productoRepo.find({
+      where: { tipo: 'accesorios', stockActual: MoreThan(0), archivadoAt: IsNull(), cierreMotivo: IsNull() },
+      order: { id: 'DESC' },
+    });
+    const lotes = await lotesDeAccesoriosStock(this.dataSource.manager, stock.accesorios);
+    return {
+      ...stock, productoId: producto.id,
+      accesorios: stock.accesorios.map((item) => accesorioParaCatalogo(item, lotes.get(item.productoId))),
+      disponibles: disponibles.filter(accessoryAvailable).map((lote) => ({
+        ...accesorioParaCatalogo({ productoId: lote.id, nombre: nombreAccesorio(lote) }, lote),
+        codigoInventario: lote.codigoInventario || lote.id,
+        disponible: lote.stockActual,
+        comprador: lote.vendedor ?? null,
+        fusionAccesorioId: lote.fusionAccesorioId ?? null,
+      })),
+    };
+  }
+
+  async updateProductAccessories(sku: string, dto: UpdateAccesoriosStockDto) {
+    const producto = await this.equipoDeCatalogo(sku);
+    const stock = await this.inventario!.updateAccesoriosStock(producto.id, dto, true);
+    const lotes = await lotesDeAccesoriosStock(this.dataSource.manager, stock.accesorios);
+    return { ...stock, accesorios: stock.accesorios.map((item) => accesorioParaCatalogo(item, lotes.get(item.productoId))) };
+  }
 
   private ownerFromSeller(value: unknown): 'gonzalo' | 'renato' | null {
     const seller = String(value || '').trim().toLowerCase();
@@ -42,11 +98,17 @@ export class CatalogSalesIntegrationService {
     const ref = String(sku).match(/^acc-ref-(\d+)-([a-f0-9]{16})$/);
     if (ref) {
       const lots = await this.productoRepo.find({ where: { referenciaId: Number(ref[1]), tipo: 'accesorios' }, relations: ['tracking'], order: { id: 'ASC' } });
-      const group = lots.filter((lot) => operationHash(accessoryOwner(lot.vendedor)).slice(0, 16) === ref[2]);
+      const group = lots.filter((lot) => !lot.empaqueAccesorio && !lot.fusionAccesorioId
+        && operationHash(accessoryOwner(lot.vendedor)).slice(0, 16) === ref[2]);
       return group.find((lot) => accessoryAvailable(lot) && Number(lot.stockActual) > 0) || group[0] || null;
     }
     const legacy = String(sku).match(/^acc-lot-(\d+)$/);
-    if (legacy) return this.productoRepo.findOne({ where: { id: Number(legacy[1]), tipo: 'accesorios' } });
+    if (legacy) {
+      const id = Number(legacy[1]);
+      const principal = await this.productoRepo.findOne({ where: { id, tipo: 'accesorios' } });
+      if (principal && !principal.archivadoAt && !principal.cierreMotivo) return principal;
+      return await this.productoRepo.findOne({ where: { fusionAccesorioId: id, tipo: 'accesorios', archivadoAt: IsNull(), cierreMotivo: IsNull() } }) || principal;
+    }
     if (String(sku).startsWith('acc-')) return null;
     const code = Number(String(sku).match(/(\d+)(?!.*\d)/)?.[1]);
     return Number.isInteger(code) && code > 0 ? this.productoRepo.findOne({ where: [{ id: code }, { codigoInventario: code }] }) : null;
@@ -111,6 +173,10 @@ export class CatalogSalesIntegrationService {
     const eventType = String(payload?.eventType || '');
     if (!['sale.created', 'sale.cancelled', 'sale.updated'].includes(eventType)) {
       throw new BadRequestException('eventType invalido');
+    }
+    if (eventType === 'sale.created') {
+      validarSeleccionAccesoriosStock(payload);
+      cantidadCatalogo(payload.cantidad);
     }
     const catalogSaleId = String(payload?.catalogSaleId || '').trim();
     const sku = String(payload?.sku || '').trim();
@@ -248,27 +314,36 @@ export class CatalogSalesIntegrationService {
     // Sin alta todavía: el catálogo lo reintentará más tarde.
     if (!original) throw new NotFoundException('La venta aún no llegó a Servicios');
 
-    const refreshOriginal = () => this.dataSource.query(
+    const refreshOriginal = (confirmacion?: ConfirmacionAccesoriosStock) => this.dataSource.query(
       `UPDATE "${schema}"."catalog_sale_events"
           SET "amount" = $2, "soldAt" = $3, "payload" = $4::jsonb, "updatedAt" = now()
         WHERE "id" = $1`,
-      [original.id, amount, soldAt, JSON.stringify({ ...(original.payload || {}), amount, soldAt: soldAt.toISOString() })],
+      [original.id, amount, soldAt, JSON.stringify({
+        ...(original.payload || {}), amount, soldAt: soldAt.toISOString(),
+        ...(confirmacion ? { confirmacionAccesoriosStock: confirmacion } : {}),
+      })],
     );
 
     let status = 'update_ignored';
     let remoteVentaId: number | null = null;
     let error: string | null = null;
+    let confirmacion: ConfirmacionAccesoriosStock | undefined;
     if (['pending_confirmation', 'failed', 'rejected'].includes(original.status)) {
       await refreshOriginal();
       status = 'update_applied_to_pending';
     } else if (original.status === 'confirmed' && original.remoteVentaId) {
       remoteVentaId = Number(original.remoteVentaId);
       try {
-        await this.ventaService.update(remoteVentaId, {
+        const sale = await this.ventaService.update(remoteVentaId, {
           precioVenta: amount,
           fechaVenta: soldAt.toISOString().slice(0, 10),
         } as any);
-        await refreshOriginal();
+        const desgloseAccesorios = desgloseVentaConAccesorios(sale);
+        if (desgloseAccesorios.length) confirmacion = {
+          accesoriosStockIds: desgloseAccesorios.filter((item) => item.nombre).map((item) => item.productoId),
+          desgloseAccesorios,
+        };
+        await refreshOriginal(confirmacion);
         status = 'update_applied';
       } catch (err) {
         // Pagos combinados, adelantos o devoluciones: Servicios no lo cambia solo.
@@ -288,7 +363,7 @@ export class CatalogSalesIntegrationService {
       [eventId, catalogSaleId, sku, payload?.title || null, amount, soldAt, status, remoteVentaId, JSON.stringify(payload), error],
     );
     if (error) throw new BadRequestException(`No se pudo actualizar la venta en Servicios: ${error}`);
-    return { ok: true, status };
+    return { ok: true, status, ...(confirmacion ? { confirmacionAccesoriosStock: confirmacion } : {}) };
   }
 
   async pending() {
@@ -336,9 +411,14 @@ export class CatalogSalesIntegrationService {
     return Promise.all(events.map(async (event: any) => {
       const product = await this.productFromSku(event.sku);
       const costUsd = Number(product?.valor?.valorProducto);
+      const esAccesorio = isAccessoryStock(product?.tipo);
+      const accesoriosStock = product && !esAccesorio && event.eventType === 'sale.created'
+        ? await leerAccesoriosStock(this.dataSource.manager, product.id) : null;
       return {
         ...event,
-        costUsd: Number.isFinite(costUsd) ? costUsd : null,
+        costUsd: Number.isFinite(costUsd) ? costUsd / (esAccesorio ? Math.max(1, Number(product?.stockInicial || 1)) : 1) : null,
+        monedaCompra: product?.valor?.monedaCompra ?? 'USD',
+        accesoriosStock,
       };
     }));
   }
@@ -382,14 +462,14 @@ export class CatalogSalesIntegrationService {
     );
   }
 
-  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown, submittedIncomeParts?: unknown) {
+  async confirm(id: string, submittedExchangeRate?: unknown, submittedIncomeBank?: unknown, submittedPaymentType?: unknown, submittedIncomeParts?: unknown, seleccion: SeleccionAccesoriosStock = {}) {
     const event = await this.getEvent(id);
     const schema = process.env.DB_SCHEMA || 'public';
     // Las ediciones se aplican al recibirse; confirmarlas caería en la rama de anulación.
     if (event.eventType === 'sale.updated') throw new BadRequestException('Las ediciones de venta no se confirman');
     if (['confirmed', 'cancelled'].includes(event.status)) {
       // Reintento: vuelve a avisar al catálogo por si el aviso anterior se perdió.
-      await this.notifyCatalogStatus(String(event.eventId || ''), event.status);
+      await this.notifyCatalogStatus(String(event.eventId || ''), event.status, event.payload?.confirmacionAccesoriosStock);
       return event;
     }
 
@@ -406,6 +486,12 @@ export class CatalogSalesIntegrationService {
         }
         const product = await this.productFromSku(event.sku);
         if (!product) throw new NotFoundException(`No existe el producto compartido ${event.sku}`);
+        const esAccesorio = isAccessoryStock(product.tipo) || /^acc-/.test(String(event.sku));
+        const cantidad = cantidadCatalogo(event.payload?.cantidad);
+        if (!esAccesorio && cantidad !== 1) throw new BadRequestException('Cada equipo se confirma por su propio SKU.');
+        validarSeleccionAccesoriosStock(seleccion);
+        const ids = seleccion.accesoriosStockIds ?? event.payload?.accesoriosStockIds;
+        const revision = seleccion.accesoriosStockRevision ?? event.payload?.accesoriosStockRevision;
         const paymentOptions = await this.paymentOptions(id);
         const incomeBank = String(submittedIncomeBank || '').trim();
         const parts = submittedIncomeParts as Array<{ type: string; amount: number }> | undefined;
@@ -423,11 +509,19 @@ export class CatalogSalesIntegrationService {
           incomePaymentType: paymentType,
           incomeParts: parts,
           incomeSku: String(event.sku),
+          ...(esAccesorio ? { cantidad, operacionKey: `catalog:${operationHash(String(event.eventId || id))}` } : {}),
+          ...(ids !== undefined ? { accesoriosStockIds: ids, accesoriosStockRevision: revision } : {}),
         };
-        const pendingCancellation = await this.findPendingCancellationBefore(schema, event);
+        const pendingCancellation = esAccesorio ? null : await this.findPendingCancellationBefore(schema, event);
         let sale: any;
         if (pendingCancellation?.remoteVentaId) {
           try {
+            if (saleData.accesoriosStockIds) {
+              const anterior = await this.ventaService.findOne(Number(pendingCancellation.remoteVentaId));
+              if (!coincideSeleccionVendida(anterior, saleData.accesoriosStockIds)) {
+                throw new BadRequestException('Confirma la anulación anterior antes de registrar una venta con otros accesorios.');
+              }
+            }
             sale = await this.ventaService.update(
               Number(pendingCancellation.remoteVentaId),
               saleData,
@@ -442,12 +536,19 @@ export class CatalogSalesIntegrationService {
         } else {
           sale = await this.ventaService.create(saleData);
         }
+        const desgloseAccesorios = desgloseVentaConAccesorios(sale);
+        const confirmacion: ConfirmacionAccesoriosStock | null = ids !== undefined || desgloseAccesorios.length ? {
+          accesoriosStockIds: desgloseAccesorios.filter((item) => item.nombre).map((item) => item.productoId),
+          desgloseAccesorios,
+        } : null;
         await this.dataSource.query(
           `UPDATE "${schema}"."catalog_sale_events"
            SET "status" = 'confirmed', "remoteVentaId" = $2, "exchangeRate" = $3,
-               "error" = NULL, "confirmedAt" = now(), "updatedAt" = now()
+               "error" = NULL, "confirmedAt" = now(), "updatedAt" = now(),
+               "payload" = "payload" || CASE WHEN $4::jsonb IS NULL THEN '{}'::jsonb
+                 ELSE jsonb_build_object('confirmacionAccesoriosStock', $4::jsonb) END
            WHERE "id" = $1`,
-          [id, sale.id, exchangeRate],
+          [id, sale.id, exchangeRate, confirmacion ? JSON.stringify(confirmacion) : null],
         );
       } else {
         let ventaId = event.remoteVentaId ? Number(event.remoteVentaId) : null;
@@ -463,7 +564,7 @@ export class CatalogSalesIntegrationService {
           ventaId = originalEvent?.remoteVentaId ? Number(originalEvent.remoteVentaId) : null;
         }
         if (ventaId) {
-          await this.ventaService.remove(ventaId, 'Cancelación solicitada desde el catálogo');
+          await this.ventaService.anular(ventaId, undefined, 'Cancelación solicitada desde el catálogo');
         } else if (originalEvent) {
           await this.dataSource.query(
             `UPDATE "${schema}"."catalog_sale_events"
@@ -490,7 +591,7 @@ export class CatalogSalesIntegrationService {
     const finalEvent = await this.getEvent(id);
     // Sin este aviso el catálogo seguía mostrando «Pendiente en Servicios».
     if (['confirmed', 'cancelled'].includes(finalEvent.status)) {
-      await this.notifyCatalogStatus(String(finalEvent.eventId || ''), finalEvent.status);
+      await this.notifyCatalogStatus(String(finalEvent.eventId || ''), finalEvent.status, finalEvent.payload?.confirmacionAccesoriosStock);
     }
     return finalEvent;
   }
@@ -506,7 +607,7 @@ export class CatalogSalesIntegrationService {
     const schema = process.env.DB_SCHEMA || 'public';
     const max = Math.min(Math.max(Number(limit) || 500, 1), 1000);
     const events = await this.dataSource.query(
-      `SELECT "eventId", "status" FROM "${schema}"."catalog_sale_events"
+      `SELECT "eventId", "status", "payload" FROM "${schema}"."catalog_sale_events"
         WHERE "status" IN ('confirmed', 'cancelled', 'rejected') AND "eventId" IS NOT NULL
         ORDER BY "updatedAt" DESC LIMIT $1`,
       [max],
@@ -515,7 +616,7 @@ export class CatalogSalesIntegrationService {
     let consecutiveFailures = 0;
     const failed: string[] = [];
     for (const event of events) {
-      const ok = await this.notifyCatalogStatus(String(event.eventId || ''), String(event.status));
+      const ok = await this.notifyCatalogStatus(String(event.eventId || ''), String(event.status), event.payload?.confirmacionAccesoriosStock);
       if (ok) {
         notified += 1;
         consecutiveFailures = 0;
@@ -549,7 +650,7 @@ export class CatalogSalesIntegrationService {
     return { ok: true, status: event.status, exchangeRate };
   }
 
-  private async notifyCatalogStatus(eventId: string, status: string) {
+  private async notifyCatalogStatus(eventId: string, status: string, confirmacion?: ConfirmacionAccesoriosStock) {
     const catalogSyncUrl = String(process.env.CATALOG_SYNC_URL || '').trim();
     if (!catalogSyncUrl || !eventId) return false;
     try {
@@ -564,7 +665,7 @@ export class CatalogSalesIntegrationService {
           'x-macso-event-id': eventId,
           ...catalogSyncHeaders(),
         },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, ...(status === 'confirmed' && confirmacion ? { confirmacionAccesoriosStock: confirmacion } : {}) }),
         signal: AbortSignal.timeout(8000),
       });
       return response.ok;

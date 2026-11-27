@@ -9,11 +9,53 @@ import { Producto } from '../producto/producto.entity';
 import { Inventario } from '../inventario/inventario.entity';
 import { operationHash } from '../venta/operation-hash';
 import { accessoryAvailable, accessoryInventoryIdentity, accessoryOwner, allocateAccessory, resolveAccessoryPrices } from '../venta/accessory-quote';
+import { desgloseVentaConAccesorios } from '../venta/reparto-venta-equipo';
 import { VentaService } from '../venta/venta.service';
+import { AccesorioCatalogo } from './accesorio-catalogo.entity';
 
 @Injectable()
 export class AccesoriosService {
   constructor(private readonly ds: DataSource, private readonly products: ProductoService, private readonly sales: VentaService) {}
+
+  async fusionar(productoIds: number[]) {
+    return this.ds.transaction(async (em) => {
+      await lockAccessoryTopology(em, true);
+      const repo = em.getRepository(Producto);
+      const elegidos = await repo.findBy({ id: In(productoIds) });
+      if (elegidos.length !== productoIds.length) throw new NotFoundException('Alguno de los lotes ya no existe.');
+      const origenes = [...new Set(elegidos.map((lote) => lote.fusionAccesorioId).filter((id): id is number => Boolean(id)))];
+      const lotes = origenes.length ? await repo.findBy([{ id: In(productoIds) }, { fusionAccesorioId: In(origenes) }]) : elegidos;
+      const primero = elegidos[0];
+      const modelo = normalizeReferenceText(primero.referencia?.modelo || primero.detalle?.modelo);
+      const variante = (lote: Producto) => normalizeReferenceText(lote.referencia?.variante || lote.detalle?.descripcionOtro);
+      if (!modelo || !['con_caja', 'sin_caja'].includes(primero.empaqueAccesorio || '')
+        || lotes.some((lote) => !accessoryAvailable(lote)
+          || lote.empaqueAccesorio !== primero.empaqueAccesorio
+          || accessoryOwner(lote.vendedor) !== accessoryOwner(primero.vendedor)
+          || normalizeReferenceText(lote.estado) !== normalizeReferenceText(primero.estado)
+          || (lote.referenciaId ?? null) !== (primero.referenciaId ?? null)
+          || normalizeReferenceText(lote.referencia?.modelo || lote.detalle?.modelo) !== modelo
+          || variante(lote) !== variante(primero))) {
+        throw new BadRequestException('Fusiona lotes del mismo accesorio, estado, comprador y empaque, que ya estén disponibles.');
+      }
+      const grupos = [...new Set(elegidos.map((lote) => lote.fusionAccesorioId || lote.id))];
+      const publicaciones = await em.getRepository(AccesorioCatalogo).findBy({ key: In(grupos.map((id) => `lot-${id}`)), seleccionado: true });
+      const fusionAccesorioId = Math.min(...(publicaciones.length ? publicaciones.map((item) => Number(item.key.slice(4))) : grupos));
+      await repo.update({ id: In(lotes.map((lote) => lote.id)) }, { fusionAccesorioId });
+      return { fusionAccesorioId, productoIds: lotes.map((lote) => lote.id) };
+    });
+  }
+
+  async desfusionar(fusionAccesorioId: number) {
+    return this.ds.transaction(async (em) => {
+      await lockAccessoryTopology(em, true);
+      await em.getRepository(Producto).update(
+        { fusionAccesorioId },
+        { fusionAccesorioId: null },
+      );
+      return { ok: true };
+    });
+  }
 
   private identity(data: Partial<AccesorioReferencia>) {
     return Object.fromEntries(referenceIdentityKeys.map((key) => [key, normalizeReferenceText(data[key])]));
@@ -111,7 +153,7 @@ export class AccesoriosService {
     });
   }
 
-  async operativo() {
+  async operativo(incluirUltimaVenta = true) {
     const lots = await this.ds.getRepository(Producto).find({ where: { tipo: 'accesorios' }, relations: ['valor', 'tracking', 'referencia'], order: { id: 'ASC' } });
     const fichas = lots.length ? await this.ds.getRepository(Inventario).find({ where: { productoId: In(lots.map((lot) => lot.id)) } }) : [];
     const groups = new Map<string, Producto[]>();
@@ -119,22 +161,39 @@ export class AccesoriosService {
       const key = accessoryInventoryIdentity(lot, fichas) + ':' + accessoryOwner(lot.vendedor);
       groups.set(key, [...(groups.get(key) || []), lot]);
     }
-    const latest = await this.ds.query(`SELECT DISTINCT ON (p.id)
-      p.id::text AS grupo,
-      v.id, v."productoId", v."fechaVenta"::text AS "fechaVenta", (v.cantidad-COALESCE(v."cantidadDevuelta",0)) AS cantidad,
-      (v."precioVenta"-COALESCE(v."precioDevuelto",0)) AS total,
-      (v."precioVenta"-COALESCE(v."precioDevuelto",0))/(v.cantidad-COALESCE(v."cantidadDevuelta",0)) AS "precioUnitario"
-      FROM venta v JOIN producto p ON p.id=v."productoId"
-      WHERE lower(p.tipo)='accesorios' AND v."estadoComercial" IS DISTINCT FROM 'cancelada' AND v.cantidad>COALESCE(v."cantidadDevuelta",0)
-      ORDER BY p.id,
-      v."fechaVenta" DESC, v.id DESC`);
-    const latestByGroup = new Map<string, any>(latest.map((sale) => [sale.grupo, { ...sale, cantidad: Number(sale.cantidad), total: Number(sale.total), precioUnitario: Number(sale.precioUnitario) }]));
+    const latest = incluirUltimaVenta ? await this.ds.query(`
+      SELECT DISTINCT ON (q.grupo) q.* FROM (
+        SELECT p.id::text AS grupo, v.id, v."productoId", v."fechaVenta"::text AS "fechaVenta",
+          (v.cantidad-COALESCE(v."cantidadDevuelta",0)) AS cantidad,
+          (v."precioVenta"-COALESCE(v."precioDevuelto",0)) AS total,
+          (v."precioVenta"-COALESCE(v."precioDevuelto",0))/(v.cantidad-COALESCE(v."cantidadDevuelta",0)) AS "precioUnitario",
+          NULL::jsonb AS "distribucionStock", v."precioVenta", v."precioDevuelto", v."costoDevuelto", v."costoPendiente"
+        FROM venta v JOIN producto p ON p.id=v."productoId"
+        WHERE lower(p.tipo)='accesorios' AND v."estadoComercial" IS DISTINCT FROM 'cancelada' AND v.cantidad>COALESCE(v."cantidadDevuelta",0)
+        UNION ALL
+        SELECT parte->>'productoId', v.id, v."productoId", v."fechaVenta"::text, (parte->>'cantidad')::int,
+          NULL, NULL, v."distribucionStock", v."precioVenta", v."precioDevuelto", v."costoDevuelto", v."costoPendiente"
+        FROM venta v CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(v."distribucionStock") = 'array' THEN v."distribucionStock" ELSE '[]'::jsonb END) parte
+        WHERE v."estadoComercial" IS DISTINCT FROM 'cancelada' AND parte ? 'nombre'
+      ) q ORDER BY q.grupo, q."fechaVenta" DESC, q.id DESC`) : [];
+    const latestByGroup = new Map<string, any>(latest.map((sale) => [sale.grupo, sale]));
     return [...groups.entries()].map(([key, group]) => {
       const first = group.find((lot) => accessoryAvailable(lot) && lot.stockActual > 0) || group[0];
       const disponible = group.filter(accessoryAvailable).reduce((sum, lot) => sum + Number(lot.stockActual), 0);
       const allocation = disponible > 0 ? allocateAccessory(group, first, 1) : null;
-      const last = group.map((lot) => latestByGroup.get(String(lot.id))).filter(Boolean)
+      const latestSale = group.map((lot) => latestByGroup.get(String(lot.id))).filter(Boolean)
         .sort((a, b) => String(b.fechaVenta).localeCompare(String(a.fechaVenta)) || Number(b.id) - Number(a.id))[0] ?? null;
+      const partes = latestSale?.distribucionStock ? desgloseVentaConAccesorios(latestSale)
+        .filter((parte) => parte.nombre && group.some((lot) => lot.id === parte.productoId)) : [];
+      const cantidad = partes.length ? partes.reduce((suma, parte) => suma + parte.cantidad, 0) : Number(latestSale?.cantidad);
+      const total = partes.length
+        ? partes.some((parte) => parte.ingreso == null) ? null : +partes.reduce((suma, parte) => suma + Number(parte.ingreso), 0).toFixed(2)
+        : Number(latestSale?.total);
+      const last = latestSale ? {
+        id: latestSale.id, productoId: latestSale.productoId, fechaVenta: latestSale.fechaVenta, cantidad, total,
+        precioUnitario: partes.length ? (total == null ? null : +(total / cantidad).toFixed(2)) : Number(latestSale.precioUnitario),
+      } : null;
       const prices = resolveAccessoryPrices(first, fichas.filter((ficha) => group.some((lot) => lot.id === ficha.productoId)));
       return { key, referencia: first.referencia ?? null, referenciaId: first.referenciaId ?? null, codigo: first.codigoInventario || first.id,
         comprador: first.vendedor, nombre: [first.referencia?.modelo || first.detalle?.modelo, first.referencia?.variante || first.detalle?.descripcionOtro].filter(Boolean).join(' '),

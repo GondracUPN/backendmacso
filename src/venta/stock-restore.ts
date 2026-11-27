@@ -25,3 +25,28 @@ export function unidadesPorReponer(
   }
   return resultado;
 }
+import { ConflictException } from '@nestjs/common';
+import { EntityManager } from 'typeorm';
+import { Producto } from '../producto/producto.entity';
+
+export async function ajustarStockAccesoriosDeEquipo(
+  manager: EntityManager, venta: Venta, movimiento: 'reponer' | 'consumir',
+) {
+  if (!venta.distribucionStock?.some((part) => part.nombre)) return;
+  const devoluciones = await manager.getRepository(VentaDevolucion).findBy({ ventaId: venta.id });
+  const partes = unidadesPorReponer(venta, devoluciones)
+    .filter((part) => part.productoId !== venta.productoId)
+    .sort((a, b) => a.productoId - b.productoId);
+  const productos = manager.getRepository(Producto);
+  for (const part of partes) {
+    if (movimiento === 'reponer') {
+      await productos.increment({ id: part.productoId }, 'stockActual', part.cantidad);
+    } else {
+      const resultado = await productos.createQueryBuilder().update()
+        .set({ stockActual: () => '"stockActual" - :cantidad' })
+        .where('id = :id AND "stockActual" >= :cantidad AND "archivadoAt" IS NULL AND "cierreMotivo" IS NULL',
+          { id: part.productoId, cantidad: part.cantidad }).execute();
+      if (!resultado.affected) throw new ConflictException('Un accesorio de la venta ya no está libre en el stock original.');
+    }
+  }
+}

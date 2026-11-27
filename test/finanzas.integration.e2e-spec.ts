@@ -9,8 +9,9 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
+import { CacheModule } from '@nestjs/cache-manager';
 import { JwtService } from '@nestjs/jwt';
-import { DataSource, IsNull, Like } from 'typeorm';
+import { DataSource, In, IsNull, Like } from 'typeorm';
 import * as request from 'supertest';
 import { join } from 'path';
 import { AuthModule } from '../src/auth/auth.module';
@@ -29,6 +30,10 @@ import { VentaAdelanto } from '../src/venta/venta-adelanto.entity';
 import { InventarioService } from '../src/inventario/inventario.service';
 import { Inventario } from '../src/inventario/inventario.entity';
 import { ProductoService } from '../src/producto/producto.service';
+import { AccesoriosCatalogoService } from '../src/accesorios/accesorios-catalogo.service';
+import { AccesoriosService } from '../src/accesorios/accesorios.service';
+import { CatalogSalesIntegrationService } from '../src/catalog-sales-integration/catalog-sales-integration.service';
+import { Card } from '../src/cards/card.entity';
 import { IntegridadOperaciones1792537200000 } from '../src/migrations/1792537200000-IntegridadOperaciones';
 import { DestinoIngresoVenta1792537300000 } from '../src/migrations/1792537300000-DestinoIngresoVenta';
 import { DevolucionesComerciales1792537400000 } from '../src/migrations/1792537400000-DevolucionesComerciales';
@@ -125,6 +130,7 @@ suite('Sistema financiero (integración PostgreSQL)', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }),
+        CacheModule.register({ isGlobal: true }),
         TypeOrmModule.forRoot({
           type: 'postgres',
           url: DB_URL,
@@ -194,6 +200,204 @@ suite('Sistema financiero (integración PostgreSQL)', () => {
     expect(results[0].id).toBe(results[1].id);
     expect(await ds.getRepository(Venta).count({ where: { productoId: p.id } })).toBe(1);
     expect(await ds.getRepository(Gasto).count({ where: { saleId: results[0].id } })).toBe(1);
+  });
+
+  it('reserva accesorios de cualquier tipo, libera los excluidos y anula el incluido una sola vez', async () => {
+    const equipo = await crearProducto({ usd: 1000 });
+    const pencil = await crearProducto({ tipo: 'accesorios', stock: 1, costoTotal: 10 });
+    const cable = await crearProducto({ tipo: 'accesorios', stock: 2, costoTotal: 40 });
+    const repo = ds.getRepository(Producto);
+    const stockLibre = async (id: number) => (await repo.findOneByOrFail({ id })).stockActual;
+    const inventario = new InventarioService(ds.getRepository(Inventario), repo, { get: () => '' } as any);
+    await ds.query(`INSERT INTO tracking ("productoId", estado, "fechaRecogido") VALUES ($1, 'recogido', '2047-03-01')`, [equipo.id]);
+
+    const reserva = await inventario.updateAccesoriosStock(equipo.id, { revision: 0, productoIds: [pencil.id, cable.id] });
+    expect(reserva.revision).toBe(1);
+    expect((await inventario.findProductoByCode(equipo.id)).producto.accesoriosStock?.accesorios).toHaveLength(2);
+    expect(await stockLibre(pencil.id)).toBe(0);
+    expect(await stockLibre(cable.id)).toBe(1);
+
+    await repo.update(equipo.id, { catalogoEnviado: true });
+    const urlAnterior = process.env.CATALOG_SYNC_URL;
+    process.env.CATALOG_SYNC_URL = 'http://127.0.0.1:1/api/sync/product';
+    const enviar = jest.spyOn(global, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ productAccessoriesUpdated: true })));
+    try {
+      const sincronizador = new AccesoriosCatalogoService(ds, {} as any);
+      await sincronizador['sincronizarIncluidos']();
+      await sincronizador['sincronizarIncluidos']();
+      expect(enviar).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(enviar.mock.calls[0][1]?.body))).toEqual({
+        event: 'product.accessories.updated',
+        product: { sku: `svc-${equipo.id}`, accesoriosStock: expect.arrayContaining([
+          expect.objectContaining({ productoId: pencil.id, costoCompraUnitario: 10 }),
+          expect.objectContaining({ productoId: cable.id, costoCompraUnitario: 20 }),
+        ]), accesoriosStockRevision: 1 },
+      });
+    } finally {
+      enviar.mockRestore();
+      if (urlAnterior === undefined) delete process.env.CATALOG_SYNC_URL;
+      else process.env.CATALOG_SYNC_URL = urlAnterior;
+    }
+
+    const dto = { productoId: equipo.id, tipoCambio: 1, precioVenta: 2000, fechaVenta: '2047-03-02',
+      vendedor: 'Gonzalo', accesoriosStockIds: [pencil.id], accesoriosStockRevision: 1, operacionKey: key('equipo-stock') };
+    await expect(ventas.create({ ...dto, accesoriosStockRevision: 0 })).rejects.toThrow('Los accesorios incluidos cambiaron');
+    expect(await stockLibre(cable.id)).toBe(1);
+    const venta = await ventas.create(dto);
+    expect(Number(venta.ganancia)).toBe(990);
+    expect(venta.distribucionStock?.map((row) => row.productoId)).toEqual([equipo.id, pencil.id]);
+    expect((await ventas.create(dto)).id).toBe(venta.id);
+    expect(await stockLibre(pencil.id)).toBe(0);
+    expect(await stockLibre(cable.id)).toBe(2);
+    const desglose = await ventas.resultadoVenta(venta);
+    expect(desglose).toMatchObject({ desgloseAccesorios: [
+      { productoId: equipo.id, ingreso: 1980.2, costo: 1000, ganancia: 980.2 },
+      { productoId: pencil.id, ingreso: 19.8, costo: 10, ganancia: 9.8 },
+    ] });
+    expect(await ventas.getAccessorySalesSummary(pencil.id)).toMatchObject({
+      unidadesVendidas: 1, unidadesDisponibles: 0, ventaBruta: 19.8, gananciaNeta: 9.8,
+      ventas: [{ id: venta.id, equipoId: equipo.id, cantidad: 1, ventaBruta: 19.8, costo: 10, gananciaNeta: 9.8 }],
+    });
+    expect(await ventas.getAccessorySalesSummary(cable.id)).toMatchObject({ unidadesVendidas: 0, ventas: [] });
+    const accesorios = new AccesoriosService(ds, {} as any, ventas);
+    const filas = await accesorios.operativo();
+    expect(filas.find((fila) => fila.producto.id === pencil.id)?.ultimaVenta)
+      .toMatchObject({ id: venta.id, precioUnitario: 19.8 });
+
+    await ventas.anular(venta.id);
+    await ventas.anular(venta.id);
+    expect(await stockLibre(pencil.id)).toBe(1);
+    expect(await stockLibre(cable.id)).toBe(2);
+    expect(await ventas.getAccessorySalesSummary(pencil.id)).toMatchObject({ unidadesVendidas: 0, ventas: [] });
+  });
+
+  it('solo asigna el último accesorio a un equipo y permite venderlo por separado al retirarlo', async () => {
+    const [primero, segundo, lote] = await Promise.all([
+      crearProducto(), crearProducto(), crearProducto({ tipo: 'accesorios', stock: 1, costoTotal: 20 }),
+    ]);
+    const repo = ds.getRepository(Producto);
+    const inventario = new InventarioService(ds.getRepository(Inventario), repo, { get: () => '' } as any);
+    await ds.query(`INSERT INTO tracking ("productoId", estado, "fechaRecogido") VALUES
+      ($1, 'recogido', '2047-04-01'), ($2, 'recogido', '2047-04-01')`, [primero.id, segundo.id]);
+    const equipos = [primero, segundo];
+    const intentos = await Promise.allSettled(equipos.map((equipo) =>
+      inventario.updateAccesoriosStock(equipo.id, { revision: 0, productoIds: [lote.id] })));
+    expect(intentos.filter((item) => item.status === 'fulfilled')).toHaveLength(1);
+    const elegido = equipos[intentos.findIndex((item) => item.status === 'fulfilled')];
+    const dto = { productoId: lote.id, tipoCambio: 1, precioVenta: 40, fechaVenta: '2047-04-02', vendedor: 'Gonzalo' };
+    await expect(ventas.create(dto)).rejects.toThrow('Stock insuficiente');
+    await expect(inventario.updateAccesoriosStock(elegido.id, { revision: 1, productoIds: [] })).resolves.toEqual({ accesorios: [], revision: 2 });
+    await expect(ventas.create(dto)).resolves.toMatchObject({ productoId: lote.id });
+    expect((await repo.findOneByOrFail({ id: lote.id })).stockActual).toBe(0);
+  });
+
+  it('vende a un cliente frecuente sin cambiar al comprador del accesorio y reporta el SKU y las unidades', async () => {
+    const lote = await crearProducto({ tipo: 'accesorios', stock: 5, costoTotal: 50 });
+    const repo = ds.getRepository(Producto);
+    await repo.update(lote.id, { vendedor: 'Gonzalo', codigoInventario: 6543 });
+    const venta = await ventas.create({
+      productoId: lote.id, cantidad: 3, tipoCambio: 1, precioVenta: 90, fechaVenta: '2047-05-26',
+      vendedor: 'Gonzalo (Kenny)', incomeParts: [{ type: 'direct', amount: 90 }], incomeBank: 'efectivo',
+    }, adminId);
+    expect(venta).toMatchObject({ vendedor: 'Gonzalo (Kenny)', clienteId: expect.any(Number) });
+    expect(await repo.findOneByOrFail({ id: lote.id })).toMatchObject({ vendedor: 'Gonzalo', stockActual: 2 });
+    const resumen = await ventas.pedidoSummary();
+    expect(resumen.rows.find((row) => row.ventaId === venta.id)).toMatchObject({
+      cliente: 'Kenny', codigoProducto: 'ACC-6543', cantidad: 3, estadoPedido: 'cancelado_entregado', montoVenta: 90,
+    });
+    expect(resumen.clients.find((row) => row.cliente === 'Kenny')).toMatchObject({
+      compras: 1, unidadesVendidas: 3, totalVendido: 90,
+    });
+  });
+
+  it('fusiona lotes idénticos manualmente, mantiene sus costos y separa empaque distinto', async () => {
+    const [a, b, conCaja] = await Promise.all([
+      crearProducto({ tipo: 'accesorios', stock: 2, costoTotal: 20 }),
+      crearProducto({ tipo: 'accesorios', stock: 3, costoTotal: 60 }),
+      crearProducto({ tipo: 'accesorios', stock: 1, costoTotal: 5 }),
+    ]);
+    const repo = ds.getRepository(Producto);
+    await repo.update([a.id, b.id, conCaja.id], { vendedor: 'Gonzalo', empaqueAccesorio: 'sin_caja', codigoInventario: a.id });
+    await repo.update(conCaja.id, { empaqueAccesorio: 'con_caja' });
+    await ds.query(`UPDATE producto_detalle SET modelo = 'Cable USB-C' WHERE id = ANY($1::int[])`,
+      [[a.detalle.id, b.detalle.id, conCaja.detalle.id]]);
+    const accesorios = new AccesoriosService(ds, {} as any, ventas);
+    await expect(ventas.quoteAccessory({ productoId: a.id, cantidad: 3 })).rejects.toThrow('Quedan 2');
+    await expect(accesorios.fusionar([a.id, conCaja.id])).rejects.toThrow('empaque');
+    expect((await repo.findOneByOrFail({ id: a.id })).fusionAccesorioId).toBeNull();
+    await expect(accesorios.fusionar([a.id, b.id])).resolves.toMatchObject({ productoIds: expect.arrayContaining([a.id, b.id]) });
+    const cotizacion = await ventas.quoteAccessory({ productoId: a.id, cantidad: 5 });
+    expect(cotizacion).toMatchObject({ disponible: 5, costoTotal: 80 });
+    expect(cotizacion.lotes).toEqual(expect.arrayContaining([
+      { productoId: a.id, cantidad: 2, costoUnitario: 10 },
+      { productoId: b.id, cantidad: 3, costoUnitario: 20 },
+    ]));
+    const venta = await ventas.create({ productoId: a.id, cantidad: 5, tipoCambio: 1, precioVenta: 100,
+      fechaVenta: '2047-06-01', vendedor: 'Gonzalo', cotizacionToken: cotizacion.cotizacionToken });
+    expect(Number(venta.ganancia)).toBe(20);
+    expect((await repo.findOneByOrFail({ id: conCaja.id })).stockActual).toBe(1);
+
+    const fusion = (await repo.findOneByOrFail({ id: a.id })).fusionAccesorioId!;
+    await accesorios.desfusionar(fusion);
+    await accesorios.desfusionar(fusion);
+    expect(await repo.findBy({ id: In([a.id, b.id]) })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: a.id, fusionAccesorioId: null, stockActual: 0, valor: expect.objectContaining({ costoTotal: '20.00' }) }),
+      expect.objectContaining({ id: b.id, fusionAccesorioId: null, stockActual: 0, valor: expect.objectContaining({ costoTotal: '60.00' }) }),
+    ]));
+    expect((await ventas.findOne(venta.id)).distribucionStock).toEqual(venta.distribucionStock);
+  });
+
+  it('catálogo informa y reserva lotes fusionados por ID, confirma la selección y vende unidades libres', async () => {
+    const equipo = await crearProducto({ usd: 1000 });
+    const lote = await crearProducto({ tipo: 'accesorios', stock: 17, costoTotal: 170 });
+    const fusionado = await crearProducto({ tipo: 'accesorios', stock: 3, costoTotal: 60 });
+    const suelto = await crearProducto({ tipo: 'accesorios', stock: 2, costoTotal: 20 });
+    const repo = ds.getRepository(Producto);
+    await repo.update(equipo.id, { catalogoEnviado: true, vendedor: 'Gonzalo' });
+    await repo.update([lote.id, fusionado.id], { vendedor: 'Gonzalo', empaqueAccesorio: 'sin_caja' });
+    await ds.query('UPDATE producto_detalle SET modelo = $1 WHERE id = ANY($2::int[])',
+      ['Cable USB-C', [lote.detalle.id, fusionado.detalle.id]]);
+    const accesorios = new AccesoriosService(ds, {} as any, ventas);
+    await accesorios.fusionar([lote.id, fusionado.id]);
+    const inventario = new InventarioService(ds.getRepository(Inventario), repo, { get: () => '' } as any);
+    const catalogo = new CatalogSalesIntegrationService(ds, repo, ds.getRepository(Card), ds.getRepository(User), ventas, inventario);
+    const sku = `MS-${equipo.id}`;
+    const consulta = await catalogo.getProductAccessories(sku);
+    expect(consulta.disponibles.filter((item) => [lote.id, fusionado.id, suelto.id].includes(item.productoId))).toEqual([
+      expect.objectContaining({ productoId: suelto.id, fusionAccesorioId: null }),
+      expect.objectContaining({ productoId: fusionado.id, fusionAccesorioId: lote.id }),
+      expect.objectContaining({ productoId: lote.id, fusionAccesorioId: lote.id, disponible: 17, costoCompraUnitario: 10 }),
+    ]);
+    const reserva = await catalogo.updateProductAccessories(sku, { productoIds: [lote.id], revision: consulta.revision });
+    expect(reserva.revision).toBe(consulta.revision + 1);
+    expect(reserva.accesorios.map((item) => item.productoId)).toEqual([lote.id]);
+    expect((await repo.findOneByOrFail({ id: lote.id })).stockActual).toBe(16);
+    expect((await repo.findOneByOrFail({ id: fusionado.id })).stockActual).toBe(3);
+    expect((await repo.findOneByOrFail({ id: suelto.id })).stockActual).toBe(2);
+    await accesorios.desfusionar(lote.id);
+    const separados = await catalogo.getProductAccessories(sku);
+    expect(separados.disponibles.find((item) => item.productoId === lote.id)?.fusionAccesorioId).toBeNull();
+    expect(separados.disponibles.find((item) => item.productoId === fusionado.id)?.fusionAccesorioId).toBeNull();
+    const eventoEquipo = key('venta-catalog-equipo');
+    await catalogo.receive(eventoEquipo, { eventType: 'sale.created', catalogSaleId: eventoEquipo, sku,
+      amount: 2000, exchangeRate: 1, soldAt: '2047-05-01', accesoriosStockIds: [lote.id], accesoriosStockRevision: reserva.revision });
+    const pendiente = (await catalogo.pending()).find((event) => event.eventId === eventoEquipo);
+    // El vendedor confirma en Servicios que entregó el equipo sin el cable.
+    const equipoVendido = await catalogo.confirm(pendiente!.id, 1, 'bcp', undefined, undefined, {
+      accesoriosStockIds: [], accesoriosStockRevision: reserva.revision,
+    });
+    expect(equipoVendido.payload.confirmacionAccesoriosStock).toEqual({ accesoriosStockIds: [], desgloseAccesorios: [] });
+    expect((await repo.findOneByOrFail({ id: lote.id })).stockActual).toBe(17);
+
+    const eventoLote = key('venta-catalog-lote');
+    await catalogo.receive(eventoLote, { eventType: 'sale.created', catalogSaleId: eventoLote, sku: `acc-lot-${lote.id}`,
+      cantidad: 4, amount: 80, exchangeRate: 1, soldAt: '2047-05-02' });
+    const directo = (await catalogo.pending()).find((event) => event.eventId === eventoLote);
+    const resultado = await catalogo.confirm(directo!.id, 1, 'bcp');
+    await catalogo.confirm(directo!.id, 1, 'bcp');
+    expect(await ventas.findOne(resultado.remoteVentaId)).toMatchObject({ cantidad: 4 });
+    expect((await repo.findOneByOrFail({ id: lote.id })).stockActual).toBe(13);
   });
 
   it('reparación: último accesorio concurrente, dos solicitudes y una sola salida', async () => {

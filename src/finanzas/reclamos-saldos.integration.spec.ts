@@ -1432,4 +1432,86 @@ suite('Reclamos y saldos: PostgreSQL aislado', () => {
     const h=await saldos.historial(c.id);expect(h.saldos[0]).toMatchObject({original:'660.00',tipo_cambio:'3.6000'});
   });
 
+
+  describe('Equipo dañado: devolución parcial', () => {
+    const parcial = (productoId: number, extra: Record<string, unknown> = {}) =>
+      fin.crearReembolso({ productoId, tipoReclamo: 'dano_parcial', motivo: 'Equipo dañado.',
+        fechaIncidencia: '2026-11-15', montoReclamado: 40, ...extra } as any, userId);
+    const saldosDe = (ventaId: number) =>
+      ds.query('SELECT * FROM cliente_saldos WHERE venta_id=$1 ORDER BY id', [ventaId]);
+
+    it('genera solo el saldo parcial al emitirse, sin cerrar producto ni cancelar la venta', async () => {
+      const c = await cliente(), v = await venta(c.id, 3000);
+      await pago(v, 3000);
+      const r = await parcial(v.productoId, { saldoClientePen: 120 });
+      expect(r).toMatchObject({ tipoReclamo: 'dano_parcial', montoReclamado: '40.00', saldoClientePen: '120.00', estado: 'reclamo_abierto' });
+      expect((await ds.getRepository(Producto).findOneBy({ id: v.productoId }))?.cierreMotivo).toBeNull();
+      expect(await ds.getRepository(Venta).findOneBy({ id: v.id })).toMatchObject({ estadoComercial: 'entregada', anuladaAt: null });
+      const lista = await saldosDe(v.id);
+      expect(lista).toHaveLength(1);
+      expect(lista[0]).toMatchObject({ original: '120.00', disponible: '120.00', pago_id: null, reembolso_id: r.id });
+      expect((await situacion(v)).saldoPendienteCents).toBe(0);
+
+      // Confirmar la llegada a la cuenta no agrega saldo ni cierra el producto.
+      const recibido = await fin.eventoReembolso(r.id, { tipo: 'recibido', fecha: '2026-11-20', monto: 40, moneda: 'USD',
+        cuentaId, idempotencyKey: key() } as any, userId);
+      expect(recibido.estado).toBe('recibido');
+      expect(await saldosDe(v.id)).toHaveLength(1);
+      expect((await ds.getRepository(Producto).findOneBy({ id: v.productoId }))?.cierreMotivo).toBeNull();
+      expect(await ds.getRepository(Venta).findOneBy({ id: v.id })).toMatchObject({ estadoComercial: 'entregada' });
+      expect((await saldos.historial(c.id)).saldos.find((s: any) => s.reembolso_id === r.id)?.origen_saldo).toBe('reclamo_parcial');
+    });
+
+    it('anular el reclamo retira el saldo parcial y una anulación total posterior sigue convirtiendo los pagos', async () => {
+      const c = await cliente(), v = await venta(c.id, 3000);
+      await pago(v, 3000);
+      const r = await parcial(v.productoId, { saldoClientePen: 100 });
+      await fin.eventoReembolso(r.id, { tipo: 'anulacion', fecha: '2026-11-16', idempotencyKey: key() } as any, userId);
+      const [anulado] = await saldosDe(v.id);
+      expect(anulado.anulada_at).not.toBeNull();
+      expect(anulado.disponible).toBe('0.00');
+      expect(await ds.getRepository(Venta).findOneBy({ id: v.id })).toMatchObject({ estadoComercial: 'entregada', anuladaAt: null });
+      await expect(generar(v)).resolves.toMatchObject({ monto: '3000.00' });
+    });
+
+    it('un saldo parcial vigente no impide convertir después los pagos completos', async () => {
+      const c = await cliente(), v = await venta(c.id, 3000);
+      await pago(v, 3000);
+      await parcial(v.productoId, { saldoClientePen: 50 });
+      await expect(generar(v)).resolves.toMatchObject({ monto: '3000.00' });
+      expect(await saldosDe(v.id)).toHaveLength(2);
+    });
+
+    it('el reembolso baja el costo y la devolución al cliente baja el ingreso de la venta', async () => {
+      const c = await cliente(), v = await venta(c.id, 3000);
+      await pago(v, 3000);
+      const r = await parcial(v.productoId, { saldoClientePen: 120 });
+      // 40 USD al TC de la venta 3.40 = S/136 recuperados del costo.
+      expect(await ds.getRepository(Venta).findOneBy({ id: v.id })).toMatchObject({ costoDevuelto: '136.00', precioDevuelto: '120.00' });
+      const listada = (await servicioVentas().findAll({} as any)).find((x: any) => x.id === v.id) as any;
+      expect(Number(listada.ganancia)).toBeCloseTo(100 + 136 - 120, 2);
+      await fin.eventoReembolso(r.id, { tipo: 'anulacion', fecha: '2026-11-16', idempotencyKey: key() } as any, userId);
+      expect(await ds.getRepository(Venta).findOneBy({ id: v.id })).toMatchObject({ costoDevuelto: '0.00', precioDevuelto: '0.00' });
+    });
+
+    it('sin venta usa el TC general 3.7 y al vender toma el TC de la venta', async () => {
+      const p = await producto();
+      const r = await parcial(p.id);
+      expect(r).toMatchObject({ tipoCambioCompra: '3.7000', costoOriginal: '148.00' });
+      const nueva = await servicioVentas().create({ productoId: p.id, tipoCambio: 3.5, precioVenta: 3000,
+        fechaVenta: dia, vendedor: 'Gonzalo', operacionKey: key() } as any, userId);
+      // 40 USD x 3.50 = S/140.
+      expect(await ds.getRepository(Venta).findOneBy({ id: nueva.id })).toMatchObject({ costoDevuelto: '140.00', precioDevuelto: '0.00' });
+      expect(await ds.getRepository(Reembolso).findOneBy({ id: r.id })).toMatchObject({ tipoCambioCompra: '3.5000', costoOriginal: '140.00' });
+    });
+
+    it('valida monto devuelto y exige una venta de cliente para el saldo', async () => {
+      const p = await producto(100);
+      await expect(parcial(p.id, { montoReclamado: 150 })).rejects.toThrow('monto devuelto');
+      await expect(parcial(p.id, { saldoClientePen: 10 })).rejects.toThrow('venta vigente');
+      const r = await parcial(p.id);
+      expect(r.saldoClientePen).toBeNull();
+      expect((await ds.getRepository(Producto).findOneBy({ id: p.id }))?.cierreMotivo).toBeNull();
+    });
+  });
 });

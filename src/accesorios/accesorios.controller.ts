@@ -7,6 +7,7 @@ import { EditReferenciaDto, IngresoAccesorioDto, ReferenciaDto } from './accesor
 import { CurrentUser, JwtUserPayload } from '../auth/decorators/current-user.decorator';
 import { VinculosService } from './vinculos.service';
 import { AplicarVinculosDto, CambioInformativoDto, DeshacerVinculosDto, RechazarVinculoDto } from './vinculos.dto';
+import { FusionAccesoriosDto } from './fusion-accesorios.dto';
 
 @Controller('accesorios')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -26,5 +27,7 @@ export class AccesoriosController {
   @Roles('admin') @Patch('referencias/:id') update(@Param('id', ParseIntPipe) id: number, @Body() dto: EditReferenciaDto) { return this.svc.updateReference(id, dto); }
   @Roles('admin') @Delete('referencias/:id') deactivate(@Param('id', ParseIntPipe) id: number) { return this.svc.deactivateReference(id); }
   @Roles('admin') @Post('ingresos') ingreso(@Body() dto: IngresoAccesorioDto) { return this.svc.ingreso(dto); }
+  @Roles('admin') @Post('fusionar') fusionar(@Body() dto: FusionAccesoriosDto) { return this.svc.fusionar(dto.productoIds); }
+  @Roles('admin') @Delete('fusiones/:id') desfusionar(@Param('id', ParseIntPipe) id: number) { return this.svc.desfusionar(id); }
   @Get('operativo') operativo() { return this.svc.operativo(); }
 }

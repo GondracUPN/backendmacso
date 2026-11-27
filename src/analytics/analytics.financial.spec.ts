@@ -31,6 +31,26 @@ describe('financialDashboard', () => {
     expect(result.categories.find((row) => row.category === 'accesorios')).toEqual(expect.objectContaining({ sold: 1, cost: 30, grossProfit: 20 }));
   });
 
+  it('el capital inmovilizado se calcula al cierre del período filtrado', async () => {
+    const products = [
+      product(1, '2026-01-10', 100),
+      product(2, '2026-02-10', 80),
+      product(3, '2026-01-03', 90, { tipo: 'accesorios', stockInicial: 3, stockActual: 2 }),
+    ];
+    const ventas = [
+      { id: 10, productoId: 1, producto: products[0], fechaVenta: '2026-02-15', precioVenta: 150, cantidad: 1 },
+      { id: 11, productoId: 3, producto: products[2], fechaVenta: '2026-02-16', precioVenta: 50, cantidad: 1, distribucionStock: [{ productoId: 3, cantidad: 1 }] },
+    ] as Venta[];
+    jest.spyOn(service as any, 'getAnalyticsUniverseCached').mockResolvedValue({ productos: products, ventas });
+    const january = await service.financialDashboard({ from: '2026-01-01', to: '2026-01-31' });
+    // Al 31/01: el equipo 1 seguía sin vender (100) y los 3 accesorios del lote (90); el equipo 2 aún no se compraba.
+    expect(january.summary).toEqual(expect.objectContaining({
+      inventoryCapital: 140, inventoryCapitalAtEnd: 190, inventoryFromPeriodPurchases: 60, purchaseCapitalInPeriod: 190, periodEnd: '2026-01-31',
+    }));
+    const all = await service.financialDashboard({});
+    expect(all.summary).toEqual(expect.objectContaining({ inventoryCapitalAtEnd: 140, periodEnd: null }));
+  });
+
   it('cuenta fechas Date de la base de datos y mantiene el capital acumulado fuera del período', async () => {
     const january = product(7, '2026-01-10', 100, { valor: { fechaCompra: new Date('2026-01-10T00:00:00.000Z'), costoTotalProrrateado: 100 } as any });
     const february = product(8, '2026-02-10', 80, { valor: { fechaCompra: new Date('2026-02-10T00:00:00.000Z'), costoTotalProrrateado: 80 } as any });

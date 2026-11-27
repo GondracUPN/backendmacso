@@ -6,9 +6,10 @@ import { User } from '../auth/entities/user.entity';
 import { VentaModule } from '../venta/venta.module';
 import { CatalogSalesIntegrationController } from './catalog-sales-integration.controller';
 import { CatalogSalesIntegrationService } from './catalog-sales-integration.service';
+import { InventarioModule } from '../inventario/inventario.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Producto, Card, User]), VentaModule],
+  imports: [TypeOrmModule.forFeature([Producto, Card, User]), VentaModule, InventarioModule],
   controllers: [CatalogSalesIntegrationController],
   providers: [CatalogSalesIntegrationService],
 })

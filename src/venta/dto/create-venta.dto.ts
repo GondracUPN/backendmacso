@@ -13,8 +13,11 @@ import {
   ValidateNested,
   Length,
   Max,
+  ArrayMaxSize,
+  ArrayUnique,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { MAX_ACCESORIOS_INCLUIDOS } from '../../inventario/accesorios-stock';
 
 export class SaleIncomePartDto {
   @IsIn(['direct', 'card', 'debt', 'cash'])
@@ -26,6 +29,13 @@ export class SaleIncomePartDto {
 }
 
 export class CreateVentaDto {
+  @IsOptional() @IsArray() @ArrayUnique() @ArrayMaxSize(MAX_ACCESORIOS_INCLUIDOS)
+  @IsInt({ each: true }) @Min(1, { each: true })
+  accesoriosStockIds?: number[];
+
+  @IsOptional() @IsInt() @Min(0)
+  accesoriosStockRevision?: number;
+
   @IsOptional() @IsBoolean() pedidoSinPago?: boolean;
   @IsOptional() @IsInt() @Min(1) clienteId?: number;
   @IsOptional() @ValidateNested() @Type(() => AplicarSaldoDto) saldoCliente?: AplicarSaldoDto;

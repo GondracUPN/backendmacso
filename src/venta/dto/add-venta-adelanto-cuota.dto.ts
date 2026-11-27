@@ -1,7 +1,9 @@
 import { IsDateString, IsIn, IsNumber, IsOptional, IsPositive, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PickType } from '@nestjs/mapped-types';
+import { CreateVentaDto } from './create-venta.dto';
 
-export class CerrarVentaCuotaDto {
+export class CerrarVentaCuotaDto extends PickType(CreateVentaDto, ['accesoriosStockIds', 'accesoriosStockRevision'] as const) {
   @IsDateString()
   fechaVenta: string;
 

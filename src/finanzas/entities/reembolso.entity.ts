@@ -23,6 +23,10 @@ export const ESTADOS_REEMBOLSO = [
   'anulado',
 ] as const;
 export type EstadoReembolso = (typeof ESTADOS_REEMBOLSO)[number];
+/** no_llego: devolución total (cierra el producto). dano_parcial: devolución chica por equipo dañado. */
+export const TIPOS_RECLAMO = ['no_llego', 'dano_parcial'] as const;
+export type TipoReclamo = (typeof TIPOS_RECLAMO)[number];
+export const MOTIVO_EQUIPO_DANADO = 'Equipo dañado.';
 
 @Entity('reembolsos')
 @Check('chk_reembolso_estado', `estado IN (${ESTADOS_REEMBOLSO.map(e => `'${e}'`).join(',')})`)
@@ -31,6 +35,8 @@ export class Reembolso {
   reversionReclamo?: {
     cierreMotivo: string | null;
     ventas: Array<{ id: number; estadoComercial: string; anuladaAt: string | null; anuladaPor: number | null; anulacionMotivo: string | null; saldoIds: number[] }>;
+    // Devolución parcial: ajuste aplicado a la venta (costo recuperado y precio devuelto, en céntimos PEN).
+    ajusteVenta?: { ventaId: number; costoCents: number; precioCents: number } | null;
   } | null;
   @PrimaryGeneratedColumn()
   id: number;
@@ -41,6 +47,13 @@ export class Reembolso {
 
   @Column({ type: 'varchar', length: 30, default: 'incidencia' })
   estado: EstadoReembolso;
+
+  @Column({ name: 'tipo_reclamo', type: 'varchar', length: 20, default: 'no_llego' })
+  tipoReclamo: TipoReclamo;
+
+  // Devolución parcial: soles que pasan a saldo a favor del cliente del pedido al emitirse.
+  @Column({ name: 'saldo_cliente_pen', type: 'numeric', precision: 12, scale: 2, nullable: true })
+  saldoClientePen?: string | null;
 
   @Column({ type: 'varchar', length: 3, default: 'PEN' })
   moneda: 'PEN' | 'USD';

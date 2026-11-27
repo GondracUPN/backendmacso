@@ -21,6 +21,7 @@ import { VentaPago } from './venta-pago.entity';
   'disponible >= 0 AND disponible <= original',
 )
 @Check('cliente_saldos_tipo_cambio_check', 'tipo_cambio > 0')
+@Check('cliente_saldos_origen_check', 'pago_id IS NOT NULL OR reembolso_id IS NOT NULL')
 export class ClienteSaldo {
   @Column({ name: 'anulada_at', type: 'timestamptz', nullable: true })
   anuladaAt?: Date | null;
@@ -39,13 +40,16 @@ export class ClienteSaldo {
     foreignKeyConstraintName: 'cliente_saldos_venta_id_fkey',
   })
   ventaIdRelacion: Venta;
-  @Column({ name: 'pago_id', type: 'int' }) pagoId: number;
-  @ManyToOne(() => VentaPago, { onDelete: 'RESTRICT', nullable: false })
+  // Nulo solo en saldos creados por una devolución parcial de reclamo (reembolso_id).
+  @Column({ name: 'pago_id', type: 'int', nullable: true }) pagoId: number | null;
+  @ManyToOne(() => VentaPago, { onDelete: 'RESTRICT', nullable: true })
   @JoinColumn({
     name: 'pago_id',
     foreignKeyConstraintName: 'cliente_saldos_pago_id_fkey',
   })
   pagoIdRelacion: VentaPago;
+  @Index('cliente_saldos_reembolso_idx')
+  @Column({ name: 'reembolso_id', type: 'int', nullable: true }) reembolsoId?: number | null;
   @Column({ type: 'int' }) sku: number;
   @Column({ type: 'numeric', precision: 12, scale: 2 }) original: string;
   @Column({ type: 'numeric', precision: 12, scale: 2 }) disponible: string;

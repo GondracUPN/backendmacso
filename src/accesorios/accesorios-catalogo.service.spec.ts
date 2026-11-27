@@ -28,8 +28,10 @@ describe('selección comercial de accesorios', () => {
     global.fetch = originalFetch;
     if (originalUrl == null) delete process.env.CATALOG_SYNC_URL; else process.env.CATALOG_SYNC_URL = originalUrl;
   });
-  test('persiste selección, agrega lotes, no reenvía sin cambios ni filtra costos privados', async () => {
+  test('persiste selección y envía todo el stock libre con el costo unitario para el administrador', async () => {
     const { service, states, row, ds, operativo } = fixture();
+    row.disponible = 17;
+    row.costoProximaUnidad = 9.5;
     const [entry] = await service.list();
     await service.synchronize();
     // Solo retiro preventivo de las importaciones antiguas; nunca un alta.
@@ -39,9 +41,9 @@ describe('selección comercial de accesorios', () => {
     await service.select([entry.key, entry.key], true);
     expect(states).toHaveLength(1);
     const body = JSON.parse((fetch as jest.Mock).mock.calls[0][1].body);
-    expect(body).toMatchObject({ event: 'accessory.snapshot', product: { stock: 6, price: '25', selected: true } });
+    expect(body).toMatchObject({ event: 'accessory.snapshot', product: { stock: 17, price: '25', costoCompraUnitario: 9.5, selected: true } });
     expect(body.product.images).toBeUndefined();
-    expect(JSON.stringify(body)).not.toMatch(/costo|margen|proveedor|precioMinimo|valor/);
+    expect(JSON.stringify(body)).not.toMatch(/costoTotal|margen|proveedor|precioMinimo|valor/);
     await service.select([entry.key], true); expect(fetch).toHaveBeenCalledTimes(1);
     const reloaded = new AccesoriosCatalogoService(ds, { operativo } as any);
     expect((await reloaded.list())[0]).toMatchObject({ seleccionado: true, enviado: true });
@@ -51,6 +53,63 @@ describe('selección comercial de accesorios', () => {
     await service.select([entry.key], false);
     expect(JSON.parse((fetch as jest.Mock).mock.calls[2][1].body).product).toMatchObject({ stock: 0, selected: false });
     expect(row.lotes).toHaveLength(2);
+  });
+  test('actualiza al reservar una unidad y permite reenviar el mismo stock seleccionado', async () => {
+    const { service, row } = fixture();
+    row.disponible = 17;
+    const [entry] = await service.list();
+    await service.select([entry.key], true);
+    row.disponible = 16;
+    await service.synchronize();
+    await service.synchronize(true);
+    expect((fetch as jest.Mock).mock.calls.map(([, options]) => JSON.parse(options.body).product.stock)).toEqual([17, 16, 16]);
+    expect((await service.list())[0].stockEnviado).toBe(16);
+  });
+  test('sincroniza al completar o quitar modelos de un accesorio enviado, sin cambiar su stock', async () => {
+    const { service, row } = fixture();
+    row.lotes = [{ id: 10, detalle: { modelosCompatibles: [' iPad Pro 11″ (M4) ', 'iPad Pro 13″ (M4)'] } }];
+    const [entry] = await service.list();
+    await service.select([entry.key], true);
+    row.lotes[0].detalle.modelosCompatibles = ['iPad Pro 11″ (M4)'];
+    await service.synchronize();
+    row.lotes[0].detalle.modelosCompatibles = [];
+    await service.synchronize();
+    await service.synchronize();
+
+    const snapshots = (fetch as jest.Mock).mock.calls.map(([, options]) => JSON.parse(options.body).product);
+    expect(snapshots.map((product) => product.modelosCompatibles)).toEqual([
+      ['iPad Pro 11″ (M4)', 'iPad Pro 13″ (M4)'], ['iPad Pro 11″ (M4)'], [],
+    ]);
+    expect(snapshots.every((product) => product.stock === 6 && product.selected)).toBe(true);
+  });
+  test('conserva la descripción de la referencia y anuncia modelos compartidos para lotes fusionados', async () => {
+    const { service, row } = fixture();
+    const referencia = 'iPad Air 4.ª / 5.ª gen. · iPad Pro 11″';
+    row.referencia.compatibilidad = referencia;
+    row.producto.fusionAccesorioId = 10;
+    row.lotes[0].detalle = { modelosCompatibles: [referencia] };
+    const [entry] = await service.list();
+    await service.select([entry.key], true);
+    row.lotes[0].detalle.modelosCompatibles = ['iPad Pro 11″ (M4)', 'iPad Pro 13″ (M4)'];
+    row.lotes[1].detalle = { modelosCompatibles: ['iPad Pro 13″ (M4)', 'iPad Pro 11″ (M5)'] };
+    await service.synchronize();
+    const snapshots = (fetch as jest.Mock).mock.calls.map(([, options]) => JSON.parse(options.body).product);
+    expect(snapshots.map((product) => product.modelosCompatibles)).toEqual([[referencia], ['iPad Pro 13″ (M4)']]);
+  });
+  test('envía juntos un accesorio fusionado y otro lote con el stock propio de cada uno', async () => {
+    const { service, row, operativo } = fixture();
+    operativo.mockResolvedValue([
+      { ...row, disponible: 16, producto: { id: 10, fusionAccesorioId: 10 } },
+      { ...row, nombre: 'Cargador', disponible: 7, producto: { id: 12, empaqueAccesorio: 'con_caja' }, lotes: [{ id: 12 }] },
+    ]);
+    const entries = await service.list();
+    const sent = await service.select(entries.map((entry) => entry.key), true);
+
+    expect((fetch as jest.Mock).mock.calls.map(([, options]) => {
+      const { sku, stock } = JSON.parse(options.body).product;
+      return { sku, stock };
+    })).toEqual([{ sku: 'acc-lot-10', stock: 16 }, { sku: 'acc-lot-12', stock: 7 }]);
+    expect(sent.map((entry) => entry.stockEnviado)).toEqual([16, 7]);
   });
   test('rechaza datos incompletos y reintenta fallos conservando selección', async () => {
     const { service, row, states } = fixture();

@@ -57,10 +57,9 @@ export class Venta {
   @Column({ type: 'varchar', length: 20, default: 'unidad' })
   modalidad: 'unidad' | 'mayor';
 
-  // Lotes internos de los que salieron las unidades de un accesorio agrupado.
-  // Permite mostrar un solo stock en Inventario sin perder la trazabilidad.
+  // Costos y lotes de una venta agrupada o de un equipo con accesorios del stock.
   @Column({ type: 'jsonb', nullable: true })
-  distribucionStock?: Array<{ productoId: number; cantidad: number; costoUnitario?: number }> | null;
+  distribucionStock?: Array<{ productoId: number; cantidad: number; costoUnitario?: number; nombre?: string }> | null;
 
   // — Campos calculados —
   @Column('decimal', { precision: 12, scale: 2 })

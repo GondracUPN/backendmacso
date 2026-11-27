@@ -1,6 +1,7 @@
 import { SaldosClientesService } from './saldos-clientes.service';
 import { repararSaldosReclamoSinCobro } from './reclamo-saldos-reparacion';
 import { reabrirProductoConReclamosAnulados } from './reclamo-producto-disponibilidad';
+import { aplicarReclamoParcialAVenta, revertirAjusteReclamoParcial, tcReclamoParcial, ventaVigenteProducto } from './reclamo-ajuste-venta';
 import { lockAccessoryTopology } from '../venta/accessory-locks';
 import { resolveAccessoryPrices } from '../venta/accessory-quote';
 import { ConflictException } from '@nestjs/common';
@@ -14,6 +15,8 @@ import {
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Like } from 'typeorm';
 import { Venta } from '../venta/venta.entity';
+import { ajustarStockAccesoriosDeEquipo } from '../venta/stock-restore';
+import { liberarAccesoriosAlRetirarProducto } from '../inventario/accesorios-stock';
 import { VentaAdelanto } from '../venta/venta-adelanto.entity';
 import { VentaDevolucion } from '../venta/venta-devolucion.entity';
 import { VentaService } from '../venta/venta.service';
@@ -28,7 +31,7 @@ import {
 import { VentaPago } from './entities/venta-pago.entity';
 import { PagoLiquidacion } from './entities/pago-liquidacion.entity';
 import { MovimientoFinanciero } from './entities/movimiento-financiero.entity';
-import { Reembolso } from './entities/reembolso.entity';
+import { MOTIVO_EQUIPO_DANADO, Reembolso } from './entities/reembolso.entity';
 import { ReembolsoEvento } from './entities/reembolso-evento.entity';
 import { FinanzasLedgerService, toPagoCalc } from './finanzas-ledger.service';
 import {
@@ -775,30 +778,46 @@ export class FinanzasService {
         throw new BadRequestException(
           'El producto ya tiene una reclamación abierta.',
         );
-      const yaDevuelto = await manager.getRepository(Reembolso).findOne({where:{productoId:producto.id,estado:'recibido'}});
+      const yaDevuelto = await manager.getRepository(Reembolso).findOne({where:{productoId:producto.id,estado:'recibido',tipoReclamo:'no_llego'}});
       if (yaDevuelto) throw new BadRequestException('Esta compra ya tiene un reembolso recibido.');
-      if (!['No llegó a Eshopex.', 'Llegó algo distinto al producto comprado.'].includes(dto.motivo || ''))
+      const parcial = dto.tipoReclamo === 'dano_parcial' || dto.motivo === MOTIVO_EQUIPO_DANADO;
+      const motivos = parcial ? [MOTIVO_EQUIPO_DANADO] : ['No llegó a Eshopex.', 'Llegó algo distinto al producto comprado.'];
+      if (!motivos.includes(dto.motivo || ''))
         throw new BadRequestException('Selecciona un motivo de reclamo válido.');
       const valor = producto.valor;
       if (!valor || valor.monedaCompra !== 'USD' || toCents(valor.valorProducto) <= 0)
         throw new BadRequestException('La compra debe tener su importe original registrado en USD.');
+      if (!parcial && dto.saldoClientePen != null)
+        throw new BadRequestException('El saldo parcial al cliente solo aplica a equipos dañados.');
+      const montoParcial = toCents(dto.montoReclamado ?? 0);
+      if (parcial && (!(montoParcial > 0) || montoParcial > toCents(valor.valorProducto)))
+        throw new BadRequestException('Indica el monto devuelto (mayor a cero y no mayor a la compra).');
+      if (parcial && !dto.fechaIncidencia)
+        throw new BadRequestException('Indica la fecha en que se emitió el reembolso.');
       const costo = productCost(producto);
       if (costo == null) throw new BadRequestException('Falta el costo registrado de la compra.');
       const tcCompra = Number(valor.tipoCambioCompra) > 0 ? Number(valor.tipoCambioCompra)
         : Number(valor.valorSoles) / Number(valor.valorProducto);
       if (!(tcCompra > 0)) throw new BadRequestException('Falta el tipo de cambio histórico de la compra.');
       const moneda = 'USD' as const;
+      const montoReclamado = parcial ? montoParcial : toCents(valor.valorProducto);
+      // Devolución parcial: USD al TC de la venta; sin venta, el general de 3.7.
+      const ventaParcial = parcial ? await ventaVigenteProducto(manager, producto.id) : null;
+      const tcReclamo = parcial ? tcReclamoParcial(ventaParcial) : tcCompra;
       const repo = manager.getRepository(Reembolso);
       const saved = await repo.save(
         repo.create({
           productoId: producto.id,
           estado: 'reclamo_abierto',
+          tipoReclamo: parcial ? 'dano_parcial' : 'no_llego',
+          saldoClientePen: parcial && dto.saldoClientePen != null ? Number(dto.saldoClientePen).toFixed(2) : null,
           creadoPor: userId,
           moneda,
-          tipoCambioCompra: tcCompra ? tcCompra.toFixed(4) : null,
-          costoOriginal: Number(costo).toFixed(2),
+          tipoCambioCompra: tcReclamo ? tcReclamo.toFixed(4) : null,
+          // En la devolución parcial el capital en juego es solo lo devuelto, no el equipo.
+          costoOriginal: parcial ? fromCents(Math.round(montoParcial * tcReclamo)).toFixed(2) : Number(costo).toFixed(2),
           gastosAdicionales: '0.00',
-          montoReclamado: fromCents(toCents(valor.valorProducto)).toFixed(2),
+          montoReclamado: fromCents(montoReclamado).toFixed(2),
           cuentaDevolucionId: null,
           fechaIncidencia: dto.fechaIncidencia || hoyLima(),
           referencia: dto.referencia || null,
@@ -817,6 +836,18 @@ export class FinanzasService {
       saved.reversionReclamo = { cierreMotivo: producto.cierreMotivo ?? null,
         ventas: [] };
       await repo.save(saved);
+      if (parcial) {
+        // El equipo sigue con el cliente/inventario: no se cierra el producto ni se cancela la venta.
+        if (dto.saldoClientePen != null) {
+          if (!this.saldos) throw new BadRequestException('Saldos de clientes no disponibles.');
+          const ventas = await this.saldos.saldoParcialPorReclamo(saved, Number(dto.saldoClientePen), userId || 0, manager);
+          saved.reversionReclamo = { cierreMotivo: producto.cierreMotivo ?? null, ventas };
+          await repo.save(saved);
+        }
+        // Ganancia real: el reembolso baja el costo y la devolución al cliente baja el ingreso.
+        if (ventaParcial) await aplicarReclamoParcialAVenta(manager, saved, ventaParcial);
+        return repo.findOneByOrFail({ id: saved.id });
+      }
       await this.saldos?.actualizarSaldoPorReclamo(producto.id, userId || 0, manager);
       await manager.getRepository(Producto).update(producto.id,{ cierreMotivo: 'no_comercializable' });
       return repo.findOneByOrFail({ id: saved.id });
@@ -855,7 +886,7 @@ export class FinanzasService {
           const saldoIds = (r.reversionReclamo?.ventas || []).flatMap(v => v.saldoIds);
           const saldos = await manager.query('SELECT id FROM cliente_saldos WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE', [saldoIds]);
           if (saldos.length) {
-            const [conflicto] = await manager.query(`SELECT 1 FROM cliente_saldos s JOIN venta_pagos p ON p.id=s.pago_id
+            const [conflicto] = await manager.query(`SELECT 1 FROM cliente_saldos s LEFT JOIN venta_pagos p ON p.id=s.pago_id
               WHERE s.id=ANY($1::int[]) AND (p.fecha_pago>$2::date OR EXISTS
                 (SELECT 1 FROM cliente_saldo_movimientos m WHERE m.saldo_id=s.id AND m.fecha<$2::date)) LIMIT 1`, [saldoIds, dto.fecha]);
             if (conflicto) throw new BadRequestException('La fecha debe ser posterior a los pagos originales y anterior a las aplicaciones del saldo.');
@@ -873,6 +904,10 @@ export class FinanzasService {
               throw new BadRequestException('El saldo del reclamo ya fue utilizado. Revierte sus aplicaciones antes de anularlo.');
             await manager.query('UPDATE cliente_saldos SET disponible=0, anulada_at=now() WHERE id=ANY($1::int[])', [v.saldoIds]);
             await manager.query('UPDATE venta_pagos SET saldo_convertido=0 WHERE id IN (SELECT pago_id FROM cliente_saldos WHERE id=ANY($1::int[]))', [v.saldoIds]);
+            const venta = await manager.getRepository(Venta).findOneBy({ id: v.id });
+            if (venta?.estadoComercial === 'cancelada' && v.estadoComercial !== 'cancelada') {
+              await ajustarStockAccesoriosDeEquipo(manager, venta, 'consumir');
+            }
             await manager.getRepository(Venta).update(v.id, { estadoComercial: v.estadoComercial as Venta['estadoComercial'],
               anuladaAt: v.anuladaAt ? new Date(v.anuladaAt) : null, anuladaPor: v.anuladaPor, anulacionMotivo: v.anulacionMotivo });
           }
@@ -883,6 +918,7 @@ export class FinanzasService {
             await eventoRepo.update(e.id, { tipo: 'recibido_anulado', gastoId: null,
               nota: [e.nota, 'Reembolso retirado al anular el reclamo.'].filter(Boolean).join(' · ') });
           }
+          await revertirAjusteReclamoParcial(manager, r);
           if (r.reversionReclamo) await manager.getRepository(Producto).update(r.productoId,
             { cierreMotivo: r.reversionReclamo.cierreMotivo as Producto['cierreMotivo'] });
           else await manager.query(`UPDATE producto SET "cierreMotivo"=NULL WHERE id=$1 AND "cierreMotivo"='no_comercializable'`, [r.productoId]);
@@ -1026,10 +1062,11 @@ export class FinanzasService {
             break;
         }
         await repo.save(r);
-        if (r.estado==='recibido' && dto.tipo==='recibido') {
+        const parcial = r.tipoReclamo === 'dano_parcial';
+        if (!parcial && r.estado==='recibido' && dto.tipo==='recibido') {
           await this.saldos?.actualizarSaldoPorReclamo(r.productoId,userId,manager);
         }
-        if (['recibido', 'perdida_definitiva'].includes(r.estado)) {
+        if (!parcial && ['recibido', 'perdida_definitiva'].includes(r.estado)) {
           await manager
             .getRepository(Producto)
             .createQueryBuilder()
@@ -1087,13 +1124,16 @@ export class FinanzasService {
         .where('r.productoId = :productoId', { productoId }).andWhere("r.estado NOT IN ('recibido','rechazado','perdida_definitiva','anulado')").getCount();
       if (abiertos) throw new BadRequestException('El producto tiene un reclamo pendiente.');
     }
-    const repo = this.dataSource.getRepository(Producto);
-    const exists = await repo.count({ where: { id: productoId } });
-    if (!exists) throw new NotFoundException('Producto no encontrado');
-    await repo.update(productoId, {
-      cierreMotivo: motivo === 'reabrir' ? null : motivo,
+    const cierreMotivo = motivo === 'reabrir' ? null : motivo;
+    return this.dataSource.transaction(async (manager) => {
+      await lockAccessoryTopology(manager, true);
+      const repo = manager.getRepository(Producto);
+      const producto = await repo.findOneBy({ id: productoId });
+      if (!producto) throw new NotFoundException('Producto no encontrado');
+      if (cierreMotivo) await liberarAccesoriosAlRetirarProducto(manager, producto);
+      await repo.update(productoId, { cierreMotivo });
+      return { productoId, cierreMotivo };
     });
-    return { productoId, cierreMotivo: motivo === 'reabrir' ? null : motivo };
   }
 
   // ————————————————————————— Venta rápida de accesorios —————————————————————————
@@ -1102,6 +1142,7 @@ export class FinanzasService {
   async accesoriosDisponibles() {
     const rows: any[] = await this.dataSource.query(`
       SELECT p.id, COALESCE(p."codigoInventario", p.id) AS codigo, p."stockActual", p.vendedor, p."referenciaId", to_jsonb(r) AS referencia,
+             p."empaqueAccesorio", p."fusionAccesorioId",
              NULLIF(trim(concat_ws(' ', d."descripcionOtro", d.modelo, d.gama)), '') AS nombre,
              inv."primerPrecioSoles", inv."ultimoPrecioSoles", inv.id AS "fichaId", inv."updatedAt"
         FROM producto p
@@ -1116,10 +1157,11 @@ export class FinanzasService {
     for (const row of rows) {
       const comprador = String(row.vendedor || '').trim();
       const codigo = Number(row.codigo);
-      const key = (row.referenciaId ? 'ref:' + row.referenciaId : 'code:' + codigo) + ':' + comprador.toLowerCase();
+      const key = (row.fusionAccesorioId ? 'fusion:' + row.fusionAccesorioId : row.empaqueAccesorio ? 'lot:' + row.id
+        : row.referenciaId ? 'ref:' + row.referenciaId : 'code:' + codigo) + ':' + comprador.toLowerCase();
       const existing = groups.get(key);
       if (existing) { existing.stock += Number(row.stockActual); existing.fichas.push({ ...row, id: row.fichaId, productoId: row.id }); continue; }
-      groups.set(key, { productoId: Number(row.id), codigo, comprador, referenciaId: row.referenciaId ?? null, referencia: row.referencia, fichas: [{ ...row, id: row.fichaId, productoId: row.id }], nombre: row.nombre || 'Accesorio ACC-' + codigo,
+      groups.set(key, { productoId: Number(row.id), codigo, comprador, referenciaId: row.referenciaId ?? null, empaqueAccesorio: row.empaqueAccesorio, referencia: row.referencia, fichas: [{ ...row, id: row.fichaId, productoId: row.id }], nombre: row.nombre || 'Accesorio ACC-' + codigo,
         stock: Number(row.stockActual), precioPublicado: row.primerPrecioSoles == null ? null : Number(row.primerPrecioSoles),
         precioMinimo: row.ultimoPrecioSoles == null ? null : Number(row.ultimoPrecioSoles) });
     }
@@ -1387,6 +1429,7 @@ export function reembolsoCalc(r: Reembolso) {
     recibidoCents: eventos
       .filter((e) => e.tipo === 'recibido')
       .reduce((acc, e) => acc + toCents(e.montoPen), 0),
+    parcial: r.tipoReclamo === 'dano_parcial',
   };
 }
 

@@ -15,6 +15,7 @@ import { Gasto } from '../gastos/entities/gasto.entity';
 import { Tracking } from '../tracking/tracking.entity';
 import { Inventario } from '../inventario/inventario.entity';
 import { AccesorioVinculoAuditoria, AccesorioVinculoPropuesta } from '../accesorios/accesorio-vinculo.entity';
+import { liberarAccesoriosAlRetirarProducto } from '../inventario/accesorios-stock';
 
 export type EliminacionProducto = {
   productoId: number;
@@ -42,6 +43,7 @@ export async function eliminarProductoDefinitivo(manager: EntityManager, product
   const id = producto.id;
   const repo = <T>(entity: new () => T) => manager.getRepository(entity as any) as any;
 
+  await liberarAccesoriosAlRetirarProducto(manager, producto);
   await manager.query('SELECT id FROM venta WHERE "productoId" = $1 ORDER BY id FOR UPDATE', [id]);
   const ventas: Venta[] = await repo(Venta).find({ where: { productoId: id }, order: { id: 'ASC' } });
   const ventaIds = ventas.map((v) => v.id);
@@ -53,6 +55,7 @@ export async function eliminarProductoDefinitivo(manager: EntityManager, product
   const reponer = new Map<number, number>();
   for (const venta of ventas) {
     if (venta.anuladaAt) continue; // la anulación ya las repuso
+    if (venta.estadoComercial === 'cancelada' && venta.distribucionStock?.some((part) => part.nombre)) continue;
     for (const part of unidadesPorReponer(venta, devoluciones.filter((d) => d.ventaId === venta.id))) {
       if (part.productoId !== id) reponer.set(part.productoId, (reponer.get(part.productoId) || 0) + part.cantidad);
     }

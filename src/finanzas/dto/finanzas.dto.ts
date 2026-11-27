@@ -122,6 +122,9 @@ export class CrearReembolsoDto {
   @IsOptional() @IsDateString() fechaIncidencia?: string;
   @IsOptional() @IsString() @MaxLength(120) referencia?: string;
   @IsOptional() @IsString() @MaxLength(1000) motivo?: string;
+  @IsOptional() @IsIn(['no_llego', 'dano_parcial']) tipoReclamo?: 'no_llego' | 'dano_parcial';
+  // Devolución parcial: soles que se vuelven saldo a favor del cliente del pedido.
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @IsPositive() saldoClientePen?: number;
 }
 
 export class EventoReembolsoDto {

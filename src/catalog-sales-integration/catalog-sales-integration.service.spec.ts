@@ -1,6 +1,60 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { CatalogSalesIntegrationService } from './catalog-sales-integration.service';
 
+describe('CatalogSalesIntegrationService accesorios de productos', () => {
+  const sku = 'MS-366';
+  const fixture = () => {
+    const lotes = [
+      { id: 12, tipo: 'accesorios', stockActual: 1, fusionAccesorioId: null },
+      { id: 11, tipo: 'accesorios', stockActual: 3, fusionAccesorioId: 10 },
+      { id: 10, tipo: 'accesorios', stockActual: 2, fusionAccesorioId: 10 },
+    ];
+    const productoRepo = {
+      findOneBy: jest.fn(async () => ({ id: 366, tipo: 'macbook' })),
+      find: jest.fn(async () => lotes),
+      findBy: jest.fn(async () => [lotes[1]]),
+    };
+    const manager = { query: jest.fn(async () => []), getRepository: () => productoRepo };
+    const inventario = {
+      updateAccesoriosStock: jest.fn(async () => ({
+        revision: 1, accesorios: [{ productoId: 11, nombre: 'Cable USB-C' }],
+      })),
+    };
+    const service = new CatalogSalesIntegrationService(
+      { manager } as any, productoRepo as any, {} as any, {} as any, {} as any, inventario as any,
+    );
+    return { service, lotes, productoRepo, inventario };
+  };
+
+  it('expone los dos lotes fusionados y el lote suelto en orden descendente', async () => {
+    const { service, productoRepo } = fixture();
+    const resultado = await service.getProductAccessories(sku);
+
+    expect(productoRepo.find).toHaveBeenCalledWith(expect.objectContaining({ order: { id: 'DESC' } }));
+    expect(resultado.disponibles.map(({ productoId, fusionAccesorioId }) => [productoId, fusionAccesorioId]))
+      .toEqual([[12, null], [11, 10], [10, 10]]);
+  });
+
+  it('devuelve null para un lote después de desfusionar', async () => {
+    const { service, lotes } = fixture();
+    lotes[1].fusionAccesorioId = null;
+    lotes[2].fusionAccesorioId = null;
+
+    const resultado = await service.getProductAccessories(sku);
+    expect(resultado.disponibles.map(({ fusionAccesorioId }) => fusionAccesorioId)).toEqual([null, null, null]);
+  });
+
+  it('pasa al inventario el ID concreto del lote fusionado y devuelve la revisión de su reserva', async () => {
+    const { service, inventario } = fixture();
+    const dto = { revision: 0, productoIds: [11] };
+
+    await expect(service.updateProductAccessories(sku, dto)).resolves.toMatchObject({
+      revision: 1, accesorios: [{ productoId: 11 }],
+    });
+    expect(inventario.updateAccesoriosStock).toHaveBeenCalledWith(366, dto, true);
+  });
+});
+
 describe('CatalogSalesIntegrationService.confirm', () => {
   const event = {
     id: 'new-event',
@@ -12,14 +66,18 @@ describe('CatalogSalesIntegrationService.confirm', () => {
     createdAt: '2026-09-02T12:01:00.000Z',
   };
 
-  const makeService = (options?: { updateError?: Error }) => {
+  const makeService = (options?: { updateError?: Error; accesoriosStockIds?: number[] }) => {
     const queries: Array<{ sql: string; params: unknown[] }> = [];
     const dataSource = {
       query: jest.fn(async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
-        if (sql.includes('WHERE "id" = $1 LIMIT 1')) return [event];
+        if (sql.includes('WHERE "id" = $1 LIMIT 1')) {
+          return [options?.accesoriosStockIds ? {
+            ...event, payload: { accesoriosStockIds: options.accesoriosStockIds, accesoriosStockRevision: 7 },
+          } : event];
+        }
         if (sql.includes('FROM "public"."catalog_sale_events"') && sql.includes("'sale.cancelled'")) {
-          return [{ id: 'old-cancellation', remoteVentaId: 91 }];
+          return options?.accesoriosStockIds ? [] : [{ id: 'old-cancellation', remoteVentaId: 91 }];
         }
         return [];
       }),
@@ -88,6 +146,14 @@ describe('CatalogSalesIntegrationService.confirm', () => {
     });
     await service.confirm(event.id, 3.75, 'bcp', 'direct');
     expect(ventaService.create).toHaveBeenCalledWith(expect.objectContaining({ incomePaymentType: 'direct' }));
+  });
+
+  it.each([{ ids: [815] }, { ids: [] }])('envía a la venta la selección del catálogo $ids', async ({ ids }) => {
+    const { service, ventaService } = makeService({ accesoriosStockIds: ids });
+    await service.confirm(event.id, 3.75, 'bcp');
+    expect(ventaService.create).toHaveBeenCalledWith(expect.objectContaining({
+      productoId: 366, accesoriosStockIds: ids, accesoriosStockRevision: 7,
+    }));
   });
 });
 
@@ -252,14 +318,14 @@ describe('CatalogSalesIntegrationService aviso al catalogo', () => {
   it('avisa al catalogo cuando se confirma la venta', async () => {
     const { service, notify } = makeService();
     await service.confirm('evt-1', 3.75, 'bcp');
-    expect(notify).toHaveBeenCalledWith('catalog-evt-1', 'confirmed');
+    expect(notify).toHaveBeenCalledWith('catalog-evt-1', 'confirmed', undefined);
   });
 
   it('reenvia los estados finales para reconciliar ventas antiguas', async () => {
     const { service, notify } = makeService();
     const result = await service.reconcileCatalogStatuses();
-    expect(notify).toHaveBeenCalledWith('a', 'confirmed');
-    expect(notify).toHaveBeenCalledWith('b', 'cancelled');
+    expect(notify).toHaveBeenCalledWith('a', 'confirmed', undefined);
+    expect(notify).toHaveBeenCalledWith('b', 'cancelled', undefined);
     expect(result).toEqual(expect.objectContaining({ total: 2, notified: 2, ok: true }));
   });
 

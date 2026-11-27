@@ -11,7 +11,8 @@ import { VinculosService } from './vinculos.service';
 import { AccesorioCatalogo } from './accesorio-catalogo.entity';
 import { AccesoriosCatalogoService } from './accesorios-catalogo.service';
 import { AccesoriosCatalogoController, AccesoriosCatalogoSyncController } from './accesorios-catalogo.controller';
+import { AppleCatalogModule } from '../apple-catalog/apple-catalog.module';
 
-@Module({ imports: [TypeOrmModule.forFeature([AccesorioCatalogo, AccesorioReferencia, AccesorioIngreso, AccesorioVinculoAuditoria, AccesorioVinculoOperacion, AccesorioVinculoPropuesta]), ProductoModule, VentaModule],
+@Module({ imports: [TypeOrmModule.forFeature([AccesorioCatalogo, AccesorioReferencia, AccesorioIngreso, AccesorioVinculoAuditoria, AccesorioVinculoOperacion, AccesorioVinculoPropuesta]), ProductoModule, VentaModule, AppleCatalogModule],
   providers: [AccesoriosService, AccesoriosCatalogoService, VinculosService], controllers: [AccesoriosController, AccesoriosCatalogoController, AccesoriosCatalogoSyncController] })
 export class AccesoriosModule {}

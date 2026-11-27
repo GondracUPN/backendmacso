@@ -1,12 +1,17 @@
 // producto.entity.ts
 import {
   Entity,
+  Check,
+  Index,
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
   JoinColumn,
   OneToMany,
+  OneToOne,
+  Relation,
 } from 'typeorm';
+import { ProductoAccesoriosStock } from '../inventario/producto-accesorios-stock.entity';
 import { ProductoDetalle } from './producto-detalle.entity';
 import { ProductoValor } from './producto-valor.entity';
 import { Tracking } from '../tracking/tracking.entity';
@@ -14,7 +19,14 @@ import { Venta } from '../venta/venta.entity';
 import { AccesorioReferencia } from '../accesorios/accesorio-referencia.entity';
 
 @Entity()
+@Check('producto_empaque_accesorio_chk', `"empaqueAccesorio" IS NULL OR (lower(tipo) = 'accesorios' AND "empaqueAccesorio" IN ('con_caja','sin_caja','sin_indicar'))`)
 export class Producto {
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  empaqueAccesorio?: 'con_caja' | 'sin_caja' | 'sin_indicar' | null;
+
+  @Index('producto_fusion_accesorio_idx')
+  @Column({ type: 'int', nullable: true })
+  fusionAccesorioId?: number | null;
   @Column({ type: 'int', nullable: true })
   referenciaId?: number | null;
 
@@ -33,6 +45,9 @@ export class Producto {
   // Accesorios marcados (Caja, Cubo, Cable)
   @Column({ type: 'text', array: true, default: '{}' })
   accesorios: string[];
+
+  @OneToOne(() => ProductoAccesoriosStock, (stock) => stock.producto)
+  accesoriosStock?: Relation<ProductoAccesoriosStock> | null;
 
   @Column({ type: 'int', default: 1 })
   stockInicial: number;

@@ -2,11 +2,12 @@ import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Res, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Put, Query, Res, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as archiver from 'archiver';
 import { UpdateInventarioDto } from './dto/update-inventario.dto';
+import { UpdateAccesoriosStockDto } from './dto/update-accesorios-stock.dto';
 import { UploadInventarioFotoDto } from './dto/upload-inventario-foto.dto';
 import { InventarioService } from './inventario.service';
 
@@ -84,6 +85,15 @@ export class InventarioController {
   @Get('producto/:productoId')
   findProductoByCode(@Param('productoId', ParseIntPipe) productoId: number) {
     return this.inventarioService.findProductoByCode(productoId);
+  }
+
+  @Roles('admin')
+  @Put(':productoId/accesorios-stock')
+  updateAccesoriosStock(
+    @Param('productoId', ParseIntPipe) productoId: number,
+    @Body() dto: UpdateAccesoriosStockDto,
+  ) {
+    return this.inventarioService.updateAccesoriosStock(productoId, dto);
   }
 
   @Roles('admin')

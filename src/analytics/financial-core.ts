@@ -17,9 +17,12 @@ export function saleCost(sale: Venta, products: Map<number, Producto>): number |
   const product = products.get(Number(sale.productoId)) || sale.producto;
   if (!product) return null;
   if (String(product.tipo).toLowerCase() !== 'accesorios') {
+    // Costo neto: lo que me devolvieron baja el costo; lo que devolví al cliente lo sube.
+    const ajuste = money(sale.precioDevuelto) - money(sale.costoDevuelto);
     const savedProfit = sale.ganancia == null ? NaN : Number(sale.ganancia);
-    if (Number.isFinite(savedProfit)) return roundMoney(Number(sale.precioVenta || 0) - savedProfit);
-    return productCost(product);
+    if (Number.isFinite(savedProfit)) return roundMoney(Number(sale.precioVenta || 0) - savedProfit + ajuste);
+    const base = productCost(product);
+    return base == null ? null : roundMoney(base + ajuste);
   }
   const distribution = sale.distribucionStock?.length
     ? sale.distribucionStock

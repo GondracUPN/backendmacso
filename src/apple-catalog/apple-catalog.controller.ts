@@ -18,6 +18,11 @@ export class AppleCatalogController {
     return this.svc.forms(tipo);
   }
 
+  @Get('accessory-compatibility')
+  accessoryCompatibility() {
+    return this.svc.accessoryCompatibility();
+  }
+
   @Get('models')
   search(@Query('q') q?: string, @Query('tipo') tipo?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
     return this.svc.search({ q, tipo, page: Number(page), pageSize: Number(pageSize) });

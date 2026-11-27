@@ -4,7 +4,7 @@ import { AccesorioReferencia } from '../accesorios/accesorio-referencia.entity';
 import { EntityManager } from 'typeorm';
 import { appCacheKey, invalidateProductos } from '../common/app-cache';
 import { reservaActivaSql, ventaActivaSql } from '../venta/estado-comercial';
-﻿import { Injectable, NotFoundException, Inject, BadRequestException, Optional } from '@nestjs/common';
+﻿import { Injectable, NotFoundException, Inject, BadRequestException, ConflictException, Optional } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, MoreThan, Not, Repository } from 'typeorm';
@@ -23,6 +23,7 @@ import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 import * as crypto from 'node:crypto';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
 import { isAccessoryStock, normalizeIncludedAccessories } from './accessory-rules';
+import { accesorioParaCatalogo, liberarAccesoriosAlRetirarProducto, lotesDeAccesoriosStock } from '../inventario/accesorios-stock';
 
 function normalizeEstado(str?: string | null): string {
   if (!str) return '';
@@ -227,6 +228,7 @@ export class ProductoService {
       stockActual: cantidad,
       codigoInventario: accessoryDisplayCode,
       referenciaId: data.referenciaId ?? null,
+      empaqueAccesorio: accessoryStock ? data.empaqueAccesorio || 'sin_indicar' : null,
       soloInventario: !!data.soloInventario,
       envioGrupoId: envioGrupoId || null,
       detalle: detalle || undefined,
@@ -408,6 +410,7 @@ export class ProductoService {
       .leftJoinAndSelect('p.detalle', 'd')
       .leftJoinAndSelect('p.valor', 'v')
       .leftJoinAndSelect('p.tracking', 't')
+      .leftJoinAndSelect('p.accesoriosStock', 'accesoriosStock')
       .where('p.soloInventario = false')
       .andWhere('p."archivadoAt" IS NULL')
       .orderBy('p.id', 'DESC');
@@ -614,6 +617,26 @@ export class ProductoService {
     if (!producto) {
       throw new NotFoundException(`Producto con id ${id} no encontrado`);
     }
+    const cambiaTipoStock = dto.tipo !== undefined && isAccessoryStock(dto.tipo) !== isAccessoryStock(producto.tipo);
+    if (!this.referenceTransaction && this.productoRepo.manager && (isAccessoryStock(producto.tipo) || cambiaTipoStock)) {
+      return this.productoRepo.manager.transaction(async (manager) => {
+        await lockAccessoryTopology(manager, true);
+        await manager.query('SELECT id FROM producto WHERE id = $1 FOR UPDATE', [id]);
+        return this.conManager(manager).update(id, dto);
+      });
+    }
+    if (cambiaTipoStock) await liberarAccesoriosAlRetirarProducto(this.productoRepo.manager, producto);
+    if (dto.empaqueAccesorio != null && !isAccessoryStock(dto.tipo ?? producto.tipo)) {
+      throw new BadRequestException('El empaque corresponde a accesorios.');
+    }
+    if (producto.fusionAccesorioId && (
+      cambiaTipoStock ||
+      (dto.empaqueAccesorio != null && dto.empaqueAccesorio !== producto.empaqueAccesorio) ||
+      (dto.estado !== undefined && dto.estado !== producto.estado) ||
+      (dto.vendedor !== undefined && normalizeVendedor(dto.vendedor) !== normalizeVendedor(producto.vendedor)) ||
+      (dto.detalle?.modelo !== undefined && dto.detalle.modelo !== producto.detalle?.modelo) ||
+      (dto.detalle?.descripcionOtro !== undefined && dto.detalle.descripcionOtro !== producto.detalle?.descripcionOtro)
+    )) throw new ConflictException('La identidad del accesorio debe coincidir en todos los lotes fusionados.');
     if (dto.detalle || (dto.tipo !== undefined && dto.tipo !== producto.tipo)) {
       const tipoCambia = dto.tipo !== undefined && dto.tipo !== producto.tipo;
       await this.assertDetalleCatalogo(
@@ -646,6 +669,8 @@ export class ProductoService {
 
     // 2) Actualizar campos principales si vienen
     if (dto.tipo !== undefined) producto.tipo = dto.tipo;
+    if (cambiaTipoStock) producto.empaqueAccesorio = isAccessoryStock(producto.tipo) ? 'sin_indicar' : null;
+    if (dto.empaqueAccesorio != null) producto.empaqueAccesorio = dto.empaqueAccesorio;
     if (dto.estado !== undefined) producto.estado = dto.estado;
     let vendedorActualizado: string | null | undefined;
     if ((dto as any).vendedor !== undefined) {
@@ -691,7 +716,7 @@ export class ProductoService {
     if ((dto as any).cantidad !== undefined && isAccessoryStock(producto.tipo)) {
       const nextInitial = Number((dto as any).cantidad);
       const sold = Math.max(0, Number(producto.stockInicial || 0) - Number(producto.stockActual || 0));
-      if (nextInitial < sold) throw new BadRequestException(`La cantidad no puede ser menor que las ${sold} unidades ya vendidas.`);
+      if (nextInitial < sold) throw new BadRequestException(`La cantidad no puede ser menor que las ${sold} unidades vendidas o reservadas.`);
       producto.stockInicial = nextInitial;
       producto.stockActual = nextInitial - sold;
       await this.productoRepo.save(producto);
@@ -827,10 +852,15 @@ export class ProductoService {
 
   async archivar(id: number, motivo: string) {
     if (!motivo || motivo.trim().length < 3) throw new BadRequestException('Indica el motivo del archivo.');
-    const producto = await this.productoRepo.findOneBy({ id });
-    if (!producto) throw new NotFoundException('Producto no encontrado.');
-    producto.archivadoAt = new Date(); producto.archivoMotivo = motivo.trim();
-    const saved = await this.productoRepo.save(producto);
+    const saved = await this.productoRepo.manager.transaction(async (manager) => {
+      await lockAccessoryTopology(manager, true);
+      const repo = manager.getRepository(Producto);
+      const producto = await repo.findOneBy({ id });
+      if (!producto) throw new NotFoundException('Producto no encontrado.');
+      await liberarAccesoriosAlRetirarProducto(manager, producto);
+      producto.archivadoAt = new Date(); producto.archivoMotivo = motivo.trim();
+      return repo.save(producto);
+    });
     await this.invalidateListCache();
     return saved;
   }
@@ -1493,7 +1523,7 @@ export class ProductoService {
       where: includeAlreadySent
         ? { soloInventario: false }
         : { catalogoEnviado: false, soloInventario: false },
-      relations: ['detalle', 'valor', 'tracking'],
+      relations: ['detalle', 'valor', 'tracking', 'accesoriosStock'],
       order: { id: 'DESC' },
     });
     const fichasListas = productos.length
@@ -1531,6 +1561,8 @@ export class ProductoService {
       ? await this.inventarioRepo.find({ where: { productoId: In(prods.map((p) => p.id)) } })
       : [];
     const fichaByProducto = new Map(fichas.map((ficha) => [ficha.productoId, ficha]));
+    const lotesAccesorios = await lotesDeAccesoriosStock(this.productoRepo.manager,
+      prods.flatMap((producto) => producto.accesoriosStock?.accesorios || []));
 
     let enviados = 0;
     let marcados = 0;
@@ -1621,6 +1653,8 @@ export class ProductoService {
             batteryHealth: ficha?.saludBateria ?? null,
             productCondition: p.estado ?? null,
             includes,
+            accesoriosStock: (p.accesoriosStock?.accesorios ?? []).map((item) => accesorioParaCatalogo(item, lotesAccesorios.get(item.productoId))),
+            accesoriosStockRevision: p.accesoriosStock?.revision ?? 0,
             includesExtra: ficha?.observaciones ?? null,
             warrantyEnabled,
             warrantyType,

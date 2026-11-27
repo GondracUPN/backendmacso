@@ -9,18 +9,23 @@ export const accessoryAvailable = (lot: Partial<Producto>) =>
   String(lot.tipo).toLowerCase() === 'accesorios' && !lot.archivadoAt && !lot.cierreMotivo
     && !(lot.referenciaId && lot.origen === 'accesorio_importado' && !(lot.tracking || []).some((row) => row.fechaRecogido || String(row.estado).toLowerCase() === 'recogido'));
 
-export const accessoryIdentity = (lot: Partial<Producto>) => lot.referenciaId ? 'ref:' + lot.referenciaId : 'code:' + Number(lot.codigoInventario || lot.id);
+export const accessoryIdentity = (lot: Partial<Producto>) => lot.fusionAccesorioId ? 'fusion:' + lot.fusionAccesorioId
+  : lot.empaqueAccesorio ? 'lot:' + lot.id
+  : lot.referenciaId ? 'ref:' + lot.referenciaId : 'code:' + Number(lot.codigoInventario || lot.id);
 export const sameAccessoryGroup = (a: Partial<Producto>, b: Partial<Producto>) => accessoryIdentity(a) === accessoryIdentity(b) && accessoryOwner(a.vendedor) === accessoryOwner(b.vendedor);
 // Los códigos heredados pueden haberse compartido por título. Sin referencia,
 // solo una misma foto no vacía permite tratar altas distintas como un stock.
 export function accessoryInventoryIdentity(lot: Partial<Producto>, fichas: { productoId: number; fotoUrl?: string | null }[]) {
+  if (lot.fusionAccesorioId || lot.empaqueAccesorio) return accessoryIdentity(lot);
   const photo = String(fichas.find((ficha) => Number(ficha.productoId) === Number(lot.id))?.fotoUrl || '').trim();
   return JSON.stringify(lot.referenciaId ? ['ref', lot.referenciaId]
     : ['code', Number(lot.codigoInventario || lot.id), photo ? ['photo', photo] : ['lot', lot.id]]);
 }
 export const sameAccessoryInventoryGroup = (a: Partial<Producto>, b: Partial<Producto>, fichas: { productoId: number; fotoUrl?: string | null }[]) =>
   accessoryInventoryIdentity(a, fichas) === accessoryInventoryIdentity(b, fichas) && accessoryOwner(a.vendedor) === accessoryOwner(b.vendedor);
-export const accessoryGroupWhere = (lot: Producto) => lot.referenciaId ? [{ referenciaId: lot.referenciaId }] : [{ id: lot.id, referenciaId: IsNull() }, { codigoInventario: Number(lot.codigoInventario || lot.id), referenciaId: IsNull() }];
+export const accessoryGroupWhere = (lot: Producto) => lot.fusionAccesorioId ? [{ fusionAccesorioId: lot.fusionAccesorioId }]
+  : lot.empaqueAccesorio ? [{ id: lot.id }]
+  : lot.referenciaId ? [{ referenciaId: lot.referenciaId }] : [{ id: lot.id, referenciaId: IsNull() }, { codigoInventario: Number(lot.codigoInventario || lot.id), referenciaId: IsNull() }];
 
 export function resolveAccessoryPrices(reference: Partial<Producto>, fichas: any[]) {
   const own = fichas.find((ficha) => Number(ficha.productoId) === reference.id);

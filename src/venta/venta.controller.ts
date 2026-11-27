@@ -15,6 +15,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { VentaService } from './venta.service';
+import { ventaConDesglose } from './reparto-venta-equipo';
 import { QuoteAccessoryDto } from './dto/quote-accessory.dto';
 import { CreateVentaDto } from './dto/create-venta.dto';
 import { UpdateVentaDto } from './dto/update-venta.dto';
@@ -209,8 +210,8 @@ export class VentaController {
   }
 
   @Get(':id')
-  one(@Param('id', ParseIntPipe) id: number) {
-    return this.svc.findOne(id);
+  async one(@Param('id', ParseIntPipe) id: number) {
+    return ventaConDesglose(await this.svc.findOne(id));
   }
 
   @Get(':id/cobros')
