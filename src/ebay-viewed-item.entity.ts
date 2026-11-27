@@ -23,6 +23,13 @@ export class EbayViewedItem {
   @Column({ type: 'varchar', length: 500, nullable: true })
   title?: string | null;
 
+  // Primer precio visto (USD o puja actual en subastas) para comparar en revisiones futuras.
+  @Column({ name: 'viewed_price', type: 'numeric', precision: 12, scale: 2, nullable: true })
+  viewedPrice?: string | null;
+
+  @Column({ name: 'viewed_currency', type: 'varchar', length: 8, nullable: true })
+  viewedCurrency?: string | null;
+
   @Column({ name: 'viewed_at', type: 'timestamptz' })
   viewedAt: Date;
 

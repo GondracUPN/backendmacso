@@ -67,6 +67,34 @@ describe('AppController', () => {
     appController = app.get<AppController>(AppController);
   });
 
+  describe('precio visto de eBay', () => {
+    const repo = () => (appController as any).ebayViewedItemsRepo;
+
+    it('guarda el precio la primera vez que se abre', async () => {
+      repo().find.mockResolvedValue([]);
+      const result = await appController.markViewedEbayItem({ keys: ['123456789012'], price: 80.456, currency: 'usd' });
+      expect(repo().upsert).toHaveBeenCalledWith(
+        [expect.objectContaining({ itemKey: '123456789012', viewedPrice: '80.46', viewedCurrency: 'USD' })],
+        expect.anything(),
+      );
+      expect(result.viewedPrice).toBe(80.46);
+    });
+
+    it('conserva el primer precio visto al volver a abrirlo', async () => {
+      repo().find.mockResolvedValue([{ itemKey: '123456789012', viewedPrice: '100.00', viewedCurrency: 'USD' }]);
+      const result = await appController.markViewedEbayItem({ keys: ['123456789012', 'v1|123456789012|0'], price: 80 });
+      const rows = repo().upsert.mock.calls.at(-1)[0];
+      expect(rows.map((row: any) => row.viewedPrice)).toEqual(['100.00', '100.00']);
+      expect(result.viewedPrice).toBe(100);
+    });
+
+    it('sin precio valido no toca el precio guardado', async () => {
+      await appController.markViewedEbayItem({ keys: ['123456789012'], price: 'abc' });
+      const [row] = repo().upsert.mock.calls.at(-1)[0];
+      expect(row).not.toHaveProperty('viewedPrice');
+    });
+  });
+
   describe('root', () => {
     it('should return "Hello World!"', () => {
       expect(appController.getHello()).toBe('Hello World!');

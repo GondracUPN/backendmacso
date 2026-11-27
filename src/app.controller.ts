@@ -3859,6 +3859,8 @@ export class AppController {
         itemUrl: row.itemUrl,
         title: row.title,
         viewedAt: row.viewedAt,
+        viewedPrice: row.viewedPrice == null ? null : Number(row.viewedPrice),
+        viewedCurrency: row.viewedCurrency || null,
       })),
     };
   }
@@ -3876,11 +3878,24 @@ export class AppController {
     const viewedAt = new Date();
     const itemUrl = String(body?.itemUrl || '').trim().slice(0, 1000) || null;
     const title = String(body?.title || '').trim().slice(0, 500) || null;
+    const rawPrice = Number(body?.price);
+    const price = Number.isFinite(rawPrice) && rawPrice > 0 && rawPrice < 1e10 ? Math.round(rawPrice * 100) / 100 : null;
+    const currency = String(body?.currency || 'USD').trim().toUpperCase().slice(0, 8) || 'USD';
+    // Se conserva el primer precio visto: solo se guarda si ninguna clave del artículo lo tiene.
+    let firstPrice: { viewedPrice: string; viewedCurrency: string } | null = null;
+    if (price !== null) {
+      const existing = await this.ebayViewedItemsRepo.find({ where: { itemKey: In(keys) } });
+      const known = existing.find((row) => row.viewedPrice != null);
+      firstPrice = known
+        ? { viewedPrice: String(known.viewedPrice), viewedCurrency: known.viewedCurrency || currency }
+        : { viewedPrice: price.toFixed(2), viewedCurrency: currency };
+    }
     const rows = keys.map((itemKey) => this.ebayViewedItemsRepo.create({
       itemKey,
       itemUrl,
       title,
       viewedAt,
+      ...(firstPrice || {}),
     }));
 
     await this.ebayViewedItemsRepo.upsert(rows, {
@@ -3892,6 +3907,8 @@ export class AppController {
       ok: true,
       viewedAt,
       keys,
+      viewedPrice: firstPrice ? Number(firstPrice.viewedPrice) : null,
+      viewedCurrency: firstPrice?.viewedCurrency || null,
     };
   }
 
