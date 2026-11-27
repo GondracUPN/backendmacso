@@ -33,6 +33,16 @@ const ALLOWED: Record<string, string[]> = {
 
 export const isNewEquipment = (estado: unknown): boolean => slug(estado) === 'nuevo';
 
+/** Las micas se marcan en detalle.gama y no usan estado ni empaque. */
+export const MICA_GAMA = 'Mica';
+export const isMicaAccessory = (detalle: unknown): boolean => /^micas?$/.test(slug((detalle as any)?.gama));
+
+/** Un accesorio nuevo (que no sea mica) siempre viene con caja. */
+export function accessoryPackagingFor(estado: unknown, detalle: unknown, requested?: string | null) {
+  if (isNewEquipment(estado) && !isMicaAccessory(detalle)) return 'con_caja' as const;
+  return (requested || 'sin_indicar') as 'con_caja' | 'sin_caja' | 'sin_indicar';
+}
+
 /** Un equipo nuevo siempre incluye su caja, sin importar lo seleccionado. */
 export function ensureNewEquipmentBox(tipo: unknown, estado: unknown, values: string[]): string[] {
   if (isAccessoryStock(tipo) || !isNewEquipment(estado)) return values;

@@ -22,7 +22,7 @@ import { Inventario } from '../inventario/inventario.entity';
 import { AppleCatalogService } from '../apple-catalog/apple-catalog.service';
 import * as crypto from 'node:crypto';
 import { catalogSyncHeaders } from '../common/catalog-sync-auth';
-import { ensureNewEquipmentBox, isAccessoryStock, isNewEquipment, normalizeIncludedAccessories } from './accessory-rules';
+import { accessoryPackagingFor, ensureNewEquipmentBox, isAccessoryStock, isNewEquipment, normalizeIncludedAccessories } from './accessory-rules';
 import { accesorioParaCatalogo, liberarAccesoriosAlRetirarProducto, lotesDeAccesoriosStock } from '../inventario/accesorios-stock';
 
 function normalizeEstado(str?: string | null): string {
@@ -229,7 +229,7 @@ export class ProductoService {
       stockActual: cantidad,
       codigoInventario: accessoryDisplayCode,
       referenciaId: data.referenciaId ?? null,
-      empaqueAccesorio: accessoryStock ? data.empaqueAccesorio || 'sin_indicar' : null,
+      empaqueAccesorio: accessoryStock ? accessoryPackagingFor(data.estado, data.detalle, data.empaqueAccesorio) : null,
       soloInventario: !!data.soloInventario,
       envioGrupoId: envioGrupoId || null,
       detalle: detalle || undefined,
@@ -742,6 +742,17 @@ export class ProductoService {
       }
       Object.assign(producto.detalle, d);
       await this.detalleRepo.save(producto.detalle);
+    }
+
+    // Accesorio nuevo (no mica) siempre con caja; los lotes fusionados conservan su identidad.
+    // Los lotes legados de catálogo (referencia sin empaque) mantienen su SKU agrupado.
+    const legadoCatalogo = producto.referenciaId && producto.empaqueAccesorio == null;
+    if (isAccessoryStock(producto.tipo) && !producto.fusionAccesorioId && !legadoCatalogo) {
+      const empaque = accessoryPackagingFor(producto.estado, producto.detalle, producto.empaqueAccesorio);
+      if (empaque !== producto.empaqueAccesorio && isNewEquipment(producto.estado)) {
+        producto.empaqueAccesorio = empaque;
+        await this.productoRepo.save(producto);
+      }
     }
 
     // 4) Actualizar valor + recÃ¡lculos

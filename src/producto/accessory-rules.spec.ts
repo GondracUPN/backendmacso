@@ -1,6 +1,14 @@
-import { normalizeIncludedAccessories } from './accessory-rules';
+import { accessoryPackagingFor, isMicaAccessory, normalizeIncludedAccessories } from './accessory-rules';
 
 describe('reglas de accesorios incluidos', () => {
+  it('asigna caja a los accesorios nuevos salvo micas', () => {
+    expect(accessoryPackagingFor('nuevo', { modelo: 'Cargador' }, 'sin_caja')).toBe('con_caja');
+    expect(accessoryPackagingFor('Nuevo', { gama: 'Mica' }, undefined)).toBe('sin_indicar');
+    expect(accessoryPackagingFor('usado', {}, 'sin_caja')).toBe('sin_caja');
+    expect(accessoryPackagingFor('usado', {}, undefined)).toBe('sin_indicar');
+    expect(isMicaAccessory({ gama: 'micas' })).toBe(true);
+  });
+
   it('agrega siempre la caja a los equipos nuevos', () => {
     expect(normalizeIncludedAccessories('macbook', [], undefined, 'nuevo')).toEqual(['Caja']);
     expect(normalizeIncludedAccessories('iphone', ['Cable original', 'Caja'], undefined, 'Nuevo')).toEqual(['Caja', 'Cable original']);

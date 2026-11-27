@@ -1378,6 +1378,8 @@ export class FinanzasService {
         manager.getRepository(Producto).create({
           tipo: 'accesorios',
           estado: 'nuevo',
+          // Accesorio nuevo: siempre con caja.
+          empaqueAccesorio: 'con_caja',
           accesorios: [],
           stockInicial: item.cantidad,
           stockActual: item.cantidad,
